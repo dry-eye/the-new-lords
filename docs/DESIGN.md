@@ -133,6 +133,8 @@ A City-Council-led political org's subordinate-political and subordinate-busines
 
 *Perks are permanent and mutually reinforcing, not a simple stat buff.* Every perk pairs a real upside with a real downside — never a pure bonus — so taking one is a genuine identity choice, not a strictly-better option. Some perks have prerequisites (a specific kind or leadership type, or an earlier perk already taken, for a light sense of a perk tree); some come in mutually exclusive pairs (taking one locks out its opposite permanently).
 
+*Perks surface as effects, not as a collection.* Taking a perk applies its capacity/stat changes directly (e.g., Free Company Charter reads as "+2 control-slot capacity" on the org's own capacity numbers, not as a standing "Free Company Charter" badge). The org's internal record of which perk IDs it has taken exists only to drive the prerequisite/exclusion checks and the offer pool (above) — it's never its own browsable "perks held" list anywhere in the player-facing UI. The one place a perk's name is still visible is the event/history log, as a dated entry recording when it was taken.
+
 *Example perks:*
 
 | Perk | Requires | Effect | Trade-off |
