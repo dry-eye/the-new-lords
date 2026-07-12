@@ -103,7 +103,7 @@ V1 rules: opinion is archetype-compatibility + own-power-vs-parent + tax rate + 
 
 "Back a rival claimant" only forks the secession branch (a coup stays untouched). Its outcome is a **throne-seizure**: the claimant's org takes over the parent org's leadership, the claimant's own org **stays subordinate** (no merge), and its own vacated leadership seat gets a **fresh promotion** rather than being left headless. A tunable chance parameter (default 0.35) controls how often "back a claimant" occurs versus a straightforward secession; at 0 it reduces to always-secede.
 
-- **Open question:** does this apply unmodified to squad-orgs? Since every squad is a subordinate org, and squad leaders die in combat far more often than political or business leaders, taken literally this means every combat death of a squad leader rolls the same rebellion-probability formula a duke's death would — including a chance of an in-battle squad spontaneously seceding from its parent faction. See the open question in "Layered StateTree + leader-centric simulation," below, for the fuller analysis; this is a real trade-off between simplicity/uniformity and battlefield-appropriate pacing, not resolved here.
+- **Open question:** does this apply unmodified to squad-orgs? Since every squad is a subordinate org, and squad leaders die in combat far more often than political or business leaders, taken literally this means every combat death of a squad leader rolls the same rebellion-probability formula a duke's death would — including a chance of an in-battle squad spontaneously seceding from its parent faction. See the open question in "Layered squad behavior + leader-centric simulation," below, for the fuller analysis; this is a real trade-off between simplicity/uniformity and battlefield-appropriate pacing, not resolved here.
 
 **Play as a character + succession.** The player model: a human **plays a character** (a leader inside an org), can create/join an org, and on death control passes to a chosen **heir**, Crusader-Kings-style.
 
@@ -244,7 +244,7 @@ How orgs, pawns, and property are simulated at each level of detail, how AI and 
 **Three fidelity regimes**, assigned by strategic importance, applied world-wide (not tied to camera position):
 - **Data-only (frozen):** property (a `propertyType` tag plus one ownership edge — passive) is pure data, recomputed on a slow, world-wide cadence (~1s for economy).
 - **Aggregate (cohort):** off-screen/strategic pawns are anonymous, represented as a `{count, composition, morale, avgHp}` per region/squad, updated by cheap statistical math; **leader-only simulation, no per-follower AI/collision** (the leader itself, being a named role-holder, is always identified — see the leader-centric squad simulation, below). Dormant identified pawns (veterans, named members) ride along in the same cohort record without losing their specific data.
-- **Full (individual):** hot-region pawns are real, simulated entities with movement, collision, and full StateTree AI/pathfinding — identified or not.
+- **Full (individual):** hot-region pawns are real, simulated entities with movement, collision, and full AI/pathfinding — identified or not.
 
 | Entity | Off-screen / strategic | Hot / near | AI |
 |---|---|---|---|
@@ -294,34 +294,27 @@ The hot-region/cohort materialize system above is an instance of a broader rule:
 
 ## Experience-driven architecture
 
-A session is not a fixed bootstrap but a **composed set of domain features**, selected by an **Experience** config and **runtime-toggleable**. This is the top-level "what game are we playing right now" layer — a proving-ground Experience is a curated slice of the whole simulation (econ-only, combat-only, entrepreneur-start, …), assembled from the same domain systems as the full game. The design borrows this composition idea from Lyra's Experience/GameFeature system (porting the idea, not any specific implementation), adapted to a single-player headless simulation:
+A session isn't always the full game — it can instead be a **curated slice of the whole simulation** (e.g. econ-only, combat-only, entrepreneur-start), assembled from the same systems as the full game and selected up front as an **Experience** (see [`TECH_REFERENCES.md`](TECH_REFERENCES.md) for a candidate implementation pattern). With no Experience chosen, the game behaves exactly like the full default game.
 
-- **Experience** = a session config — id, name, a list of features, an optional start scenario, an optional player role, and optional tuning overrides. Tuning presumably lets an Experience partially override the same tunable-parameter registry used everywhere else (e.g. an Experience could force always-secede for a proving-ground) — not contradicted anywhere, but not explicitly spelled out either; treated as the working assumption unless a narrower scope is wanted.
-- **Feature = a domain** — roughly 6–8 coarse features, each a domain store plus its systems (and eventually its client panels): `econ`, `orgs`, `combat`, `trade`, `worldgen`, `vehicles`, `ai`, `movement`. Deliberately coarser than fine-grained plugin systems — domain-level is the right seam for a strategy sim like this.
-  - **Open question:** what exactly does the `ai` feature gate, distinct from `orgs`/`combat`? Utility AI is already woven into the `orgs` and `combat` domains themselves (org decisions are part of the org system; squad/pawn behavior is part of the StateTree layers). If `ai` is a separate feature, does disabling it freeze only the autonomous (auto + reactive) layers of squad/pawn behavior while leaving player-issued orders working, and leaving org-level utility AI alone — or is it a coarser kill-switch covering org AI and autonomous squad/pawn behavior together, with `orgs`/`combat` as features only gating their data ticks? Both readings are plausible and not yet disambiguated; a real scope call for whoever designs the domain gating in detail.
-- **Setup actions** = the loader's register-everything-then-activate-selected step, realized here as feature-flag-gated systems rather than literal add/remove of live systems.
-- The **Experience loader** registers every system, then activates only those in the chosen Experience's feature list, runs the start scenario (worldgen parameters plus initial entities), and applies the player role. With no Experience chosen, or all features on, behavior is byte-identical to the full default game.
-- **`playerRole`** is what "you" are at session start — `'entrepreneur' | 'character' | 'squad' | 'political'`, each with a starting kit — driving the "found a new character/org" entry point instead of hardcoded founding defaults. Player control stays implicit (whichever character the player is currently controlling), with no separate "controller" concept.
+- An **Experience** selects a subset of the game's systems (economy, organizations, combat, trade, worldgen, vehicles, AI, movement — roughly this many, at this granularity), plus an optional starting scenario, an optional player role, and optional tuning overrides for that specific session (e.g. a proving-ground Experience could force every faction to always secede rather than fight).
+- **Player role** is what "you" are at session start — entrepreneur, character, squad, or political — each with its own starting kit, driving the "found a new character/org" entry point instead of a single hardcoded default. Player control stays implicit (whichever character the player is currently controlling), with no separate "controller" concept.
 - **Start menu = Experience selectability** — different start-scenario/player-role combinations are different starts (entrepreneur from scratch, naked character, starting with a squad, starting with a city + treasury). The player picks a role at the start. (The client selection UI for this is a later layer — see below.)
+- Disabling one of a session's systems doesn't discard its state — it simply pauses (e.g. disabling combat freezes battles but keeps every combatant as they are); re-enabling it resumes exactly where it left off.
 
-**Open question:** this `playerRole` start-menu concept and Player Mode's avatar-select screen (Organizations section, above) are two independently designed answers to "how does a session begin," and neither references the other. Player Mode lets the player inhabit an existing NPC leader already in the generated world; `playerRole` lets the player found a brand-new character/org with a starting kit. Should the eventual start screen be **one unified flow** (e.g. a single screen offering both "join an existing leader" and "found new" as tabs), or **two separate entry points** gated by which Experience is loaded (e.g. a sandbox/observe Experience offers the join-existing picker, a campaign-start Experience offers the found-new picker, and the two are never shown together)? Not resolved here — a real UX/scope decision for whoever designs the eventual start-menu UI.
-
-**Runtime toggle via feature-flag-skip.** Toggling a feature at runtime is a **deterministic** mutator (part of the same command stream everything else in the sim goes through, so it stays replayable/save-consistent) — each system is wrapped by a skip-check that looks at whether its feature is active, and simply skips its own tick when it isn't. Disabling `combat`, for instance, freezes battles but keeps every combatant entity as-is; re-enabling it **resumes** exactly where it left off — state is preserved, never torn down. Which features are active is part of the save data; a save without this field loads as "all features on."
-
-**Build order:** first the core Experience interface plus the feature-flag skip mechanism (proven with a dummy gated system before any real domain is gated); then the composition loader itself (`createSim(experience)`), with "no experience" staying byte-identical to the full default game; then gating the combat/economy/orgs domains, with full-sim (all features on) still byte-identical; then wiring up start scenarios and player roles so different starts actually produce different sessions. Chosen defaults for v1: Experiences are typed config objects (not yet a moddable JSON format), and v1 only composes simulation domains — wiring an Experience to specific client UI panels is a later layer.
+**Open question:** this player-role start-menu concept and Player Mode's avatar-select screen (Organizations section, above) are two independently designed answers to "how does a session begin," and neither references the other. Player Mode lets the player inhabit an existing NPC leader already in the generated world; a player role lets the player found a brand-new character/org with a starting kit. Should the eventual start screen be **one unified flow** (e.g. a single screen offering both "join an existing leader" and "found new" as tabs), or **two separate entry points** gated by which Experience is loaded (e.g. a sandbox/observe Experience offers the join-existing picker, a campaign-start Experience offers the found-new picker, and the two are never shown together)? Not resolved here — a real UX/scope decision for whoever designs the eventual start-menu UI.
 
 **Deferred (out of v1 scope):**
 - A **start-menu client UI** — experience/role selectability and a starting-kit picker, on the client.
-- Gating the remaining domains (`trade`, `worldgen`, `vehicles`, `ai`, `movement`) the same way, once the pattern is proven on the first domains.
-- A **JSON-authorable Experience format** (so Experiences could eventually be authored outside code) and features that also add client panels/controls, not just simulation systems.
+- Extending the same restricted-session idea to the remaining systems, once it's proven on the first few.
+- Letting Experiences be authored outside this document, so new ones don't need a design pass each time.
 
 ---
 
-## Layered StateTree + leader-centric simulation
+## Layered squad behavior + leader-centric simulation
 
-Two coupled architectural decisions: a small hierarchical state-machine driving squad/leader/AI behavior (instead of ad-hoc order strings), and a leader-centric approach to simulating squads.
+Two coupled design decisions: squad/leader/AI behavior runs as a small set of layered states (instead of ad-hoc order strings), and squads are simulated leader-centric.
 
-### Layered StateTree
+### Layered behavior system
 
 Behavior runs in layers, resolved by priority, with higher layers preempting lower ones:
 
@@ -336,12 +329,12 @@ One shared framework drives both AI and player-controllable squads — states ha
 
 ### Leader-centric squad simulation
 
-- A squad has **no collective "intelligence" and no per-follower AI** — it has exactly **one** intelligent leader; every other member simply follows the leader in formation. The StateTree above runs on the leader only.
+- A squad has **no collective "intelligence" and no per-follower AI** — it has exactly **one** intelligent leader; every other member simply follows the leader in formation. The layered behavior system above runs on the leader only.
 - Only leaders are actually simulated in detail — squad leader, detachment/unit leader, org leader — not every individual pawn; followers are cheap trailing bodies, abstracted further still at low LOD.
 - A squad's **emblem/icon is attached to its leader** and **passes by succession** when the leader dies — the next-in-line inherits both leadership and the emblem.
 
-**Open question:** is a squad's tactical leader (the one driving its StateTree) the same character as the seat counted by the org leader-count model — i.e. one person wearing both hats, driving the squad's movement/combat *and* the paired org's utility-AI decisions, carrying both the emblem and the succession-legitimacy math? This is never stated as an explicit rule, and two concrete conflicts follow from assuming it is:
-1. The org leader-count model gives a mercenary-flavored org 2 leaders (the type squad-orgs commonly default to), while this section says flatly that a squad has exactly one leader. Does "one leader" mean only the tactical, StateTree-driving leader, with a second org-level "leader" being a co-signer with no StateTree presence at all — or should squad-kind orgs simply be hardcoded to a leader count of 1, since they're structurally different from political/business orgs?
+**Open question:** is a squad's tactical leader (the one driving its behavior states) the same character as the seat counted by the org leader-count model — i.e. one person wearing both hats, driving the squad's movement/combat *and* the paired org's utility-AI decisions, carrying both the emblem and the succession-legitimacy math? This is never stated as an explicit rule, and two concrete conflicts follow from assuming it is:
+1. The org leader-count model gives a mercenary-flavored org 2 leaders (the type squad-orgs commonly default to), while this section says flatly that a squad has exactly one leader. Does "one leader" mean only the tactical, behavior-driving leader, with a second org-level "leader" being a co-signer with no behavioral presence at all — or should squad-kind orgs simply be hardcoded to a leader count of 1, since they're structurally different from political/business orgs?
 2. Does a squad leader's death in combat roll the full succession-crisis formula (a rebellion-probability roll that can result in secession), the same as a duke's death would? Since squad-orgs are subordinate orgs once they join the hierarchy, taken literally every routine combat leader-death would roll the same CK-style crisis math — including a chance of a squad spontaneously seceding from its parent faction mid-battle. This seems unlikely to be the intended pacing (this section's own succession model for squads is much simpler: "next-in-line inherits leadership and the emblem," no rebellion roll, no secession branch) but nothing states squad-orgs are exempt from the general org succession rules.
 
 This is a genuine balance/scope trade-off between narrative richness (even squads can fracture on bad leadership) and battlefield pacing (combat leader deaths are routine, not crisis-worthy) — not resolved here; both sub-questions share the same root cause (whether squad-kind orgs are a first-class exception to the general org leadership/succession rules) and are best resolved together.
@@ -351,9 +344,9 @@ This is a genuine balance/scope trade-off between narrative richness (even squad
 ## Architecture principles
 
 - **Behavior selection = Utility AI.** Any "what should this unit/team do" choice is modeled as candidate **actions scored by weighted factors**, highest wins — never a fixed if/else priority chain. Factors live in one shared registry, so adding a new one is a localized change. This is deliberately built as a **scalable tool**: the factor set is expected to grow, and the scoring policy itself may later be augmented or replaced by **imitation learning / neural nets**. New behavior work should extend this framework rather than bypass it.
-- **Utility AI runs at three scales** — **organization** (strategic: become political, change leadership type, seek power; a slow, visible cooldown), **squad/caravan** (tactical: capture/attack/move), and **pawn** (micro: positioning within a squad). Same framework, different action/factor sets per scale — reuse it, don't invent a parallel decision system per scale. "Same framework" means the shared **utility-scoring** math specifically — the order/auto/reactive **layering** with an execution queue (Layered StateTree, above) is additional machinery present only at the squad/pawn scales, not the org scale.
+- **Utility AI runs at three scales** — **organization** (strategic: become political, change leadership type, seek power; a slow, visible cooldown), **squad/caravan** (tactical: capture/attack/move), and **pawn** (micro: positioning within a squad). Same framework, different action/factor sets per scale — reuse it, don't invent a parallel decision system per scale. "Same framework" means the shared **utility-scoring** math specifically — the order/auto/reactive **layering** with an execution queue (Layered squad behavior, above) is additional machinery present only at the squad/pawn scales, not the org scale.
 - **Tunable constants live in a parameter registry.** Don't scatter magic numbers — register a balance/AI/world constant once (`{key, group, type, default, applyMode}`) and read it through a single accessor. The tuning UI auto-generates from the registry, so a new tunable needs no bespoke UI of its own.
-- **Hierarchical gameplay tags.** Identities and states (leader archetypes, unit/order states, behavior hints) are expressed as **dot-hierarchical string tags** (`Leader.Monarch`, `Squad.Attacking`) via a thin helper — adopting the pattern of Unreal's gameplay tags, not any specific subsystem. Prefer a tag + a factor-weight profile over hardcoding archetype/state-specific branches.
+- **Hierarchical gameplay tags.** Identities and states (leader archetypes, unit/order states, behavior hints) are expressed as **dot-hierarchical string tags** (`Leader.Monarch`, `Squad.Attacking`), matchable both exactly and by prefix. Prefer a tag + a factor-weight profile over hardcoding archetype/state-specific branches.
 - **Attribute calculation = base + independent modifiers.** Any attribute built from a base value plus bonuses/penalties (an organization capacity, a derived stat like org Management, a character skill) follows one shared formula: `result = base + Σ(flat modifiers) + Σ(base × (multiplier − 1))`. Every multiplier computes its own contribution against the original base value — multipliers never compound on each other or on an already-modified running total. This turns every contribution, flat or multiplicative, into one comparable line item, which is what a Crusader-Kings-style breakdown tooltip reads from directly: the base value in white, each positive contribution in green, each negative one in red, summing to the shown result. Organization capacities, org Management, and character skills already follow this shape (see their own sections); combat, pricing, and upkeep formulas elsewhere in this document predate the rule and sequentially compound instead — reconciling them is future work, not scoped here.
 
 ---
@@ -365,11 +358,7 @@ A player-controlled character can found a brand-new independent squad organizati
 
 ## Worldgen
 
-Worldgen produces the game world deterministically from a seed, using generation techniques adapted from
-PCG, PCGEx, and Watabou-style procedural city/road generation. Generation is **region-local**: a coarse-to-fine
-seeded grid means any region of the map can be regenerated in isolation and will always produce the same
-result. Voronoi/Delaunay triangulation is the shared geometric backbone across the system — a single
-deterministic triangulation yields territory borders, road-candidate topology, and region seeds all at once.
+Worldgen produces the game world deterministically from a seed (see [`TECH_REFERENCES.md`](TECH_REFERENCES.md) for candidate implementation techniques). Generation is **region-local**: any region of the map can be regenerated in isolation and will always produce the same result. One shared underlying layout, built once from the world's settlement and zone positions, yields territory borders, road-candidate topology, and terrain-zone borders together, so all three stay consistent with each other rather than risking disagreement between separately-generated passes.
 
 **Determinism** means the same seed always reproduces the same map when regenerated. This is a single-player
 guarantee — it lets a region be regenerated in isolation, lets a bug be reproduced exactly by replaying a seed,
@@ -409,37 +398,36 @@ The stages below run in order at world creation and consume each other's output:
 
 | Stage | Input | Output | Consumers |
 |---|---|---|---|
-| 1. Seed | World seed (set at world creation or on a map-select screen) | A position-hash function — deterministic, no shared random-number-generator state | Every later stage (all reseed from the world seed directly, never from a shared stream) |
-| 2. Coarse-to-fine grid | World seed | A seeded cell grid, region-addressable (any single region can be regenerated in isolation) | Simulation systems that share the grid; density/region stage; territory-border stage |
-| 3. Triangulation | City/zone seed points (placed by Poisson-disc sampling, the same technique used for capital placement) | Delaunay triangulation and its dual Voronoi diagram | Territory borders, road-candidate edges, terrain zone borders |
-| 4. Density/regions | Seeded grid + noise | Boolean region masks (e.g. "is forest," "is wetland") | Biome assignment; forest/mountain/plains ratios |
+| 1. Seed | World seed (set at world creation or on a map-select screen) | A deterministic way to turn any position into the same reproducible value every time | Every later stage (all reseed from the world seed directly, never from a shared stream) |
+| 2. Coarse-to-fine grid | World seed | A seeded, region-addressable layout (any single region can be regenerated in isolation) | Simulation systems that share the grid; density/region stage; territory-border stage |
+| 3. Seed-point layout | City/zone seed points, placed with even, non-overlapping spacing (the same placement rule used for capital placement) | A shared underlying layout connecting those points, used to derive borders and road candidates | Territory borders, road-candidate edges, terrain zone borders |
+| 4. Density/regions | Seeded grid + noise | Region masks (e.g. "is forest," "is wetland") | Biome assignment; forest/mountain/plains ratios |
 | 5. Biome assignment | Noise + region masks | Per-cell biome tag (forest/mountain/plains/desert/…) plus an elevation field | Terrain texture and hypsometric shading, a coarse cover/occlusion layer for combat (mountain-zone edges and forest interiors as cover candidates), economy resource binding |
-| 6. Territory borders | Triangulation + Lloyd relaxation | Political-influence-ready Voronoi cells | Political influence field |
-| 7. Road network | Delaunay triangulation → Urquhart subgraph → A* terrain-cost routing (cost keyed to biome: plains cheap, forest/mountain expensive, rivers crossable only at bridge/ford points) → path simplification (Douglas-Peucker plus Hermite smoothing) → spanning-tree/shortcut-link classification | A road graph: nodes are settlements and junctions, edges carry a polyline and a terrain cost | Caravan/trade routing, porter routing, road safety and blockade events, automated logistics |
-| 8. City/feature placement | Watabou-style minimum-area oriented bounding box + footprint-to-plan generation | Building footprints and open-vocabulary feature tags | City rendering, settlement detail inspector |
+| 6. Territory borders | The shared underlying layout, smoothed into more even-sized regions | Political-influence-ready territory cells | Political influence field |
+| 7. Road network | The shared underlying layout, pared down to a sensible candidate set of connections, then routed to prefer easy terrain (plains are cheap to build through, forest/mountain are expensive, rivers are only crossable at bridge/ford points) and smoothed into natural-looking paths | A road graph: nodes are settlements and junctions, edges carry a path and a terrain cost | Caravan/trade routing, porter routing, road safety and blockade events, automated logistics |
+| 8. City/feature placement | A tight-fitting building-lot layout generated per settlement footprint | Building footprints and descriptive feature tags | City rendering, settlement detail inspector |
 | 9. Baseline economy seed | Biome tag at a settlement's position + settlement tier | 1–3 baseline producer enterprises per settlement, matched to biome and tier | Economy baseline at world start; the org-AI enterprise-founding system that grows the economy further |
 
 This table connects stages that were designed at different times into one traceable pipeline — it states the
 *wiring* (what feeds what), not new mechanics.
 
-**Streets between buildings, distinct from the inter-settlement road graph.** Stage 8's footprint-to-plan generation produces its own internal street network connecting building lots within a settlement — the Watabou-style technique inherently lays out streets alongside the lots it plans. This is a separate layer from Stage 7's road graph (which connects settlements to each other): together, a settlement gets both an outer road link to the rest of the world and an inner street layout between its own buildings.
+**Streets between buildings, distinct from the inter-settlement road graph.** Stage 8's building-lot generation produces its own internal street network connecting building lots within a settlement, as part of the same generation step that lays out the lots themselves. This is a separate layer from Stage 7's road graph (which connects settlements to each other): together, a settlement gets both an outer road link to the rest of the world and an inner street layout between its own buildings.
 
-### Terrain zones (Voronoi tessellation)
+### Terrain zones
 
 A dedicated map layer describes what the land *is*, using real tessellating territorial zones rather than
-ad-hoc placement. Three layers are kept conceptually separate:
+ad-hoc placement, with no gaps between zones. Three layers are kept conceptually separate:
 
-1. **Terrain zones** — an unweighted, nearest-seed Voronoi tessellation with no gaps. Zone kinds are forest,
-   mountain, and plains; rivers are represented as edge polylines.
-2. **Political influence field** — a separate weighted Voronoi diagram that can have wilderness gaps between
-   territories.
+1. **Terrain zones** — every point on the map belongs to exactly one zone, whichever zone seed sits nearest to
+   it. Zone kinds are forest, mountain, and plains; rivers are drawn as connected paths.
+2. **Political influence field** — a separate zone layer that, unlike terrain zones, can leave wilderness gaps
+   between territories.
 3. **Settlement footprints** — see site selection below.
 
-**Generation:** a fixed number of zone seed points (roughly a dozen) are placed by Poisson-disc rejection, the
-same technique used for capital placement. Zone kind is assigned by a seeded rule — mountains are biased
-toward the map rim, forests toward the interior, with tunable kind ratios. Each zone's border is found via a
-nearest-seed label grid followed by marching squares. A handful of rivers (roughly three) are traced along
-Voronoi cell edges.
+**Generation:** a fixed number of zone seed points (roughly a dozen) are placed with even, non-overlapping
+spacing, the same placement rule used for capital placement. Zone kind is assigned by a seeded rule —
+mountains are biased toward the map rim, forests toward the interior, with tunable kind ratios. A handful of
+rivers (roughly three) are traced along the boundaries between zones.
 
 **Forests as a resource:** forest zones behave as non-depleting wood sources — a forest zone always has wood
 available rather than being harvested down to nothing.
@@ -451,9 +439,9 @@ Consumers reference a zone's kind at a given map position — for example, a lum
 a forest zone, and a mine needs a mountain zone.
 
 **Open question:** are terrain zones (this tessellation) and political-territory borders (built from the same
-Delaunay/Voronoi backbone, with Lloyd relaxation) meant to be the same structure, or deliberately separate
-layers that only share the underlying geometry? The pipeline above treats them as separate outputs of a shared
-backbone; that should be confirmed as an explicit design decision rather than left implicit.
+underlying layout, then smoothed into more even regions) meant to be the same structure, or deliberately
+separate layers that only share the underlying geometry? The pipeline above treats them as separate outputs of
+a shared backbone; that should be confirmed as an explicit design decision rather than left implicit.
 
 ### Settlement site selection
 
@@ -468,9 +456,9 @@ generation time or grown in over play.
 
 **Open question:** zone kind determines which enterprise *types* can appear where (forest → lumber camp,
 mountain → mine), but not the density or placement of resource nodes *within* a zone. Is a mountain zone
-uniformly mineable, or does it need discrete ore-node points (in the spirit of Watabou-style point features)
-that baseline economy seeding and later player-issued construction both query? This feeds baseline economy
-seeding directly and should be resolved alongside it.
+uniformly mineable, or does it need discrete ore-node points that baseline economy seeding and later
+player-issued construction both query? This feeds baseline economy seeding directly and should be resolved
+alongside it.
 
 ### Baseline economy per settlement
 
@@ -739,7 +727,7 @@ Both the player-abilities and squad-capabilities references mention a "Camp" act
 ## Territory control, assault & shuttle ops
 
 ### Territory and settlement ownership
-Territory isn't a continuous field radiating from squads — it's discrete and settlement-anchored. A settlement belongs to whichever faction/organization last captured it (see Contested capture, below); the area a settlement's ownership is credited with for income and scoring purposes is its worldgen-assigned zone (see the Voronoi world zones under Worldgen), not anything projected by the squads standing in it. Open ground between settlements isn't "controlled" by anyone in the simulation sense — a squad sitting in the open influences nothing beyond its own combat presence.
+Territory isn't a continuous field radiating from squads — it's discrete and settlement-anchored. A settlement belongs to whichever faction/organization last captured it (see Contested capture, below); the area a settlement's ownership is credited with for income and scoring purposes is its worldgen-assigned zone (see Terrain zones under Worldgen), not anything projected by the squads standing in it. Open ground between settlements isn't "controlled" by anyone in the simulation sense — a squad sitting in the open influences nothing beyond its own combat presence.
 
 ### Assault mode
 A per-squad toggle that trades fatigue for a faster capture attempt on a hostile, uncontested settlement it's physically present at.
@@ -790,13 +778,13 @@ Zooming past the detailed (L2) tier into a single building opens a procedurally 
 
 What pawns do inside, for now, is occupancy and cover (using the same damage-reduction-divisor approach as entrenchment and garrison); full interior combat — room-clearing, interior pathfinding as its own tactical layer — is a deeper feature this sub-LOD enables but doesn't yet fully deliver.
 
-This depends on pawns being able to properly collide with each other and with walls in the first place: building colliders are axis-aligned boxes (a rotated building's collider is its bounding box, slightly larger than its drawn footprint — reversible later if that causes visible clipping at corners). The first collision pass covers pawn-versus-pawn separation and pawn-versus-building blocking only; parked vehicles as solid obstacles, and steering that properly routes *around* a blocking building (in the first pass a pawn just stops at the wall) are later layers. A simple look-ahead deflection handles straightforward cases; routing through maze-like layouts is explicitly out of scope unless playtesting shows it's a real problem. Generated cities spawn their building colliders as part of the normal world load, at no meaningful per-tick cost since static buildings don't move. Background civilians stay bodiless in v1, to keep crowd performance manageable — a fully physical crowd is a future option if the world reads as too insubstantial.
+Pawns collide with each other and with building walls; a rotated building's collision shape is a simple box around it, slightly larger than its drawn footprint, which can very occasionally let a pawn visually clip a corner — an accepted v1 trade-off, reversible later if it reads as a real problem. In v1, only pawn-versus-pawn and pawn-versus-building collision exists: parked vehicles don't yet block movement, and a pawn blocked by a building simply stops at the wall rather than routing around it — both are later additions, as is genuine pathing through maze-like interiors (out of scope unless playtesting shows it's actually needed). Background civilians have no physical body in v1, to keep a crowded settlement affordable to simulate — a fully physical crowd is a future option if the world reads as too insubstantial.
 
 The interior design, in full:
 
-1. **Interior LOD.** A building's interior is either a fully-simulated room-graph with individually-simulated pawns inside it, or an abstract occupancy aggregate (count, composition, morale, average HP) — decided by the same world-global "what's currently relevant" signal (combat, player focus, nearby events) that already governs simulation depth elsewhere, never a separate per-building or per-camera rule.
-2. **Room layout generation.** Procedural, per building footprint, reusing the same footprint-to-floorplan technique already used elsewhere in worldgen: an oriented occupancy grid is subdivided into rectangular rooms with a minimum size, doors are placed on shared walls between adjacent rooms to form a connected room-graph, and exactly one exterior door is placed on the street-facing side. Deterministically seeded, the same as the rest of building generation.
-3. **Interior navigation.** Simplified room-grid pathfinding rather than a full navmesh — each room is a graph node, each door an edge, and a pawn paths room-to-room via ordinary graph traversal. Movement within a room reuses the same pawn-versus-pawn and pawn-versus-wall collision as the outdoor world; interior walls are just another collision obstacle.
+1. **Interior LOD.** A building's interior is either fully simulated, with individually-simulated pawns walking room to room inside it, or an abstract occupancy aggregate (count, composition, morale, average HP) — decided by the same world-global "what's currently relevant" signal (combat, player focus, nearby events) that already governs simulation depth elsewhere, never a separate per-building or per-camera rule.
+2. **Room layout generation.** Procedural, per building footprint: each building's interior is divided into rooms with a minimum size, connected by doors on the walls they share, with exactly one exterior door on the street-facing side. Deterministically seeded, the same as the rest of building generation.
+3. **Interior navigation.** Pawns path from room to room through doors, rather than moving freely across a whole interior at once; once inside a room, they move and avoid each other and the walls the same way they do outdoors.
 4. **Camera and render.** Entering a building zooms the same continuous camera into that building's footprint and draws its room layout instead of the world — not a modal or a separate scene, consistent with the existing zoom mechanics.
 5. **Storage and inventory.** A simple numeric stock readout per resource type, shown read-only in the inspector when a building's interior is focused — no drag-drop or slot-based inventory UI.
 
@@ -1340,12 +1328,12 @@ A text search over the tuning panel filters rows to those whose label or paramet
 ### Camera controls (pan, zoom, rotation)
 The world is a sphere (see "World shape," under Worldgen, above), not a flat plane. Pan: dragging orbits the camera around the sphere's surface (middle-mouse-button drag, or left-mouse-button drag on empty space) rather than sliding across a flat plane. Zoom: mouse wheel; the resulting camera distance from the surface drives the level-of-detail tier (see Glossary: tier) and is what the metric-ruler overlay reads and displays. On touch, a second finger switches single-finger panning into two-finger pinch-zoom-and-pan.
 
-**Rotation, resolved.** Free camera rotation around the planet is part of the design — this replaces the earlier "no rotation" placeholder and closes what used to be an open question here. Rotation applies at the world/strategic tiers, orbiting the sphere; the building-interior sub-LOD (see "Enter buildings," above) keeps its own fixed top-down/orthographic camera once you're inside a specific building, since the BSP-generated room layout and the metric-ruler's scale-audit panel both depend on a stable, non-rotating view at that one sub-tier.
+**Rotation, resolved.** Free camera rotation around the planet is part of the design — this replaces the earlier "no rotation" placeholder and closes what used to be an open question here. Rotation applies at the world/strategic tiers, orbiting the sphere; the building-interior sub-LOD (see "Enter buildings," above) keeps its own fixed top-down/orthographic camera once you're inside a specific building, since the procedurally generated room layout and the metric-ruler's scale-audit panel both depend on a stable, non-rotating view at that one sub-tier.
 
 ### HUD layout and panel placement
 Inspector panels dock as a fixed group in the top-right of the screen. No overall HUD region map is defined yet — where a time-control/pause bar, resource ticker, notification tray, or minimap would live is unspecified, and no minimap exists in the design.
 
-**Open question:** is the absence of a minimap deliberate? A Voronoi-zone world generation and a "Sides & identity" strategic layer are exactly the kind of systems that usually want one. Needs a design session to lay out HUD regions (top bar, side panels, bottom bar if any), decide whether a minimap/strategic overview is in scope, and decide how the notification tray and settings menu (both below) dock alongside the inspector stack.
+**Open question:** is the absence of a minimap deliberate? Zone-based world generation and a "Sides & identity" strategic layer are exactly the kind of systems that usually want one. Needs a design session to lay out HUD regions (top bar, side panels, bottom bar if any), decide whether a minimap/strategic overview is in scope, and decide how the notification tray and settings menu (both below) dock alongside the inspector stack.
 
 ### Notification and alert system
 Nothing in the design yet tells the player about game events that happen off-screen or between clicks — a settlement captured, a squad destroyed, an org going bankrupt, supply running out (see Glossary: upkeep, supply). Given the org-centric, LOD-tiered model, where many things can happen far from the current camera focus, this is close to load-bearing rather than a nice-to-have.
@@ -1376,16 +1364,16 @@ This is a player-facing tool as well as a design one: the abilities registry lis
 
 ## Mobile web support
 
-The game targets mobile web / PWA rather than a native wrapper (e.g. Capacitor/Cordova) or a desktop shell (e.g. Electron/Tauri) — those add packaging complexity without buying anything a PWA manifest doesn't already cover for a canvas-only game.
+The game is playable in a mobile browser, installable to the home screen, alongside desktop play.
 
 V1 scope:
 1. **Touch-to-pointer / pinch-zoom:** a second touch switches single-finger drag-pan into two-finger pinch-zoom-and-pan around the midpoint, alongside the existing mouse/wheel controls.
-2. Touch gestures are captured directly by the game canvas instead of triggering the browser's native scroll/zoom.
-3. **Touch equivalent for the one hotkey-only action** (squad re-auto-control): a roughly 500ms long-press on the canvas with a squad selected re-autos it, mirroring the existing hold-to-open order-menu timing.
+2. Touch gestures control the game view directly instead of triggering the browser's native scroll/zoom.
+3. **Touch equivalent for the one hotkey-only action** (squad re-auto-control): a roughly 500ms long-press on the game view with a squad selected re-autos it, mirroring the existing hold-to-open order-menu timing.
 
 Deferred:
 4. **Full touch-target sizing pass** — beyond the order-menu row height (touch-friendly from the start), inspector panel tables/buttons and tooltip pin controls are sized for a mouse pointer and need a dedicated sizing audit.
-5. **PWA manifest** for home-screen install — treated as optional.
+5. **Home-screen install support** — treated as optional.
 
 Quick-save/quick-load keyboard shortcuts are power-user shortcuts, not gameplay-blocking, and are deferred along with the rest.
 
@@ -1411,7 +1399,7 @@ What you can click and what each inspector panel shows. One entry per selectable
 | **Character** | click a character name (leader/heir/member link) | Character detail view | name, age/age-bucket, traits, the four character skills (see Character skills), residence settlement, primary org membership (clickable), secondary network membership if recruited as an agent (clickable, see Agent networks), org led (if a leader, clickable) + CK-style title, heir (if any, clickable), post held in any organization (if any, clickable — see Organizational posts) |
 | **My Character** (avatar) | persistent panel while playing as a character | Character detail view + org forest | same as Character, plus the avatar's own org tree context |
 | **Squad loadout** | opens alongside a selected squad, side by side with the squad detail panel (see the layout rule below) | Squad loadout view | per-pawn seat role, mounted vehicle (if any), remote-operator link (cycle-role click target) |
-| **Building interior** | select a building at close-zoom/street tier | Interior panel | building label, room layout (BSP-generated, fixture preview), building stock |
+| **Building interior** | select a building at close-zoom/street tier | Interior panel | building label, room layout (procedurally generated, fixture preview), building stock |
 | **Term (glossary)** | hover a mechanics term in any panel or tooltip (mouse-only — see the touch tooltip open question under Mobile web support) | Term tooltip | CK-style nested definition, sourced from the Glossary below, may drill into further terms/instances |
 
 
