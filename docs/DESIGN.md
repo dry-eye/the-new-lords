@@ -707,6 +707,8 @@ The canonical input scheme for a selected squad:
 - Options include **Attack** (an attacking move, resolved by the combat system) and **Garrison** (enabled only when the target is your own property and the squad is yours — assigns the garrison role, giving cheaper upkeep and a defense bonus); the menu is extensible to Split/Release and Board/Dismount. A separate hotkey (`R`) sets a patrol route.
 - The enable/disable logic for each option (Attack requires a hostile-faction target; Garrison requires a friendly settlement and toggles to "stand down" if already garrisoning it; Cancel requires an active order) is centrally defined, so the menu widget just renders the resulting list.
 
+This is one instance of a general rule, not a squad-specific mechanism — see "Context-sensitive option menu — one mechanism for every controllable actor," under UI conventions, below, for how the same hold-right-click Options window behaves when an organization or a character is the currently selected actor instead of a squad.
+
 The order-menu interaction, in detail:
 
 - **Opening:** hold right mouse button on the selected squad for about 0.3 seconds — the menu opens while still held, not on release. A quick right-click, released before the hold timer fires, is a plain MOVE.
@@ -1419,7 +1421,7 @@ What you can click and what each inspector panel shows. One entry per selectable
 
 ## UI conventions
 
-Two standing conventions govern how instances and terms are presented in the UI. New UI work should follow both by default.
+Several standing conventions govern how instances and terms are presented in the UI. New UI work should follow all of them by default.
 
 ### Clickable inspectable instances
 Whenever a concrete instance of an object that has an inspector view — organization, settlement, squad, character, enterprise, caravan, etc. — is named in any inspector panel or tooltip, it must be a clickable link that selects and jumps to it. A plain-text instance name is a bug, not an acceptable default. This convention covers, at minimum: the settlement's owner org and that org's parent, the management-slot occupant org, the supply-policy settlement name, and the character's heir.
@@ -1440,6 +1442,18 @@ Initial term set: entrenchment, supply, upkeep, garrison, tier, org, side, LOD. 
 
 ### Single active inspector panel
 Only one inspector popup (economy/orgs/detail/squad+loadout/character/my-character/caravan) is visible at a time, governed by a single piece of "which panel is active" state. Every way of opening or closing a panel — selecting something on the map, clicking a cross-link, clicking a toggle button — sets this state, and every panel's visibility is derived from it in one place. Panel *content* refreshes independently of open/closed state: refreshing a panel's contents must never force it open or closed, since a background data refresh forcing a panel open would otherwise fight with the player's own navigation (e.g. jumping from a settlement to its owner org would flicker back to the settlement panel). Deselecting an object only closes its panel if that panel was the active one, so it can't yank away a panel the player has since navigated elsewhere from.
+
+### Context-sensitive option menu — one mechanism for every controllable actor
+
+Whichever controllable actor is currently selected — a **character**, an **organization**, or a **squad** — dictates what the hold-right-click Options window (see "Squad context menu and order options," under Transport, squads & command, above) offers when the player holds right-click on a target. The menu's contents are a pure function of *(selected actor, target under cursor)*: it lists whichever of that actor's already-existing actions has a natural target and applies to what's currently under the cursor, gated by the same kind of centrally-defined enable/disable logic the squad menu already uses (Attack requires a hostile target, Garrison requires a friendly settlement, and so on) — a generic rule, not something specific to squads.
+
+This deliberately introduces no new actions — it's a second way to reach actions this document already defines elsewhere (the org inspector's Decisions tab, the squad order menu, character actions), for whichever of them naturally targets something:
+
+- **Squad** (target-driven): Attack, Garrison, Split/Release, Board/Dismount — already specified in full under "Squad context menu and order options."
+- **Organization** (target-driven): create/break a control or influence slot (target: another organization), propose/break an alliance (target: another independent organization), assign or remove a post (target: a character among the org's own members), trigger an intel report or paid sabotage through an existing agent edge (target: the edge's host organization), reassign a controlled organization's leader or posts (target: that controlled organization — see "Who can reassign a controlled org's leader or posts," under Organizations).
+- **Character** (target-driven): none yet. A character's one dedicated action — dissolving back into a settlement's latent pool (see "Settlement population: demographic pool and character generation") — has no target of its own. Playing as a character in Player Mode reaches an organization's target-driven actions transitively, through whichever org that character leads (Player Mode: "an org is reached transitively through the character's leadership") — the menu shown in that case is the led organization's, not a separate character-specific list.
+
+**Self-directed decisions have no natural target and stay off this menu.** `BecomePolitical`, `ChangeLeadershipType`, `Expand`, `TakePerk`, and founding a subordinate organization don't point at anything under the cursor — they apply to the selected actor itself, so they remain reachable only through the inspector's own Decisions/Perks tabs, exactly as already specified elsewhere. This isn't an oversight: forcing a target onto a self-directed decision would invent a targeting rule this document doesn't otherwise describe.
 
 ### Accessibility and input rebinding (open question)
 No section of this document or the abilities registry mentions accessibility. Every hotkey (move, attack, patrol, toggle caravan, crew split/merge, un-hold, ruler, board/leave/return, delete, squad re-auto-control, queue-order modifier) is hardcoded in v1, with no rebinding UI anywhere. Also missing: colorblind-safe palettes/iconography (relevant given side/faction color-coding), scalable UI text, and screen-reader/keyboard-only navigation for panel content.
