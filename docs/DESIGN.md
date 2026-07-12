@@ -13,7 +13,7 @@ The world is made of **organizations** — the fundamental political/economic ac
 The game's core premise is a **mechanically-simulated world, not a decorative one**, built from three pillars: **Organizations** (political / business / criminal — composed of People and Property, led by a Person, with slots, rules, and perks), **People** (characters — who can lead an org, occupy a slot, or own property), and **Property** (owned by orgs or people). Kinship/family is not a fourth pillar or an org kind — it's a relationship between People (see Succession, below).
 
 - **Organization ≠ leadership type.** The org is the actor; **leadership type** (monarch / city council / entrepreneur / mercenary / economic / anarchic, plus **warlord** — earned only via bandit conquest, excluded from the normal reform pool, see "Bandits & outlaw factions," below) is a **mutable attribute**. Org leaders make **decisions** — change leadership type, take a **perk/trait** (which may change type or leader count), set policy.
-- **Leader count** derives from type/attributes: monarch 1, council ~9, mercenary 2, economic 1, anarchic 0 (no formal leader, headless), warlord 1 — **except `kind:'squad'`, `kind:'network'`, `kind:'intelligence'`, and `kind:'secret_police'` orgs, which always have exactly 1 leader regardless of leadership type.** This is a deliberate, resolved override: the leader-centric squad simulation's foundational claim that a squad has exactly one intelligent leader takes priority over the general leadership-type table for squad-kind orgs specifically, and `network`-, `intelligence`-, and `secret_police`-kind orgs all answer to that same single-handler model (see "Agent networks," below — `military` stays on the ordinary table instead, since it's administrative, not a single-handler operation). A squad, network, intelligence, or secret-police org that wants a second leadership seat gets there only through the **Council of Equals** perk (below), never through leadership-type alone.
+- **Leader count is the `Leader` post's capacity, not a separate rule.** It's unified into the same capacity table as the other organizational posts (see "Organizational posts," below): monarch 1, council ~9, mercenary 2, economic 1, anarchic 0 (no formal leader, headless), warlord 1 — **except `kind:'squad'`, `kind:'network'`, `kind:'intelligence'`, and `kind:'secret_police'` orgs, whose `Leader`-post base is hardcoded to exactly 1 regardless of leadership type.** This is a deliberate, resolved override: the leader-centric squad simulation's foundational claim that a squad has exactly one intelligent leader takes priority over the general leadership-type table for squad-kind orgs specifically, and `network`-, `intelligence`-, and `secret_police`-kind orgs all answer to that same single-handler model (see "Agent networks," below — `military` stays on the ordinary table instead, since it's administrative, not a single-handler operation). A squad, network, intelligence, or secret-police org that wants a second leadership seat gets there only through the **Council of Equals** perk (below, +1 `Leader`-post capacity), never through leadership-type alone.
 - **Political vs non-political:** a political org has an **influence zone** and sets **policy** (laws, e.g. tax rate) within it. Non-political orgs have only a "political element" and can **become** political (e.g. an entrepreneur that grows to control a settlement).
 - **Hierarchy / containment (Crusader-Kings-style):** a parent-chain of orgs; an **independent** org (no parent) tops a tree of subordinate orgs (council members, village heads, enterprises). Clicking an independent org lets you drill into everything beneath it. How much a single org can directly hold is governed by **organization capacity** (below) — a set of per-org caps, not a flat tree-depth limit; overall tree depth stays uncapped and self-regulates through the same utility-AI cost/benefit weighing that governs every other org decision.
 - **Ambition = base mechanic:** every org's AI seeks power — grow strong, become political, become independent. (In design language this drive is expressed as **utility**/**decision weight** — see Leader-trait-driven utility AI, below; `ambition` names the same quantity.)
@@ -63,20 +63,20 @@ Player Mode's session-start picker (choose an existing NPC leader) and the Exper
 
 **Who can reassign a controlled org's leader or posts.** Two distinct relationships carry this right, independently of each other: holding a **control slot** over another org, or being that org's **direct parent** in the hierarchy. Either one grants reassignment of the target's leader and posts (see "Organizational posts," below), but only when the target's kind is `squad`, `business`, `political`, `military`, or `intelligence`. Influence and alliance edges never grant this right, regardless of target kind, and neither does the hierarchy link when the target's kind is `network` or `secret_police` — their single-handler model doesn't take an outside-imposed reassignment. Reassigning a leader this way triggers the same consequences as any other leader change (loyalty shock, rebellion roll — see "Succession crises," above).
 
-**Organizational posts.** Beyond the leader seat, an org can fill a small set of named posts from among its own members — **Advisor**, **Bodyguard**, **Negotiator** — the same three posts for every org kind and leadership type. Each post is filled from an existing member (the same pool the heir picker draws from); filling one doesn't grant membership by itself, and a vacant post simply grants nothing.
+**Organizational posts.** An org fills a small set of named posts from among its own members — **Leader**, **Advisor**, **Bodyguard**, **Negotiator** — the same four posts for every org kind and leadership type, `Leader` unified into this same system rather than a standalone concept (a resolved simplification: leader count used to be its own rule, now it's just this table's first column). Each post is filled from an existing member (the same pool the heir picker draws from); filling one doesn't grant membership by itself, and a vacant post simply grants nothing — except `Leader`, whose vacancy and continuity are governed by the existing succession/heir system (see "Succession crises," above), which stays specific to the `Leader` post and doesn't extend to Advisor/Bodyguard/Negotiator.
 
-Each post's benefit scales with a skill the occupying character carries (see "Character skills," above): Advisor scales with **Management**, Bodyguard with **Melee combat**, Negotiator with **Socialization**. **Post capacity** joins the other per-kind/leadership-type capacity dimensions (see "Organization capacity," below) — one counter per post (Advisor/Bodyguard/Negotiator capacity), base by kind and leadership type, raised or lowered by perks like any other capacity:
+Each post's benefit scales with a skill the occupying character carries (see "Character skills," above): `Leader` and Advisor both scale with **Management** (the leader's contributes as the base of org Management, the Advisor's as an additive bonus on top — see "Org Management, a derived stat," below), Bodyguard with **Melee combat**, Negotiator with **Socialization**. **Post capacity** joins the other per-kind/leadership-type capacity dimensions (see "Organization capacity," below) — one counter per post, base by kind and leadership type, raised or lowered by perks like any other capacity:
 
-| Kind / leadership type | Advisor | Bodyguard | Negotiator |
-|---|---|---|---|
-| political / Monarch | 1 | 2 | 1 |
-| political / City Council | 2 | 1 | 1 |
-| business / Entrepreneur | 1 | 0 | 1 |
-| squad / Mercenary | 0 | 1 | 0 |
-| network | 0 | 0 | 1 |
-| military | 1 | 1 | 0 |
-| intelligence | 1 | 0 | 1 |
-| secret_police | 0 | 1 | 0 |
+| Kind / leadership type | Leader | Advisor | Bodyguard | Negotiator |
+|---|---|---|---|---|
+| political / Monarch | 1 | 1 | 2 | 1 |
+| political / City Council | ~9 | 2 | 1 | 1 |
+| business / Entrepreneur | 1 | 1 | 0 | 1 |
+| squad / Mercenary | 1 (override) | 0 | 1 | 0 |
+| network | 1 (override) | 0 | 0 | 1 |
+| military | ordinary leadership-type table (not overridden) | 1 | 1 | 0 |
+| intelligence | 1 (override) | 1 | 0 | 1 |
+| secret_police | 1 (override) | 0 | 1 | 0 |
 
 **Org Management, a derived stat.** An org's current Management capability is computed, not stored: the leader's own Management skill, plus a bonus from a filled Advisor post. What this aggregate feeds — which slots or future mechanics read it — is deliberately left open; only the computation and its display are in scope here.
 
@@ -126,10 +126,9 @@ This part of the org-kind/income model is still evolving — treat exact numbers
 - **Alliance capacity** — how many simultaneous alliances it can maintain.
 - **Enterprise-ownership capacity** — how many enterprises it can directly own. A political org's capacity here stays at 0 by design — it only ever reaches an enterprise through a subordinate business org (above), never a direct ownership edge.
 - **Agent-network capacity** — how many concurrent agent edges it can run (see "Agent networks," below).
-- **Post capacity** — one counter per named post (Advisor/Bodyguard/Negotiator — see "Organizational posts," above).
+- **Post capacity** — one counter per named post: `Leader`, Advisor, Bodyguard, Negotiator (see "Organizational posts," above). `Leader`'s base is the leadership-type table above, or 1 for the kinds with the single-handler override (see the leader-count override, above).
 - **Caravan capacity** — how many squads it can have toggled into Caravan mode.
 - **Property capacity** — how much property it can directly own overall (settlements, enterprises, vehicles combined — a ceiling above enterprise-ownership capacity specifically).
-- **Leader-seat capacity** — the leadership-type table above, or 1 for the kinds with the single-handler override (see the leader-count override, above).
 
 Each capacity's **base value is set by org kind and leadership type**, illustrated below for the archetypes discussed so far — the exact numbers are a tuning pass, not final:
 
@@ -168,7 +167,7 @@ A City-Council-led political org's subordinate-political and subordinate-busines
 | Matriarchy / Patriarchy *(mutually exclusive pair)* | council leadership | leadership seats restricted to one gender; a unity bonus — higher loyalty, more resistant to internal-faction splits | half the character pool is ineligible for any leadership seat, including succession |
 | Meritocratic Charter | any political org | succession always favors the most capable eligible character over the closest blood relative; higher new-leader legitimacy | smaller eligible pool per vacancy, so a seat can sit empty longer |
 | Hereditary Right | monarch leadership | succession always goes to a designated heir, removing the low-legitimacy "generated stranger" outcome entirely | no ability to pick a stronger successor over the bloodline |
-| Council of Equals | any org | +1 leader-seat capacity beyond what the leadership type normally allows | decisions requiring leader agreement resolve more slowly, and the added leader can disagree, occasionally blocking a decision the utility model would otherwise take |
+| Council of Equals | any org | +1 `Leader`-post capacity beyond what the leadership type normally allows | decisions requiring leader agreement resolve more slowly, and the added leader can disagree, occasionally blocking a decision the utility model would otherwise take |
 | Expansive Charter | political org | +2 control-slot capacity (more control slots it can hold as controller) | +1 tax-rate-sensitivity to loyalty — subordinates resent tax increases more |
 | Mercantile Network | business-kind org | +2 enterprise-ownership capacity | −1 control-slot capacity — a sprawling business struggles to also field hired muscle |
 | Free Company Charter | squad-kind org | +2 control-slot capacity (more squad-kind orgs it can keep on active hire at once) | +upkeep cost per hired squad — a bigger free company is a more expensive one |
