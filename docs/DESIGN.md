@@ -572,7 +572,7 @@ Three named level-of-detail tiers replace ad-hoc zoom thresholds:
 
 Tiers cross-fade smoothly into each other rather than popping. L2 geometry is procedurally generated per settlement, seeded consistently, and cached. L2 is the detailed scale that Scale-B combat and per-pawn weapon behaviors build on.
 
-**Pawn rendering: a capsule primitive at real-world scale.** A pawn renders as a simple capsule (no detailed humanoid mesh) — this is the visual primitive for every character/pawn at L2, not just a placeholder for one specific system. It's sized to the game's scale convention (1 unit ≈ 25 m — see Metric ruler overlay, below), so a pawn capsule, a building footprint, and the street width between buildings (see "City/feature placement," under Worldgen) all read at one consistent, believable relative scale — the same relationship the Metric ruler overlay's scale-audit panel checks.
+**Pawn rendering: a body sphere plus two floating hand spheres, at real-world scale.** A pawn renders as one sphere for the body, plus two smaller spheres floating beside it standing in for hands — no detailed humanoid mesh, no connecting limb geometry. This is the visual primitive for every character/pawn at L2, not just a placeholder for one specific system. It's sized to the game's scale convention (1 unit ≈ 25 m — see Metric ruler overlay, below), so a pawn, a building footprint, and the street width between buildings (see "City/feature placement," under Worldgen) all read at one consistent, believable relative scale — the same relationship the Metric ruler overlay's scale-audit panel checks.
 
 ### Squad inspector: owning organization
 Since every squad is also an organization with its own place in the ownership hierarchy, the squad inspector shows whether the selected squad is independent or belongs to a parent organization — rendered as either "Independent" or a clickable "Belongs to: `<parent org name>`" that jumps to that parent's own inspector panel.
@@ -1358,7 +1358,7 @@ World generation runs as a point-based procedural pipeline: point sets with attr
 A toggleable overlay (hotkey M, off by default) lets the player measure the world and check it against the game's scale convention (1 unit ≈ 25 m):
 - **Metric grid:** full-screen gridlines labeled in metres/kilometres, with spacing that adapts to zoom so the real-world span of the screen is always readable.
 - **Measure tool:** click-drag between two points for a live distance readout in metres/kilometres.
-- **Scale-audit panel:** reports rendered sizes converted to metres against the expected convention — pawn diameter (see "Pawn rendering: a capsule primitive at real-world scale," under LOD tiers, above), a building footprint, inter-building gap, and screen width — flagging anything that disagrees with the convention.
+- **Scale-audit panel:** reports rendered sizes converted to metres against the expected convention — pawn diameter (see "Pawn rendering: a body sphere plus two floating hand spheres, at real-world scale," under LOD tiers, above), a building footprint, inter-building gap, and screen width — flagging anything that disagrees with the convention.
 
 This is a player-facing tool as well as a design one: the abilities registry lists Ruler as a Quick action bound to the same hotkey, with click-to-place targeting and a cancel action.
 
