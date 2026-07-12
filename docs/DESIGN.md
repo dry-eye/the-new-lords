@@ -375,6 +375,19 @@ deterministic triangulation yields territory borders, road-candidate topology, a
 guarantee — it lets a region be regenerated in isolation, lets a bug be reproduced exactly by replaying a seed,
 and underpins any future debug tooling that regenerates part of the map on demand.
 
+### World shape — a sphere with continents and ocean
+
+The game world is a full sphere (a planet), not a flat plane — the camera orbits its surface freely (see
+"Camera controls," under UI, input & camera, below), and world generation places one or more procedurally
+generated continents on it, surrounded by ocean. Ocean is a geographic/visual backdrop only, not a
+movement-blocking mechanic — it carries no travel, combat, or logistics rule of its own. All playable
+territory — every settlement, zone, and road the pipeline below produces — sits on a single reachable
+landmass; if worldgen happens to place additional, separate continents, they're simply unreachable in v1 (no
+ship/naval transport exists to cross open ocean to them) — future work, not a gap to fill now. The
+zone-tessellation, road-network, and settlement-placement pipeline below is otherwise unchanged by this — it
+runs entirely within that one landmass's bounds, just projected onto a curved surface instead of an unbounded
+flat plane.
+
 ### Foundational content
 
 Some worldgen output is fixed up front as the base the rest of the system builds on:
@@ -408,6 +421,8 @@ The stages below run in order at world creation and consume each other's output:
 
 This table connects stages that were designed at different times into one traceable pipeline — it states the
 *wiring* (what feeds what), not new mechanics.
+
+**Streets between buildings, distinct from the inter-settlement road graph.** Stage 8's footprint-to-plan generation produces its own internal street network connecting building lots within a settlement — the Watabou-style technique inherently lays out streets alongside the lots it plans. This is a separate layer from Stage 7's road graph (which connects settlements to each other): together, a settlement gets both an outer road link to the rest of the world and an inner street layout between its own buildings.
 
 ### Terrain zones (Voronoi tessellation)
 
@@ -497,10 +512,10 @@ from this baseline seeding step, not from org-AI founding.
 
 ### Open questions
 
-- **World size & coordinate scale.** No section states the map's width/height in world units, or how world
-  units map to the existing pixel scale visible in wild-camp radii (radius 60, minimum distance 1800). This is
-  needed so seed-point density, grid cell size, and road-length budgets can be set deliberately instead of
-  guessed. Related: should map size scale with something (e.g. scenario size), or is it fixed?
+- **World size & coordinate scale.** No section states the planet's radius/circumference in world units, or how
+  world units map to the existing pixel scale visible in wild-camp radii (radius 60, minimum distance 1800). This
+  is needed so seed-point density, grid cell size, and road-length budgets can be set deliberately instead of
+  guessed. Related: should planet size scale with something (e.g. scenario size), or is it fixed?
 - **Worldgen × level-of-detail coupling.** The broader simulation scales detail with proximity to the player.
   Worldgen output (zone borders, road polylines, biome texture) is generated once at world creation and is
   otherwise static, so it isn't an obvious candidate for the same materialize/collapse treatment used
@@ -566,6 +581,8 @@ Three named level-of-detail tiers replace ad-hoc zoom thresholds:
 - **L2 — Detailed:** buildings, trees, parking, squads shown as individual pawns.
 
 Tiers cross-fade smoothly into each other rather than popping. L2 geometry is procedurally generated per settlement, seeded consistently, and cached. L2 is the detailed scale that Scale-B combat and per-pawn weapon behaviors build on.
+
+**Pawn rendering: a capsule primitive at real-world scale.** A pawn renders as a simple capsule (no detailed humanoid mesh) — this is the visual primitive for every character/pawn at L2, not just a placeholder for one specific system. It's sized to the game's scale convention (1 unit ≈ 25 m — see Metric ruler overlay, below), so a pawn capsule, a building footprint, and the street width between buildings (see "City/feature placement," under Worldgen) all read at one consistent, believable relative scale — the same relationship the Metric ruler overlay's scale-audit panel checks.
 
 ### Squad inspector: owning organization
 Since every squad is also an organization with its own place in the ownership hierarchy, the squad inspector shows whether the selected squad is independent or belongs to a parent organization — rendered as either "Independent" or a clickable "Belongs to: `<parent org name>`" that jumps to that parent's own inspector panel.
@@ -1319,11 +1336,9 @@ Hovering an entity link (settlement, org, or character) anywhere in the UI shows
 A text search over the tuning panel filters rows to those whose label or parameter key matches the query (case-insensitive), composing as an AND with the existing tag-filter chips. Groups that end up empty are hidden. The query persists across panel rebuilds.
 
 ### Camera controls (pan, zoom, rotation)
-Pan: middle-mouse-button drag, or left-mouse-button drag on empty space. Zoom: mouse wheel; the resulting camera scale drives the level-of-detail tier (see Glossary: tier) and is what the metric-ruler overlay reads and displays. On touch, a second finger switches single-finger panning into two-finger pinch-zoom-and-pan.
+The world is a sphere (see "World shape," under Worldgen, above), not a flat plane. Pan: dragging orbits the camera around the sphere's surface (middle-mouse-button drag, or left-mouse-button drag on empty space) rather than sliding across a flat plane. Zoom: mouse wheel; the resulting camera distance from the surface drives the level-of-detail tier (see Glossary: tier) and is what the metric-ruler overlay reads and displays. On touch, a second finger switches single-finger panning into two-finger pinch-zoom-and-pan.
 
-Rotation is not part of the design. The metric-ruler overlay and the building-interior view (BSP-generated room layout) both assume a fixed top-down/orthographic camera, so "no rotation" is the working assumption.
-
-**Open question:** should camera rotation be added later (for example, for the building-interior tier), or is no-rotation a final decision? Needs to be ratified either way.
+**Rotation, resolved.** Free camera rotation around the planet is part of the design — this replaces the earlier "no rotation" placeholder and closes what used to be an open question here. Rotation applies at the world/strategic tiers, orbiting the sphere; the building-interior sub-LOD (see "Enter buildings," above) keeps its own fixed top-down/orthographic camera once you're inside a specific building, since the BSP-generated room layout and the metric-ruler's scale-audit panel both depend on a stable, non-rotating view at that one sub-tier.
 
 ### HUD layout and panel placement
 Inspector panels dock as a fixed group in the top-right of the screen. No overall HUD region map is defined yet — where a time-control/pause bar, resource ticker, notification tray, or minimap would live is unspecified, and no minimap exists in the design.
@@ -1351,7 +1366,7 @@ World generation runs as a point-based procedural pipeline: point sets with attr
 A toggleable overlay (hotkey M, off by default) lets the player measure the world and check it against the game's scale convention (1 unit ≈ 25 m):
 - **Metric grid:** full-screen gridlines labeled in metres/kilometres, with spacing that adapts to zoom so the real-world span of the screen is always readable.
 - **Measure tool:** click-drag between two points for a live distance readout in metres/kilometres.
-- **Scale-audit panel:** reports rendered sizes converted to metres against the expected convention — pawn diameter, a building footprint, inter-building gap, and screen width — flagging anything that disagrees with the convention.
+- **Scale-audit panel:** reports rendered sizes converted to metres against the expected convention — pawn diameter (see "Pawn rendering: a capsule primitive at real-world scale," under LOD tiers, above), a building footprint, inter-building gap, and screen width — flagging anything that disagrees with the convention.
 
 This is a player-facing tool as well as a design one: the abilities registry lists Ruler as a Quick action bound to the same hotkey, with click-to-place targeting and a cancel action.
 
