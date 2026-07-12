@@ -2,7 +2,7 @@
 
 `DESIGN.md` describes only the game and its simulation — no engine, library, or algorithm names. This file is the deliberately separate place for "what could actually build this": specific existing tools whose own systems already solve a problem `DESIGN.md` describes, kept here as an implementation inspiration rather than folded into the design itself.
 
-The throughline across all three entries below is Unreal Engine. The working idea is that the engine could be built leaning on these existing, well-proven integrations rather than each being reinvented from scratch — they already work well at exactly the jobs `DESIGN.md` asks for, and the design goal is to reach the same player-facing outcomes they demonstrate, not necessarily their exact internals.
+The throughline across most of the entries below is Unreal Engine — the working idea is that the engine could be built leaning on these existing, well-proven integrations rather than each being reinvented from scratch, since they already work well at exactly the jobs `DESIGN.md` asks for, and the design goal is to reach the same player-facing outcomes they demonstrate, not necessarily their exact internals. One entry (phiresky/procedural-cities, below) is a standalone reference rather than an Unreal system.
 
 ## PCG / PCGEx — Worldgen
 
@@ -16,6 +16,7 @@ Specific techniques that map onto specific `DESIGN.md` facts:
 - **Douglas-Peucker simplification + spline smoothing** — turning a raw routed path into a natural-looking road polyline.
 - **Marching squares over a nearest-seed label grid** — extracting clean zone borders from the underlying tessellation.
 - **Watabou-style minimum-area oriented bounding box + footprint-to-plan generation** — the specific technique (from Oleg Dolya's "Watabou" city/dungeon generators) behind settlement building-lot layout and the street network between those lots.
+- **[phiresky/procedural-cities](https://github.com/phiresky/procedural-cities)** — a further reference for the same city/building-layout generation the bullet above targets: a survey-and-implementation project covering tensor-field-guided street-network generation and shape-grammar building generation, drawing on the same academic lineage (Parish & Müller-style road/parcel generation, Müller et al. procedural building shape grammars). Standalone, not an Unreal system.
 
 ## StateTree — Layered squad/leader behavior
 
