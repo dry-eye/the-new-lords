@@ -61,6 +61,25 @@ Player Mode's session-start picker (choose an existing NPC leader) and the Exper
 
 **Paid interaction unlocks — a slot upgrade, not a new mechanic.** Any existing control slot (most commonly a hired squad-org) can be upgraded piecemeal by paying an additional one-time fee to add a specific extra right on top of the base relationship — direct tactical command in battle (rather than only issuing high-level orders), the right to disband the occupant outright, or the right to reassign it to a different controller without its consent. Each right is its own toggle with its own price, not an all-or-nothing tier — a player can pay for battlefield command without also buying disband rights. This turns "hire a mercenary company" from a single binary relationship into a menu: hire cheaply for basic obedience, then spend further to buy the specific extra leverage a given campaign needs.
 
+**Who can reassign a controlled org's leader or posts.** Any control-kind edge — a control slot or the parent/child hierarchy link — grants its controller the right to reassign the controlled org's leader and posts (see "Organizational posts," below), but only when the controlled org's kind is `squad`, `business`, `political`, `military`, or `intelligence`. Alliance and influence edges never grant this right, regardless of target kind; `network` and `secret_police` targets are excluded entirely — their single-handler model doesn't take an outside-imposed reassignment. Reassigning a leader this way triggers the same consequences as any other leader change (loyalty shock, rebellion roll — see "Succession crises," above).
+
+**Organizational posts.** Beyond the leader seat, an org can fill a small set of named posts from among its own members — **Advisor**, **Bodyguard**, **Negotiator** — the same three posts for every org kind and leadership type. Each post is filled from an existing member (the same pool the heir picker draws from); filling one doesn't grant membership by itself, and a vacant post simply grants nothing.
+
+Each post's benefit scales with a skill the occupying character carries (see "Character skills," above): Advisor scales with **Management**, Bodyguard with **Melee combat**, Negotiator with **Socialization**. **Post capacity** joins the other per-kind/leadership-type capacity dimensions (see "Organization capacity," below) — one counter per post (Advisor/Bodyguard/Negotiator capacity), base by kind and leadership type, raised or lowered by perks like any other capacity:
+
+| Kind / leadership type | Advisor | Bodyguard | Negotiator |
+|---|---|---|---|
+| political / Monarch | 1 | 2 | 1 |
+| political / City Council | 2 | 1 | 1 |
+| business / Entrepreneur | 1 | 0 | 1 |
+| squad / Mercenary | 0 | 1 | 0 |
+| network | 0 | 0 | 1 |
+| military | 1 | 1 | 0 |
+| intelligence | 1 | 0 | 1 |
+| secret_police | 0 | 1 | 0 |
+
+**Org Management, a derived stat.** An org's current Management capability is computed, not stored: the leader's own Management skill, plus a bonus from a filled Advisor post. What this aggregate feeds — which slots or future mechanics read it — is deliberately left open; only the computation and its display are in scope here.
+
 **Observing the graph.** Inspecting organizations one at a time (an organization's own controlled slots, or one specific other organization) is not enough to see the web of relationships — that needs a single view of the graph itself. A dedicated Organization Graph view (nodes = organizations positioned by rough political proximity, edges = the hierarchy link plus slots, styled by kind — a thin plain line for the parent/child hierarchy edge, solid for control, dashed for influence/investment, a double line for alliance, a dotted line for an agent edge (see "Agent networks," above) — with any edge currently flagged `covert` (a hierarchy link, an influence slot, or an agent edge) hidden entirely except per the Viewpoint control, below) makes the web of relationships legible at a glance, and doubles as a navigation surface — clicking a node jumps the camera/inspector to that organization, following the clickable-instance convention (see UI conventions). Not yet decided: whether this is a standalone full-screen view, a mode of the inspector panel, or both.
 
 **Organization Graph — property nodes and view filters, resolved.** The graph's nodes aren't only organizations — an org's owned property (its settlements, enterprises; see "Property — a first-class type," above) can also appear as a node, attached to its owning org by a distinct ownership edge (its own visual style, separate from the six edge kinds above, since ownership is a different relationship: passive, single-owner, not a management slot). Because most political orgs own a settlement and most business orgs own an enterprise, showing property this way means an org with zero slot-relationships to any other org is still very often *not* a bare, edgeless dot — it at least connects down to what it owns. Three view-only toggles (observation tooling, not gameplay — they don't change simulation state, only what's currently drawn) make this legible instead of overwhelming:
@@ -107,6 +126,7 @@ This part of the org-kind/income model is still evolving — treat exact numbers
 - **Alliance capacity** — how many simultaneous alliances it can maintain.
 - **Enterprise-ownership capacity** — how many enterprises it can directly own. A political org's capacity here stays at 0 by design — it only ever reaches an enterprise through a subordinate business org (above), never a direct ownership edge.
 - **Agent-network capacity** — how many concurrent agent edges it can run (see "Agent networks," below).
+- **Post capacity** — one counter per named post (Advisor/Bodyguard/Negotiator — see "Organizational posts," above).
 - **Caravan capacity** — how many squads it can have toggled into Caravan mode.
 - **Property capacity** — how much property it can directly own overall (settlements, enterprises, vehicles combined — a ceiling above enterprise-ownership capacity specifically).
 - **Leader-seat capacity** — the leadership-type table above, or 1 for the kinds with the single-handler override (see the leader-count override, above).
@@ -931,6 +951,11 @@ A settlement's population is two layers over one headcount: the flat **people** 
 - **Going dormant and returning:** a materialized character who holds no role and has no history the player or simulation cares about can later collapse back to anonymous, restoring its trait contribution to the pool (the exact reverse of the draw above) — freeing simulation budget for population nobody's paying attention to. A character who holds a role (org leader, heir, slot occupant, enterprise owner) or has accumulated real history instead goes dormant, not anonymous: its record is preserved and resumes unchanged the next time it's needed, rather than being re-rolled from the pool.
 
 A character's age is a flavor stat only (default: adult; demographic reports bucket child/adult/elder) — it does not drive aging or death-by-age mechanics. A character's settlement affiliation is an explicit residence link assigned at birth/recruitment, independent of which org owns the character — settlement demographics count residents by that link (a character with no residence link is uncounted).
+
+### Character skills
+Four skills sit alongside the ten personality traits (Just, Generous, Brave, Patient, Content, Cruel, Greedy, Wrathful, Cunning, Ambitious) on every character: **Melee combat**, **Shooting**, **Management**, **Socialization**. Skills are generated the same way traits are — part of the latent pool's statistical profile, materializing with the character exactly like a trait does (see "Settlement population," above), not a separate progression system. Traits layer an additive modifier onto their related skill (a tuning pass, not fixed here) rather than replacing it.
+
+Skills currently drive organizational posts only (see "Organizational posts," below) — they don't yet feed Scale-B combat's to-hit/damage formula (see "Scale-B pawn damage resolution," above), which still reads from generic squad strength. Extending skills into combat is a natural future step, not ruled out, just not wired in yet.
 
 ---
 
