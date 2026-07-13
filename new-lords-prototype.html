@@ -2045,13 +2045,30 @@ function accMesh(acc){
   return new THREE.Mesh(g, new THREE.MeshLambertMaterial({vertexColors:true}));
 }
 const BOX=new THREE.BoxGeometry(1,1,1);
-const CYL=new THREE.CylinderGeometry(1,1,1,10,1);
 const SPH=new THREE.SphereGeometry(1,10,8);
 const CONE=new THREE.ConeGeometry(1,1,7);
 const DISK=new THREE.CircleGeometry(1, 44);
 
+/* one flying cat head (sphere + ears + muzzle), sized in surface units; the group is
+   placed and oriented per frame by stepWalkers. Shared primitives, per-head material. */
+function makeCatHead(fur){
+  const H=0.00082;
+  const head=fur.clone().offsetHSL(0,0,0.05);
+  const matH=new THREE.MeshLambertMaterial({color:head});
+  const matM=new THREE.MeshLambertMaterial({color:head.clone().offsetHSL(0,-0.05,0.10)});
+  const g=new THREE.Group();
+  const part=(geo,mat,px,py,pz,sx,sy,sz)=>{
+    const m=new THREE.Mesh(geo,mat); m.position.set(px,py,pz); m.scale.set(sx,sy,sz); g.add(m);
+  };
+  part(SPH, matH,  0,      0,      0,      H*0.24,H*0.22,H*0.24);   // head — +Y up, +Z forward
+  part(CONE,matH, -H*0.12, H*0.16, 0,      H*0.08,H*0.16,H*0.08);  // left ear
+  part(CONE,matH,  H*0.12, H*0.16, 0,      H*0.08,H*0.16,H*0.08);  // right ear
+  part(SPH, matM,  0,     -H*0.02, H*0.18, H*0.08,H*0.06,H*0.08);  // muzzle
+  return g;
+}
+
 /* --- assemble one town on the sphere --- */
-let cityCache=new Map(), cityLive=new Set();
+let cityCache=new Map(), cityLive=new Set(), frameDtMs=16;
 function buildCity(st){
   const town=subdivideCity(st);
   const cfg=town.cfg, rr=town.rr;
@@ -2077,7 +2094,6 @@ function buildCity(st){
     return M.clone();
   };
   const scale=(m,x,y,z)=>m.multiply(new THREE.Matrix4().makeScale(x,y,z));
-  const move=(m,x,y,z)=>m.multiply(new THREE.Matrix4().makeTranslation(x,y,z));
 
   const group=new THREE.Group();
   const col=new THREE.Color();
@@ -2127,53 +2143,69 @@ function buildCity(st){
   }
   group.add(accMesh(bAcc));
 
-  // 4. residents: capsule bodies, cat heads — standing in the streets, not on roofs
-  const people=[];
-  const cAcc=MeshAcc();
-  const residents=S.chars.filter(c=>c.homeId===st.id && c.alive).slice(0,26);
-  const blocks=town.blocks.length? town.blocks : [{c:{x:0,y:0},u:{x:1,y:0},hw:0.3,hh:0.3,den:1}];
+  // 4. residents: flying cat heads that WALK the streets — movable, stepped per frame
+  //    (stepWalkers). Streets are the corridors between blocks; a head drifts between
+  //    points on block edges. No capsule body — just the floating head.
+  const walkers=[];
+  const RW=Math.random;                       // wander is cosmetic — kept out of the seeded sim stream
+  const blocks=town.blocks.length? town.blocks : [{c:{x:0,y:0},u:{x:1,y:0},hw:0.3,hh:0.3,den:1,d:2}];
+  const streetPoint=(b, side, t)=>{           // a point on the street just off a block edge
+    const u=b.u, v={x:-b.u.y, y:b.u.x};
+    const edge=roadWidth(b.d||2)*0.30 + 0.010;
+    let lx,ly;
+    if(side===0){lx=b.hw*t; ly= b.hh+edge;}
+    else if(side===1){lx=b.hw*t; ly=-(b.hh+edge);}
+    else if(side===2){lx= b.hw+edge; ly=b.hh*t;}
+    else {lx=-(b.hw+edge); ly=b.hh*t;}
+    return {x:b.c.x+u.x*lx+v.x*ly, y:b.c.y+u.y*lx+v.y*ly};
+  };
+  const nextWaypoint=()=>{                     // a random reachable street point in this town
+    for(let k=0;k<8;k++){
+      const b=blocks[Math.floor(RW()*blocks.length)];
+      const p=streetPoint(b, Math.floor(RW()*4), (RW()-0.5)*1.2);
+      if(Math.hypot(p.x,p.y)<1.0) return p;
+    }
+    return {x:0,y:0};
+  };
+  const residents=S.chars.filter(c=>c.homeId===st.id && c.alive).slice(0,48);
   residents.forEach((c,i)=>{
     const b=blocks[(c.id*5+i)%blocks.length];
-    const u=b.u, v={x:-b.u.y, y:b.u.x};
-    const s=(c.id%4);
-    const edge=roadWidth(b.d||2)*0.30 + 0.010;
-    const off=(rr()-0.5)*0.6;
-    let lx,ly;
-    if(s===0){lx=b.hw*off*1.6; ly= b.hh+edge;}
-    else if(s===1){lx=b.hw*off*1.6; ly=-(b.hh+edge);}
-    else if(s===2){lx= b.hw+edge; ly=b.hh*off*1.6;}
-    else {lx=-(b.hw+edge); ly=b.hh*off*1.6;}
-    const px=b.c.x+u.x*lx+v.x*ly, py=b.c.y+u.y*lx+v.y*ly;
-    if(Math.hypot(px,py)>1.02) return;
-    const ang=(c.id%360)/360*Math.PI*2;
+    const start=streetPoint(b, c.id%4, ((c.id%7)/7-0.5)*1.2);
+    if(Math.hypot(start.x,start.y)>1.0){ start.x=0; start.y=0; }
     const isLeader=!!c.ledOrgId, isPlayer=c.id===S.playerCharId;
     const fur = isPlayer? new THREE.Color(0xC89B3C)
               : isLeader? new THREE.Color(0xEADCB6)
               : new THREE.Color().setHSL(0.07+((c.id%9)/9)*0.06, 0.18+((c.id%3)*0.10), 0.42+((c.id%5)/5)*0.28);
-    const H=0.00082;
-    let m=orient(px,py,H*0.40,0); m=orient(px,py,H*0.40);
-    scale(m, H*0.19, H*0.56, H*0.19); accGeo(cAcc, CYL, m, fur);            // body
-    m=orient(px,py,H*0.14); scale(m, H*0.19, H*0.19, H*0.19); accGeo(cAcc, SPH, m, fur);  // rounded base
-    const head=fur.clone().offsetHSL(0,0,0.05);
-    m=orient(px,py,H*0.78, ang); scale(m, H*0.22, H*0.20, H*0.22); accGeo(cAcc, SPH, m, head);
-    for(const e of [-1,1]){                                                  // ears
-      const em=orient(px,py,H*0.96, ang);
-      move(em, e*H*0.12, 0, 0);
-      scale(em, H*0.075, H*0.15, H*0.075);
-      accGeo(cAcc, CONE, em, head);
-    }
-    const sn=orient(px,py,H*0.76, ang); move(sn,0,0,H*0.18);                 // muzzle
-    scale(sn, H*0.075, H*0.06, H*0.075);
-    accGeo(cAcc, SPH, sn, head.clone().offsetHSL(0,-0.05,0.10));
-    const tl=orient(px,py,H*0.44, ang); move(tl,0,0,-H*0.20);                // tail
-    scale(tl, H*0.045, H*0.34, H*0.045);
-    accGeo(cAcc, CYL, tl, fur);
-    people.push({id:c.id, dir:dirOf(px,py)});
+    const head=makeCatHead(fur);
+    head.matrixAutoUpdate=false;
+    group.add(head);
+    walkers.push({ id:c.id, mesh:head, x:start.x, y:start.y, tgt:nextWaypoint(),
+                   face:(c.id%360)/360*Math.PI*2, spd:0.09+((c.id%5)/5)*0.07,
+                   phase:(c.id%12)/12*6.283, dir:dirOf(start.x,start.y) });
   });
-  if(people.length) group.add(accMesh(cAcc));
 
   root.add(group);
-  return {group, people, st};
+  return {group, walkers, st, orient, dirOf, nextWaypoint};
+}
+/* advance one town's walking cat heads along the streets by one frame's worth of time */
+function stepWalkers(c, dtMs){
+  if(!c.walkers || !c.walkers.length) return;
+  const H=0.00082, sp = S.paused? 0 : S.speed;
+  for(const w of c.walkers){
+    if(sp>0){
+      const dx=w.tgt.x-w.x, dy=w.tgt.y-w.y, d=Math.hypot(dx,dy);
+      if(d<0.02){ w.tgt=c.nextWaypoint(); }
+      else{
+        const mv=Math.min(d, w.spd*dtMs*0.001*sp);
+        w.x+=dx/d*mv; w.y+=dy/d*mv; w.face=Math.atan2(dy,dx);
+      }
+      w.phase+=dtMs*0.004*sp;
+    }
+    const bob=Math.sin(w.phase)*(H*0.28);
+    w.mesh.matrix.copy(c.orient(w.x, w.y, w.face, H*0.85 + bob));
+    w.mesh.matrixWorldNeedsUpdate=true;
+    w.dir=c.dirOf(w.x, w.y);
+  }
 }
 function updateCityLOD(){
   const show = camDist < 1.30;
@@ -2187,8 +2219,10 @@ function updateCityLOD(){
   }
   for(const st of near) if(!cityCache.has(st.id)) cityCache.set(st.id, buildCity(st));
   cityLive = new Set(near.map(s=>s.id));
-  for(const c of cityCache.values())
-    for(const p of c.people) picks.push({type:'char', id:p.id, dir:p.dir, px:0.022});
+  for(const c of cityCache.values()){
+    stepWalkers(c, frameDtMs);
+    for(const w of c.walkers) picks.push({type:'char', id:w.id, dir:w.dir, px:0.022});
+  }
 }
 
 /* --- residents: shown only when you're actually standing over a town --- */
@@ -3162,7 +3196,7 @@ function buildStartScreen(){
 let acc=0, last=performance.now(), tickAlpha=0;
 const STEP=420;                       // one simulation step, in ms of game time
 function frame(now){
-  const dt=Math.min(100, now-last); last=now;
+  const dt=Math.min(100, now-last); last=now; frameDtMs=dt;
   if(!S.paused){
     acc+=dt*S.speed;
     let guard=0;
