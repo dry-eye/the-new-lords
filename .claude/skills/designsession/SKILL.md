@@ -23,11 +23,13 @@ Open with one short line: the count and the titles, e.g. «Ти в дизайн-
 
 ## 3. Record the resolution
 
+Once the interview's load-bearing questions are answered, the design is resolved — **record it directly and never pause to ask the user for a "go" first.** Summarize the agreed design in a few lines, then write it.
+
 Writing into `docs/DESIGN.md` follows **`sync-design` (Trigger 1) exactly** — same consistency checks, voice, self-review, and isolated commit. Don't restate those rules here; follow that skill.
 
 ## 4. Hand the issue back
 
-Once the design is resolved and committed:
+**Always file the task** — never end a resolved design without a tracked issue. Once the design is resolved and committed:
 - Comment the resolution summary on the issue (what was decided + the DESIGN.md section).
 - `gh issue edit <N> --remove-label "status:to-design" --add-label "status:to-do"`.
 - Spawned new work? File new issues — `status:to-do` if clear, `status:to-design` if it still needs its own decision.
