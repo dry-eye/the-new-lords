@@ -1,0 +1,3137 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New Lords — Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Spectral:wght@400;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#080B12;
+    --panel:#101624;
+    --panel-2:#0B1120;
+    --rule:#243049;
+    --text:#CBD5E6;
+    --dim:#7B88A6;
+    --brass:#C89B3C;
+    --brass-dim:#8A6C2C;
+    --good:#5FB58A;
+    --bad:#C4574F;
+    --covert:#8B5FB5;
+    --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+    --serif:'Spectral',Iowan Old Style,Palatino,serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--ink);color:var(--text);
+    font-family:var(--mono);font-size:12px;overflow:hidden;-webkit-font-smoothing:antialiased}
+  canvas{display:block}
+  #scene{position:fixed;inset:0}
+  a,.link{color:var(--brass);text-decoration:none;border-bottom:1px dotted var(--brass-dim);cursor:pointer}
+  .link:hover{color:#EBC461;border-bottom-style:solid}
+  button{font-family:var(--mono);font-size:11px;background:#182136;color:var(--text);
+    border:1px solid var(--rule);padding:4px 8px;cursor:pointer;border-radius:2px}
+  button:hover{border-color:var(--brass-dim);color:#fff}
+  button:disabled{opacity:.35;cursor:default}
+  button.on{background:var(--brass);color:#12161F;border-color:var(--brass)}
+  input,select{font-family:var(--mono);font-size:11px;background:#0A0F1B;color:var(--text);
+    border:1px solid var(--rule);padding:3px 5px;border-radius:2px}
+  input:focus,select:focus,button:focus-visible{outline:1px solid var(--brass);outline-offset:1px}
+
+  /* ---- HUD frame ---- */
+  #topbar{position:fixed;top:0;left:0;right:0;height:38px;display:flex;align-items:center;gap:10px;
+    padding:0 12px;background:linear-gradient(180deg,rgba(8,11,18,.95),rgba(8,11,18,.55));
+    border-bottom:1px solid var(--rule);z-index:10}
+  .brand{font-family:var(--serif);font-size:16px;letter-spacing:.08em;color:#E7DCC0}
+  .brand span{color:var(--brass)}
+  .sep{width:1px;height:20px;background:var(--rule)}
+  .stat{color:var(--dim)}
+  .stat b{color:var(--text);font-weight:500}
+
+  #inspector{position:fixed;top:48px;right:10px;width:330px;max-height:calc(100vh - 200px);
+    overflow-y:auto;background:rgba(16,22,36,.94);border:1px solid var(--rule);
+    backdrop-filter:blur(6px);z-index:9;border-radius:3px}
+  #inspector::-webkit-scrollbar{width:6px}
+  #inspector::-webkit-scrollbar-thumb{background:var(--rule)}
+  .ihead{display:flex;justify-content:space-between;align-items:baseline;padding:9px 11px;
+    border-bottom:1px solid var(--rule);background:var(--panel-2);position:sticky;top:0}
+  .ikind{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--brass)}
+  .iname{font-family:var(--serif);font-size:17px;color:#EFE6D2;margin-top:2px}
+  .isec{padding:8px 11px;border-bottom:1px solid rgba(36,48,73,.6)}
+  .isec h4{margin:0 0 6px;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);font-weight:500}
+  .row{display:flex;justify-content:space-between;gap:8px;padding:2px 0}
+  .row .k{color:var(--dim)}
+  .row .v{text-align:right}
+  .bar{height:3px;background:#1A2439;margin-top:3px;position:relative;overflow:hidden}
+  .bar i{position:absolute;left:0;top:0;bottom:0;background:var(--brass);display:block}
+  .chip{display:inline-block;padding:1px 5px;border:1px solid var(--rule);border-radius:2px;
+    color:var(--dim);font-size:10px;margin:1px 2px 1px 0}
+  .tbl{width:100%;border-collapse:collapse}
+  .tbl td{padding:2px 0;vertical-align:top}
+  .tbl td.n{text-align:right;font-variant-numeric:tabular-nums}
+  .pos{color:var(--good)}.neg{color:var(--bad)}
+  .breadcrumb{font-size:10px;color:var(--dim);padding:6px 11px;border-bottom:1px solid rgba(36,48,73,.6)}
+  .empty{color:var(--dim);font-style:italic}
+
+  #log{position:fixed;left:10px;bottom:10px;width:340px;height:150px;overflow-y:auto;
+    background:rgba(16,22,36,.9);border:1px solid var(--rule);padding:7px 9px;z-index:9;border-radius:3px}
+  #log::-webkit-scrollbar{width:6px}
+  #log::-webkit-scrollbar-thumb{background:var(--rule)}
+  #log div{padding:1px 0;color:var(--dim);line-height:1.4}
+  #log b{color:var(--text);font-weight:500}
+  #log .t{color:var(--brass-dim);margin-right:5px}
+
+  #graph{position:fixed;inset:38px 0 0 0;background:rgba(8,11,18,.97);z-index:8;display:none}
+  #graphCanvas{position:absolute;top:0;left:0;width:100%;height:100%;display:block;cursor:grab}
+  #graphCanvas:active{cursor:grabbing}
+  #gTip{position:absolute;display:none;z-index:3;pointer-events:none;background:rgba(11,17,32,.97);
+    border:1px solid var(--rule);border-left:2px solid var(--brass);padding:6px 9px;border-radius:2px;
+    max-width:240px;line-height:1.5}
+  #gTip b{display:block;font-family:var(--serif);font-size:14px;color:#EFE6D2}
+  #gTip .tk{display:block;color:var(--dim);font-size:10px}
+  #gCount{position:absolute;top:12px;right:14px;color:var(--dim);background:rgba(16,22,36,.9);
+    border:1px solid var(--rule);padding:6px 9px;border-radius:3px;line-height:1.6;text-align:right}
+  #graphBar{position:absolute;top:10px;left:12px;display:flex;gap:8px;align-items:center;
+    background:rgba(16,22,36,.9);border:1px solid var(--rule);padding:6px 9px;border-radius:3px}
+  #legend{position:absolute;bottom:12px;left:12px;background:rgba(16,22,36,.9);
+    border:1px solid var(--rule);padding:8px 10px;border-radius:3px;color:var(--dim);line-height:1.7}
+  #legend s{display:inline-block;width:26px;height:0;vertical-align:middle;margin-right:6px;
+    border-top:2px solid var(--dim)}
+
+  #econ{position:fixed;left:10px;top:48px;width:250px;background:rgba(16,22,36,.92);
+    border:1px solid var(--rule);z-index:9;border-radius:3px}
+  #econ h4{margin:0;padding:8px 10px;font-size:9px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--dim);font-weight:500;border-bottom:1px solid var(--rule);display:flex;justify-content:space-between}
+  #econBody{padding:8px 10px}
+  #econBody .rline{display:grid;grid-template-columns:52px 1fr 46px;gap:6px;align-items:center;padding:2px 0}
+  #econBody .rname{color:var(--text)}
+  #econBody .rbar{height:4px;background:#1A2439;position:relative}
+  #econBody .rbar i{position:absolute;top:0;bottom:0;left:0}
+  #econBody .rnum{text-align:right;font-variant-numeric:tabular-nums;color:var(--dim)}
+
+  #start{position:fixed;inset:0;background:rgba(5,7,12,.94);z-index:20;display:flex;
+    align-items:center;justify-content:center}
+  #startCard{width:560px;max-height:80vh;overflow:auto;background:var(--panel);
+    border:1px solid var(--rule);padding:22px 24px;border-radius:3px}
+  #startCard h1{font-family:var(--serif);font-size:30px;margin:0 0 2px;color:#EFE6D2;letter-spacing:.04em}
+  #startCard h1 span{color:var(--brass)}
+  #startCard p{color:var(--dim);line-height:1.6;margin:6px 0 16px}
+  .leader{display:flex;justify-content:space-between;align-items:center;padding:7px 9px;
+    border:1px solid var(--rule);margin-bottom:5px;cursor:pointer;border-radius:2px}
+  .leader:hover{border-color:var(--brass);background:#161E31}
+  .leader .lname{font-family:var(--serif);font-size:14px;color:#EFE6D2}
+  .leader .lorg{color:var(--dim);font-size:10px}
+  .hint{position:fixed;bottom:10px;right:10px;color:#4C5975;z-index:9;text-align:right;line-height:1.6}
+  #tip{position:fixed;display:none;z-index:12;pointer-events:none;background:rgba(11,17,32,.96);
+    border:1px solid var(--rule);border-left:2px solid var(--brass);padding:6px 9px;border-radius:2px;
+    max-width:230px;line-height:1.5;box-shadow:0 6px 18px rgba(0,0,0,.45)}
+  #tip b{color:#EFE6D2;font-weight:600;display:block;font-family:var(--serif);font-size:14px}
+  #tip .tk{display:block;color:var(--dim);font-size:10px}
+  #keymap{position:fixed;right:10px;bottom:170px;z-index:9;background:rgba(16,22,36,.9);
+    border:1px solid var(--rule);border-radius:3px;padding:8px 10px;color:var(--dim);line-height:1.75}
+  #loading{position:fixed;inset:0;z-index:25;display:none;align-items:center;justify-content:center;
+    background:rgba(5,7,12,.92);font-family:var(--serif);font-size:20px;color:#E7DCC0;letter-spacing:.06em}
+  #keymap i{display:inline-block;width:14px;height:14px;vertical-align:-3px;margin-right:6px;
+    background:currentColor;-webkit-mask-size:contain;mask-size:contain;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat}
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div id="topbar">
+  <div class="brand">NEW <span>LORDS</span></div>
+  <div class="sep"></div>
+  <button id="btnPause">▮▮</button>
+  <button id="spd1" class="spd on">1×</button>
+  <button id="spd3" class="spd">3×</button>
+  <button id="spd8" class="spd">8×</button>
+  <div class="sep"></div>
+  <span class="stat">рік <b id="stYear">1</b></span>
+  <span class="stat">орги <b id="stOrgs">0</b></span>
+  <span class="stat">сквади <b id="stSquads">0</b></span>
+  <span class="stat">каравани <b id="stCaravans">0</b></span>
+  <span class="stat">населення <b id="stPop">0</b></span>
+  <div class="sep"></div>
+  <button id="btnGraph">Граф організацій</button>
+  <div class="sep"></div>
+  <span class="stat">seed</span>
+  <input id="seedInput" size="7" value="1874">
+  <button id="btnRegen">Згенерувати світ</button>
+</div>
+
+<div id="econ">
+  <h4><span>Ринок — <span id="econTitle">світ</span></span><span id="econSub"></span></h4>
+  <div id="econBody"></div>
+</div>
+
+<div id="tip"></div>
+<div id="inspector"></div>
+<div id="log"></div>
+
+<div id="keymap"></div>
+<div class="hint">
+  клік — вибрати · тягни — обертати · колесо — зум (Ctrl+колесо — точний)<br>
+  стрілки — точне довертання · +/− — зум · пробіл — пауза<br>
+  наведи на іконку — підказка · наблизь впритул — вулиці, будинки й мешканці
+</div>
+
+<div id="graph">
+  <canvas id="graphCanvas"></canvas>
+  <div id="gTip"></div>
+  <div id="gCount"></div>
+  <div id="graphBar">
+    <button id="gProp" class="on">Показувати власність</button>
+    <button id="gFocus">Фокус на вибраному</button>
+    <button id="gBig" class="on">Лише значимі</button>
+    <span class="stat">точка зору</span>
+    <select id="gView"><option value="spectator">Spectator (всевидець)</option></select>
+    <button id="gClose">Закрити</button>
+  </div>
+  <div id="legend">
+    <div><s style="border-top-width:1px;border-color:#4C5975"></s>ієрархія (батько → підлеглий)</div>
+    <div><s style="border-color:#C89B3C"></s>control — слот команди</div>
+    <div><s style="border-top-style:dashed;border-color:#5FB58A"></s>influence / investment</div>
+    <div><s style="border-top-style:double;border-top-width:3px;border-color:#6E9BD8"></s>alliance</div>
+    <div><s style="border-top-style:dotted;border-color:#8B5FB5"></s>covert (видно лише власнику)</div>
+    <div><s style="border-top-style:dotted;border-color:#39465F"></s>власність (org → property)</div>
+  </div>
+</div>
+
+<div id="start"><div id="startCard"></div></div>
+<div id="loading"><div>Генерую планету<span class="dots">…</span></div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* =====================================================================
+   NEW LORDS — systemic prototype
+   Vertical slice of DESIGN.md: spherical world, organizations as the
+   spine, a closed-loop economy where every resource is consumed, caravans
+   run by trade houses that close deficits and scale, minimal combat,
+   and a selection-driven inspector.
+   ===================================================================== */
+
+/* ---------- deterministic RNG ---------- */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
+  t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;}}
+let RNG=mulberry32(1874);
+const rnd=()=>RNG();
+const rint=(a,b)=>a+Math.floor(RNG()*(b-a+1));
+const pick=arr=>arr[Math.floor(RNG()*arr.length)];
+const chance=p=>RNG()<p;
+
+/* ---------- content tables ---------- */
+const RES = {
+  food:    {label:'Їжа',    base:4,  color:'#7FB77E'},
+  wood:    {label:'Дерево', base:3,  color:'#9C7A4E'},
+  ore:     {label:'Руда',   base:5,  color:'#8894AC'},
+  steel:   {label:'Сталь',  base:11, color:'#B9C4D6'},
+  tools:   {label:'Інстр.', base:16, color:'#C89B3C'},
+  weapons: {label:'Зброя',  base:24, color:'#C4574F'},
+};
+const RKEYS = Object.keys(RES);
+
+/* Every enterprise: consumes something, produces something, and burns
+   tools. Every output is consumed somewhere. Nothing is a dead end. */
+const ENT = {
+  farm:        {label:'Ферма',        zone:['plain','forest','desert'], inside:false, out:{food:4.0}, in:{}},
+  lumber:      {label:'Лісопилка',    zone:['forest','plain'], inside:false, out:{wood:4.5},   in:{}},
+  mine:        {label:'Шахта',        zone:['mountain','desert'], inside:false, out:{ore:3.5},  in:{}},
+  forge:       {label:'Кузня',        zone:null,               inside:true,  out:{steel:1.5},  in:{ore:1.8, wood:0.7}},
+  workshop:    {label:'Майстерня',    zone:null,               inside:true,  out:{tools:1.3},  in:{steel:0.9, wood:0.4}},
+  armory:      {label:'Збройня',      zone:null,               inside:true,  out:{weapons:1.0},in:{steel:1.4}},
+};
+const EKEYS = Object.keys(ENT);
+const TOOL_WEAR = 0.06;      // every enterprise burns tools (scaled by size)
+const FOOD_PER_1K = 1.0;     // population eats
+const SQUAD_FOOD = 0.22;     // squads eat
+const SQUAD_WEAPONS = 0.02;  // squads break weapons
+/* An enterprise's size follows its settlement's tier — a "farm" in a
+   megalopolis is an agricultural sector, not one field. */
+const TIER_SCALE = {camp:0.7, village:1.5, city:2.6, megalopolis:4.5};
+
+const TRAITS = ['Just','Generous','Brave','Patient','Content','Cruel','Greedy','Wrathful','Cunning','Ambitious'];
+const TRAIT_UTIL = {Ambitious:+0.35, Content:+0.15, Greedy:-0.15, Cruel:+0.10, Cunning:+0.10, Patient:-0.10, Brave:+0.05};
+const SKILLS = ['melee','shooting','management','social'];
+const SKILL_LABEL = {melee:'Ближній бій', shooting:'Стрільба', management:'Управління', social:'Соціалізація'};
+const LEADERSHIP = ['monarch','council','entrepreneur','mercenary','economic','anarchic','warlord'];
+const LT_LABEL = {monarch:'Монарх',council:'Міська рада',entrepreneur:'Підприємець',mercenary:'Найманець',
+  economic:'Економічний',anarchic:'Анархічний',warlord:'Воєначальник'};
+const KIND_LABEL = {political:'political',business:'business',squad:'squad',network:'network'};
+const TIER = {
+  camp:       {label:'Табір',       pop:70,    ents:1, r:0.0035},
+  village:    {label:'Село',        pop:520,   ents:2, r:0.0045},
+  city:       {label:'Місто',       pop:3200,  ents:4, r:0.006},
+  megalopolis:{label:'Мегаполіс',   pop:14000, ents:6, r:0.008},
+};
+const ZONE = {
+  plain:   {label:'Рівнина', c:[0.36,0.44,0.28]},
+  forest:  {label:'Ліс',     c:[0.20,0.33,0.22]},
+  mountain:{label:'Гори',    c:[0.42,0.41,0.40]},
+  desert:  {label:'Пустеля', c:[0.55,0.48,0.32]},
+};
+const NAME_A=['Кор','Бран','Вел','Ост','Дран','Мар','Сол','Тир','Гар','Він','Лід','Рав','Ясн','Чорн','Свят','Кам'];
+const NAME_B=['бург','град','піль','мор','дол','гай','стан','вежа','брід','ліс','кряж','поле','хутір','рів'];
+const PER_A=['Іван','Мирон','Богдан','Олена','Ярина','Остап','Лада','Тарас','Ганна','Влад','Зоя','Северин','Рута','Гордій','Мирослава','Лев'];
+const PER_B=['Крижаний','Тихий','Рудий','Довгий','Мовчазний','Гострий','Скупий','Сивий','Хитрий','Залізний','Чорний','Пильний'];
+const ORG_A=['Дім','Гільдія','Ліга','Орден','Клан','Двір','Синдикат','Компанія'];
+
+/* ---------- world state ---------- */
+const S = {
+  seed:1874, tick:0, paused:false, speed:1,
+  settlements:[], orgs:[], chars:[], squads:[], caravans:[], ents:[], edges:[],
+  roads:[], adj:[], factions:[], events:[],
+  playerCharId:null, selection:null,
+  nextId:1,
+};
+const uid = ()=>S.nextId++;
+const byId = (arr,id)=>arr.find(o=>o.id===id);
+const org = id=>byId(S.orgs,id);
+const chr = id=>byId(S.chars,id);
+const stl = id=>byId(S.settlements,id);
+const sqd = id=>byId(S.squads,id);
+const ent = id=>byId(S.ents,id);
+
+function logEvent(html){
+  S.events.unshift({t:S.tick,html});
+  if(S.events.length>90) S.events.pop();
+  renderLog();
+}
+
+/* =====================================================================
+   WORLDGEN
+   ===================================================================== */
+function v3(x,y,z){return new THREE.Vector3(x,y,z);}
+function randDir(){
+  const u=rnd()*2-1, th=rnd()*Math.PI*2, s=Math.sqrt(1-u*u);
+  return v3(s*Math.cos(th), u, s*Math.sin(th));
+}
+function fibDir(i,n){
+  const y=1-(i/(n-1))*2, r=Math.sqrt(1-y*y), th=Math.PI*(3-Math.sqrt(5))*i;
+  return v3(Math.cos(th)*r, y, Math.sin(th)*r);
+}
+/* ---------- noise: value-noise fBm with domain warp (deterministic) ---------- */
+let NSEED=1;
+function hash3(i,j,k){
+  let n = (i*374761393 + j*668265263 + k*1274126177 + NSEED*2654435761) | 0;
+  n = Math.imul(n ^ (n>>>13), 1274126177);
+  return ((n ^ (n>>>16)) >>> 0) / 4294967296;
+}
+const fade=t=>t*t*(3-2*t);
+function vnoise(x,y,z){
+  const xi=Math.floor(x), yi=Math.floor(y), zi=Math.floor(z);
+  const xf=x-xi, yf=y-yi, zf=z-zi;
+  const u=fade(xf), v=fade(yf), w=fade(zf);
+  const c000=hash3(xi,yi,zi),     c100=hash3(xi+1,yi,zi);
+  const c010=hash3(xi,yi+1,zi),   c110=hash3(xi+1,yi+1,zi);
+  const c001=hash3(xi,yi,zi+1),   c101=hash3(xi+1,yi,zi+1);
+  const c011=hash3(xi,yi+1,zi+1), c111=hash3(xi+1,yi+1,zi+1);
+  const x00=c000+(c100-c000)*u, x10=c010+(c110-c010)*u;
+  const x01=c001+(c101-c001)*u, x11=c011+(c111-c011)*u;
+  const y0=x00+(x10-x00)*v, y1=x01+(x11-x01)*v;
+  return (y0+(y1-y0)*w)*2-1;                     // −1..1
+}
+function fbm(x,y,z,oct,lac,gain){
+  let a=1, f=1, sum=0, norm=0;
+  for(let i=0;i<oct;i++){
+    sum += a*vnoise(x*f+i*17.3, y*f-i*29.1, z*f+i*41.7);
+    norm += a; a*=gain; f*=lac;
+  }
+  return sum/norm;
+}
+function ridge(x,y,z,oct){
+  let a=0.6, f=1, sum=0;
+  for(let i=0;i<oct;i++){
+    const n=1-Math.abs(vnoise(x*f+i*7.7, y*f+i*13.3, z*f-i*5.1));
+    sum += a*n*n; a*=0.5; f*=2.05;
+  }
+  return sum;
+}
+let SEA=0.10, WARP={x:0,y:0,z:0};
+
+/* Elevation: a warped continental field + ridged mountain belts.
+   Coastlines come out fractal (bays, peninsulas, islands), not circular. */
+function elevation(p){
+  const wx=fbm(p.x*1.7+WARP.x, p.y*1.7+WARP.y, p.z*1.7+WARP.z, 3, 2.0, 0.5);
+  const wy=fbm(p.x*1.7+WARP.y, p.y*1.7+WARP.z, p.z*1.7+WARP.x, 3, 2.0, 0.5);
+  const q=0.42;
+  const x=p.x*1.25+wx*q, y=p.y*1.25+wy*q, z=p.z*1.25+(wx-wy)*q*0.5;
+  let base=fbm(x,y,z,6,2.1,0.52);            // −1..1 continental field
+  base = base*0.85 + 0.14*fbm(x*3.1,y*3.1,z*3.1,3,2.2,0.5);
+  const land = base - SEA;
+  if(land<=0) return land*0.85;              // ocean depth
+  const belt = Math.max(0, ridge(x*2.3, y*2.3, z*2.3, 4) - 0.42);
+  const mtn = belt * smooth01(land, 0.02, 0.30) * 1.35;
+  return land*0.9 + mtn;
+}
+function smooth01(v,a,b){const t=Math.max(0,Math.min(1,(v-a)/(b-a)));return t*t*(3-2*t);}
+const isLand = p => elevation(p) > 0;
+
+/* Climate: temperature (latitude − altitude) × moisture (its own fBm).
+   Biomes fall out of the climate field, so borders are organic, never Voronoi walls. */
+function moistureAt(p){
+  return (fbm(p.x*2.4+11.3, p.y*2.4-7.9, p.z*2.4+3.1, 4, 2.1, 0.55)*0.5+0.5);
+}
+function tempAt(p, e){
+  const lat=Math.abs(p.y);
+  return Math.max(0, Math.min(1, 1.06 - lat*1.28 - Math.max(0,e)*0.85 +
+    fbm(p.x*1.6-21.7, p.y*1.6+5.5, p.z*1.6-9.9, 2, 2.0, 0.5)*0.10));
+}
+function zoneAt(p){
+  const e=elevation(p);
+  if(e>0.34) return 'mountain';
+  const t=tempAt(p,e), m=moistureAt(p);
+  if(t>0.52 && m<0.40) return 'desert';
+  if(m>0.48 && t>0.20) return 'forest';
+  return 'plain';
+}
+
+/* Continuous terrain colour — every pixel blends, nothing tiles or steps. */
+function terrainColor(p, e, out){
+  if(e<=0){
+    const d=Math.min(1, -e*3.0);
+    const shelf=1-d;
+    out[0]=0.045+0.075*shelf*shelf;
+    out[1]=0.105+0.155*shelf;
+    out[2]=0.215+0.185*shelf;
+    return;
+  }
+  const t=tempAt(p,e), m=moistureAt(p);
+  // base palettes
+  const sand=[0.72,0.63,0.42], steppe=[0.55,0.52,0.31], grass=[0.36,0.47,0.26],
+        forest=[0.18,0.32,0.20], taiga=[0.24,0.33,0.28], tundra=[0.55,0.56,0.51],
+        rock=[0.40,0.39,0.38], snow=[0.93,0.94,0.96];
+  let c=[0,0,0];
+  const dry = smooth01(0.46-m, 0, 0.22);          // 1 = arid
+  const warm= smooth01(t, 0.18, 0.62);
+  const wet = smooth01(m, 0.42, 0.72);
+  for(let i=0;i<3;i++){
+    const arid = sand[i]*dry + steppe[i]*(1-dry);
+    const humid= forest[i]*wet + grass[i]*(1-wet);
+    const warmC= arid*dry + humid*(1-dry);
+    const coldC= tundra[i]*(1-warm) + taiga[i]*warm;
+    c[i] = warmC*warm + coldC*(1-warm);
+  }
+  // rock on steep/high ground, snow on peaks and cold poles
+  const rocky=smooth01(e, 0.26, 0.44);
+  const snowy=Math.max(smooth01(e,0.46,0.66), smooth01(0.16-t,0,0.14));
+  const beach=smooth01(0.020-e, 0, 0.020);
+  for(let i=0;i<3;i++){
+    c[i]=c[i]*(1-rocky)+rock[i]*rocky;
+    c[i]=c[i]*(1-snowy)+snow[i]*snowy;
+    c[i]=c[i]*(1-beach)+[0.76,0.70,0.52][i]*beach;
+  }
+  out[0]=Math.max(0,Math.min(1,c[0]));
+  out[1]=Math.max(0,Math.min(1,c[1]));
+  out[2]=Math.max(0,Math.min(1,c[2]));
+}
+
+/* Sea level is solved for, not guessed — every world gets real continents. */
+function calibrateSea(targetLand){
+  const probes=[];
+  for(let i=0;i<1500;i++) probes.push(fibDir(i,1500));
+  let lo=-0.5, hi=0.6;
+  for(let it=0; it<22; it++){
+    const mid=(lo+hi)/2; SEA=mid;
+    let land=0;
+    for(const d of probes) if(elevation(d)>0) land++;
+    const frac=land/probes.length;
+    if(frac>targetLand) lo=mid; else hi=mid;
+  }
+  SEA=(lo+hi)/2;
+}
+
+function genNames(n, a, b){
+  const out=new Set();
+  while(out.size<n) out.add(pick(a)+pick(b).toLowerCase());
+  return [...out];
+}
+function personName(){ return pick(PER_A)+' '+pick(PER_B); }
+
+function makeChar(homeId, opts={}){
+  const c={
+    id:uid(), name:personName(), age:rint(22,64),
+    traits:[], skills:{}, homeId, orgId:null, ledOrgId:null, post:null, netId:null, alive:true,
+  };
+  const pool=[...TRAITS];
+  const n=rint(2,3);
+  for(let i=0;i<n;i++) c.traits.push(pool.splice(Math.floor(rnd()*pool.length),1)[0]);
+  for(const s of SKILLS) c.skills[s]=rint(1,10);
+  if(c.traits.includes('Ambitious')) c.skills.management=Math.min(12,c.skills.management+2);
+  S.chars.push(c);
+  return c;
+}
+function orgUtility(o){
+  const L=chr(o.leaderId);
+  let u=0.35;
+  if(L) for(const t of L.traits) u += (TRAIT_UTIL[t]||0);
+  if(o.leadershipType==='mercenary') u+=0.15;
+  if(o.leadershipType==='entrepreneur') u+=0.10;
+  if(o.leadershipType==='anarchic') u-=0.20;
+  return Math.max(0.02, Math.min(1.2, u));
+}
+function makeOrg(kind, name, opts={}){
+  const o={
+    id:uid(), kind, name,
+    leadershipType: opts.leadershipType || (kind==='political'?'monarch':kind==='business'?'entrepreneur':'mercenary'),
+    parentId: opts.parentId ?? null,
+    leaderId: null, members:[], heirId:null,
+    treasury: opts.treasury ?? rint(60,240),
+    taxRate: 0.15, loyalty: 78, cooldown: rint(2,14),
+    perks: [], posts:{Leader:null,Advisor:null,Bodyguard:null,Negotiator:null},
+    factionId: opts.factionId ?? null,
+    trade: !!opts.trade, caravanCap: opts.trade? 1 : 0,
+    lastDecision:'—', income:0, expenses:0, profit:0,
+  };
+  S.orgs.push(o);
+  return o;
+}
+function makeEdge(kind, from, to, extra={}){
+  const e=Object.assign({id:uid(), kind, from, to, visibility:'public', salary:0}, extra);
+  S.edges.push(e);
+  return e;
+}
+function setLeader(o, c){
+  o.leaderId=c.id; o.posts.Leader=c.id;
+  c.ledOrgId=o.id; c.orgId=o.id;
+  if(!o.members.includes(c.id)) o.members.push(c.id);
+}
+
+function generate(seed){
+  RNG=mulberry32(seed>>>0);
+  Object.assign(S,{seed, tick:0, settlements:[],orgs:[],chars:[],squads:[],caravans:[],ents:[],edges:[],
+    roads:[],adj:[],factions:[],events:[],playerCharId:null,selection:null,nextId:1});
+
+  /* --- continental field: warped fBm, sea level solved for ~32% land --- */
+  NSEED = (seed*2654435761) >>> 0;
+  WARP = {x:rnd()*40-20, y:rnd()*40-20, z:rnd()*40-20};
+  calibrateSea(0.32);
+
+  /* --- settlement sites: rejection-sampled on land --- */
+  const cand=[];
+  for(let i=0;i<1400;i++){const d=fibDir(i,1400); if(isLand(d)) cand.push(d);}
+  for(let i=cand.length-1;i>0;i--){const j=Math.floor(rnd()*(i+1));[cand[i],cand[j]]=[cand[j],cand[i]];}
+  const sites=[];
+  const MIN_D=0.985; // cos of min separation — bigger = closer allowed
+  for(const d of cand){
+    if(sites.length>=26) break;
+    if(sites.every(s=>s.dir.dot(d) < 0.965)) sites.push({dir:d});
+  }
+  const names=genNames(sites.length, NAME_A, NAME_B);
+
+  sites.forEach((s,i)=>{
+    const tier = i<1?'megalopolis' : i<4?'city' : i<13?'village':'camp';
+    const z=zoneAt(s.dir);
+    const st={
+      id:uid(), name:names[i], dir:s.dir, tier, zone:z,
+      pop: Math.round(TIER[tier].pop*(0.75+rnd()*0.5)),
+      ownerOrgId:null, entIds:[], stock:{}, target:{}, price:{}, net:{}, gross:{},
+      loyalty:80, area: 0.6+rnd()*1.4, contest:0,
+    };
+    for(const r of RKEYS){ st.stock[r]=0; st.target[r]=1; st.price[r]=RES[r].base; st.net[r]=0; st.gross[r]=[0,0]; }
+    S.settlements.push(st);
+  });
+
+  /* --- road graph: each settlement links to 3 nearest --- */
+  S.adj = S.settlements.map(()=>[]);
+  S.settlements.forEach((a,i)=>{
+    const order=S.settlements.map((b,j)=>({j,d:a.dir.dot(b.dir)})).filter(o=>o.j!==i)
+      .sort((x,y)=>y.d-x.d).slice(0,3);
+    for(const o of order){
+      if(!S.adj[i].includes(o.j)){S.adj[i].push(o.j); S.adj[o.j].push(i);
+        S.roads.push([i,o.j]);}
+    }
+  });
+
+  /* --- factions: each is an independent political org (a realm) --- */
+  const capitals=[0,1,2,3].filter(i=>i<S.settlements.length);
+  capitals.forEach((ci,fi)=>{
+    const cap=S.settlements[ci];
+    const realm=makeOrg('political', pick(ORG_A)+' '+cap.name, {
+      leadershipType: fi===0?'monarch': pick(['monarch','council','entrepreneur','mercenary']),
+      treasury: rint(500,900),
+    });
+    realm.factionId=realm.id;
+    S.factions.push({id:realm.id, orgId:realm.id, color:['#C4574F','#4E9BB5','#C89B3C','#8B5FB5'][fi]});
+  });
+
+  /* assign each settlement to nearest capital's realm (some stay free cities) */
+  S.settlements.forEach((st,i)=>{
+    if(capitals.includes(i)){
+      const realm=S.orgs[capitals.indexOf(i)];
+      st.ownerOrgId=realm.id;
+      makeEdge('ownership', realm.id, 'S'+st.id);
+      return;
+    }
+    if(chance(0.16)){ // free city — its own independent political org
+      const fc=makeOrg('political','Рада '+st.name,{leadershipType:'council',treasury:rint(120,300)});
+      fc.factionId=fc.id;
+      S.factions.push({id:fc.id, orgId:fc.id, color:'#6E7C99'});
+      st.ownerOrgId=fc.id;
+      makeEdge('ownership', fc.id, 'S'+st.id);
+      return;
+    }
+    // subordinate political org under nearest realm
+    let best=null,bd=-2;
+    for(const ci of capitals){const d=st.dir.dot(S.settlements[ci].dir); if(d>bd){bd=d;best=ci;}}
+    const realm=S.orgs[capitals.indexOf(best)];
+    const sub=makeOrg('political','Намісництво '+st.name,{
+      parentId:realm.id, factionId:realm.factionId, treasury:rint(60,180),
+      leadershipType: pick(['monarch','council','economic'])});
+    st.ownerOrgId=sub.id;
+    makeEdge('hierarchy', realm.id, sub.id, {visibility: chance(0.10)?'covert':'public'});
+    makeEdge('ownership', sub.id, 'S'+st.id);
+  });
+
+  /* --- residents & leaders --- */
+  S.settlements.forEach(st=>{
+    const owner=org(st.ownerOrgId);
+    const n = st.tier==='camp'?2 : st.tier==='village'?3 : 5;
+    const residents=[];
+    for(let i=0;i<n;i++) residents.push(makeChar(st.id));
+    if(owner && !owner.leaderId) setLeader(owner, residents[0]);
+    residents.forEach(c=>{ if(!c.orgId && owner){c.orgId=owner.id; owner.members.push(c.id);} });
+    // posts
+    if(owner && residents[1]){ owner.posts.Advisor=residents[1].id; residents[1].post='Advisor'; }
+    if(owner && residents[2]){ owner.posts.Bodyguard=residents[2].id; residents[2].post='Bodyguard'; }
+  });
+  // realms need a leader too (their capital gave them one) + heirs
+  S.orgs.forEach(o=>{
+    if(!o.leaderId){
+      const home = S.settlements.find(s=>s.ownerOrgId===o.id) || pick(S.settlements);
+      setLeader(o, makeChar(home.id));
+    }
+    const pool=o.members.filter(id=>id!==o.leaderId);
+    o.heirId = pool.length? pick(pool) : null;
+  });
+
+  /* --- enterprises: one business org per enterprise --- */
+  S.settlements.forEach(st=>{
+    const count=TIER[st.tier].ents;
+    const outdoor=EKEYS.filter(k=>ENT[k].zone && ENT[k].zone.includes(st.zone));
+    const indoor=EKEYS.filter(k=>!ENT[k].zone);
+    const plan=[];
+    // food first — a settlement that can't farm (mountain) must import it: that's the trade engine
+    plan.push(st.zone==='mountain' ? 'mine' : 'farm');
+    for(let i=1;i<count;i++){
+      plan.push(chance(0.5) && outdoor.length ? pick(outdoor) : pick(indoor));
+    }
+    plan.forEach(kind=>createEnterprise(st, kind, null));
+  });
+
+  /* --- trade houses: business orgs that run caravans --- */
+  const hubs = S.settlements.filter(s=>s.tier==='city'||s.tier==='megalopolis');
+  hubs.forEach(st=>{
+    const owner=org(st.ownerOrgId);
+    const th=makeOrg('business','Торговий дім '+st.name,{
+      parentId: chance(0.6)? owner.id : null,
+      factionId: owner?owner.factionId:null,
+      leadershipType:'entrepreneur', trade:true, treasury:rint(260,520)});
+    th.homeSettlementId=st.id;
+    th.caravanCap = 2;
+    setLeader(th, makeChar(st.id));
+    if(th.parentId) makeEdge('hierarchy', th.parentId, th.id);
+    for(let i=0;i<2;i++) spawnCaravan(th);
+  });
+
+  /* --- garrison squads (control slots) & bandits --- */
+  S.settlements.forEach(st=>{
+    if(st.tier==='camp' && !chance(0.4)) return;
+    const owner=org(st.ownerOrgId);
+    spawnSquad(owner, st, {garrison:true});
+  });
+  for(let i=0;i<4;i++){
+    const st=pick(S.settlements);
+    const b=makeOrg('squad','Банда '+pick(PER_B),{leadershipType:'warlord',treasury:rint(20,70)});
+    b.factionId=b.id; b.bandit=true;
+    S.factions.push({id:b.id, orgId:b.id, color:'#7A4A3F'});
+    setLeader(b, makeChar(st.id));
+    const sq=spawnSquad(b, st, {garrison:false});
+    sq.strength=rint(8,16);
+  }
+
+  /* --- a few non-hierarchy graph edges, as the design calls for --- */
+  const pols=S.orgs.filter(o=>o.kind==='political');
+  for(let i=0;i<6;i++){
+    const a=pick(pols), b=pick(pols);
+    if(a===b) continue;
+    const roll=rnd();
+    if(roll<0.35) makeEdge('influence', a.id, b.id, {visibility: chance(0.5)?'covert':'public', salary:rint(2,8)});
+    else if(roll<0.6) makeEdge('investment', a.id, b.id, {salary:rint(4,12), funding:rint(80,300)});
+    else if(a.parentId===null && b.parentId===null) makeEdge('alliance', a.id, b.id);
+  }
+
+  /* --- seed stock so the economy doesn't start in famine --- */
+  S.settlements.forEach(st=>{
+    recomputeTargets(st);
+    for(const r of RKEYS) st.stock[r]=st.target[r]*(0.6+rnd()*0.9);
+  });
+
+  precomputePaths();
+  buildScene();
+  buildStartScreen();
+  renderLog();
+  logEvent('Світ згенеровано. Seed <b>'+seed+'</b> · '+S.settlements.length+' поселень · '+S.orgs.length+' організацій.');
+}
+
+function createEnterprise(st, kind, ownerOrgId){
+  const e={id:uid(), kind, settlementId:st.id, ownerOrgId:null,
+    staffed:true, rate:(0.85+rnd()*0.35)*TIER_SCALE[st.tier], stalled:false, out:0};
+  // enterprises live inside a business org (property has exactly one owner)
+  let owner = ownerOrgId? org(ownerOrgId) : null;
+  if(!owner && chance(0.55)){
+    // an existing local business often just adds a branch — keeps the org count sane
+    const local = S.orgs.filter(o=>o.kind==='business' && !o.trade &&
+      S.ents.some(x=>x.ownerOrgId===o.id && x.settlementId===st.id));
+    if(local.length) owner = pick(local);
+  }
+  if(!owner){
+    const parent = org(st.ownerOrgId);
+    owner = makeOrg('business', ENT[kind].label+' «'+st.name+'»', {
+      parentId: chance(0.7)? (parent?parent.id:null) : null,
+      factionId: parent? parent.factionId : null,
+      leadershipType:'economic', treasury:rint(40,120)});
+    setLeader(owner, makeChar(st.id));
+    if(owner.parentId) makeEdge('hierarchy', owner.parentId, owner.id);
+  }
+  e.ownerOrgId=owner.id;
+  makeEdge('ownership', owner.id, 'E'+e.id);
+  S.ents.push(e);
+  st.entIds.push(e.id);
+  return e;
+}
+
+/* Fields, mines and lumber camps sit out in their own land — a ring well clear of the
+   settlement's own footprint, on terrain that actually suits them, never on top of a
+   neighbour's site. */
+function placeOutdoorEnterprise(st, e){
+  const idx=st.entIds.indexOf(e.id);
+  const up=st.dir.clone();
+  const tan=new THREE.Vector3(0,1,0).cross(up).normalize();
+  const bit=up.clone().cross(tan).normalize();
+  const wantZone=ENT[e.kind].zone;
+  const tierR={camp:0.030, village:0.042, city:0.058, megalopolis:0.075}[st.tier];
+  let best=null, bestScore=-1e9;
+  for(let k=0;k<24;k++){
+    const ang=(idx*2.399 + k*0.62);
+    const rad=tierR*(1 + (k%3)*0.28);
+    const d=up.clone()
+      .add(tan.clone().multiplyScalar(Math.cos(ang)*rad))
+      .add(bit.clone().multiplyScalar(Math.sin(ang)*rad)).normalize();
+    if(!isLand(d)) continue;
+    let score = rad*8;                                     // farther out is better
+    if(wantZone && wantZone.includes(zoneAt(d))) score += 6;
+    for(const other of S.settlements){                     // stay out of other towns
+      if(other===st) continue;
+      const gap=1-other.dir.dot(d);
+      if(gap < 0.0016) score -= 20;
+    }
+    for(const oe of S.ents){                               // and off each other
+      if(oe===e || !oe._dir) continue;
+      if(1-oe._dir.dot(d) < 0.00035) score -= 8;
+    }
+    if(score>bestScore){bestScore=score; best=d;}
+  }
+  return best || st.dir.clone();
+}
+
+function spawnSquad(ownerOrg, st, opts={}){
+  const so = ownerOrg.kind==='squad' ? ownerOrg :
+    makeOrg('squad','Загін '+st.name+' '+rint(1,99),{
+      parentId:ownerOrg.id, factionId:ownerOrg.factionId, leadershipType:'mercenary', treasury:rint(10,60)});
+  if(so!==ownerOrg){
+    makeEdge('hierarchy', ownerOrg.id, so.id);
+    makeEdge('control', ownerOrg.id, so.id, {salary:rint(1,3)});
+    setLeader(so, makeChar(st.id));
+  }
+  const sq={
+    id:uid(), orgId:so.id, factionId:so.factionId,
+    dir:st.dir.clone(), target:null, path:null,
+    strength: opts.garrison? rint(6,14): rint(6,12),
+    mode:'auto', order: opts.garrison?'garrison':'idle',
+    garrisonId: opts.garrison? st.id : null,
+    homeId: st.id, pinned:false, cooldown:rint(1,8),
+  };
+  S.squads.push(sq);
+  so.squadId=sq.id;
+  return sq;
+}
+function spawnCaravan(tradeOrg){
+  const home = stl(tradeOrg.homeSettlementId) || pick(S.settlements);
+  const c={id:uid(), orgId:tradeOrg.id, dir:home.dir.clone(),
+    atIdx: S.settlements.indexOf(home), path:null, step:0, prog:0,
+    cargo:null, qty:0, capacity:55, phase:'idle', buyPrice:0, dest:null, trips:0, profit:0};
+  S.caravans.push(c);
+  return c;
+}
+
+/* =====================================================================
+   ECONOMY — closed loops: everything produced is consumed
+   ===================================================================== */
+function recomputeTargets(st){
+  // demand: population eats; enterprises need inputs + tools; squads need food/weapons
+  const d={food:0,wood:0,ore:0,steel:0,tools:0,weapons:0};
+  d.food += st.pop/1000*FOOD_PER_1K;
+  for(const id of st.entIds){
+    const e=ent(id); if(!e) continue;
+    const def=ENT[e.kind];
+    for(const r in def.in) d[r]+=def.in[r]*e.rate;
+    d.tools+=TOOL_WEAR*e.rate;
+  }
+  const garrisons=S.squads.filter(s=>s.homeId===st.id);
+  d.food += garrisons.length*SQUAD_FOOD;
+  d.weapons += garrisons.length*SQUAD_WEAPONS;
+  // construction reserve keeps wood & steel wanted even without a forge
+  d.wood += 0.4; d.steel += 0.2;
+  for(const r of RKEYS) st.target[r]=Math.max(1.5, d[r]*8); // ~8 steps of buffer
+  st.demand=d;
+}
+function priceOf(st,r){
+  const t=st.target[r]||1, s=st.stock[r]||0;
+  const scarcity=Math.max(0.3, Math.min(3.2, (2*t - s)/t));
+  return RES[r].base*scarcity;
+}
+
+function economyStep(){
+  for(const st of S.settlements){
+    recomputeTargets(st);
+    for(const r of RKEYS){ st.net[r]=0; st.gross[r]=[0,0]; }
+
+    // --- production ---
+    for(const id of st.entIds){
+      const e=ent(id); if(!e) continue;
+      const def=ENT[e.kind];
+      let can=e.staffed?1:0;
+      // real inputs gate output hard — no ore, no steel
+      for(const r in def.in){
+        const need=def.in[r]*e.rate;
+        can=Math.min(can, need>0 ? st.stock[r]/Math.max(need,1e-6) : 1);
+      }
+      can=Math.max(0, Math.min(1, can));
+      // tools are a soft efficiency multiplier: no tools = slow, not dead
+      const toolsNeed=TOOL_WEAR*e.rate;
+      const toolsHave=Math.min(1, st.stock.tools/Math.max(toolsNeed,1e-6));
+      can *= (0.55 + 0.45*toolsHave);
+      e.stalled = can < 0.35;
+      for(const r in def.in){
+        const used=def.in[r]*e.rate*can;
+        st.stock[r]-=used; st.net[r]-=used; st.gross[r][1]+=used;
+      }
+      const toolsUsed=Math.min(st.stock.tools, toolsNeed*Math.max(can,0.35));
+      st.stock.tools-=toolsUsed; st.net.tools-=toolsUsed; st.gross.tools[1]+=toolsUsed;
+      for(const r in def.out){
+        const made=def.out[r]*e.rate*can;
+        st.stock[r]+=made; st.net[r]+=made; st.gross[r][0]+=made;
+        e.out=made;
+      }
+      // enterprise revenue: most to its business org, a tax cut to the settlement's owner
+      const eo=org(e.ownerOrgId), so=org(st.ownerOrgId);
+      if(eo){
+        const rev=Object.keys(def.out).reduce((a,r)=>a+def.out[r]*e.rate*can*priceOf(st,r)*0.30,0);
+        const tax=so? rev*Math.min(0.5, so.taxRate+0.15) : 0;
+        eo.treasury+=rev-tax; eo.income=rev-tax;
+        if(so){ so.treasury+=tax; so.income=(so.income||0)*0.85+tax*0.15; }
+      }
+    }
+
+    // --- population consumption ---
+    const eat=st.pop/1000*FOOD_PER_1K;
+    const got=Math.min(eat, st.stock.food);
+    st.stock.food-=got; st.net.food-=got; st.gross.food[1]+=eat;
+    if(got < eat*0.92){
+      st.pop=Math.max(20, Math.round(st.pop*0.997)); st.starving=true;
+    } else {
+      st.starving=false;
+      const cap=TIER[st.tier].pop*1.5;
+      if(st.pop<cap && st.stock.food>st.target.food*0.5) st.pop=Math.round(st.pop*1.0018+0.4);
+    }
+
+    // --- squads consume from their home settlement ---
+    for(const sq of S.squads){
+      if(sq.homeId!==st.id) continue;
+      const f=Math.min(SQUAD_FOOD, st.stock.food);
+      st.stock.food-=f; st.net.food-=f; st.gross.food[1]+=SQUAD_FOOD;
+      const w=Math.min(SQUAD_WEAPONS, st.stock.weapons);
+      st.stock.weapons-=w; st.net.weapons-=w; st.gross.weapons[1]+=SQUAD_WEAPONS;
+      if(f<SQUAD_FOOD*0.8 || w<SQUAD_WEAPONS*0.5){
+        sq.supplied=false;
+        if(chance(0.05) && sq.strength>1){ sq.strength-=1; }
+      } else { sq.supplied=true;
+        if(chance(0.03) && sq.strength<18) sq.strength+=1; }
+    }
+
+    // clamp + prices
+    for(const r of RKEYS){
+      const cap=st.target[r]*4;
+      if(st.stock[r]>cap) st.stock[r]=cap;          // overflow is wasted, producers don't stall
+      if(st.stock[r]<0) st.stock[r]=0;
+      st.price[r]=priceOf(st,r);
+    }
+
+    // --- territory & tax income to the owner ---
+    const owner=org(st.ownerOrgId);
+    if(owner){
+      const base = (st.pop/1000)*2.2*st.area;
+      const tax = base*(0.4+owner.taxRate*2);
+      owner.treasury += tax;
+      owner.income = (owner.income||0)*0.7 + tax*0.3;
+      st.loyalty += (owner.taxRate>0.28? -0.25 : 0.12) + (st.starving? -0.4:0.05);
+      st.loyalty = Math.max(0, Math.min(100, st.loyalty));
+    }
+  }
+}
+
+/* =====================================================================
+   CARAVANS — trade houses close deficits, profit, and scale up
+   ===================================================================== */
+const PATHS=new Map();
+function pathKey(a,b){return a*1000+b;}
+function precomputePaths(){
+  PATHS.clear();
+  for(let a=0;a<S.settlements.length;a++)
+    for(let b=0;b<S.settlements.length;b++)
+      PATHS.set(pathKey(a,b), bfsPath(a,b));
+}
+function pathBetween(a,b){
+  const c=PATHS.get(pathKey(a,b));
+  return c!==undefined ? c : bfsPath(a,b);
+}
+function bfsPath(a,b){
+  if(a===b) return [a];
+  const prev=new Array(S.settlements.length).fill(-1);
+  const q=[a]; prev[a]=a;
+  while(q.length){
+    const cur=q.shift();
+    if(cur===b) break;
+    for(const nb of S.adj[cur]) if(prev[nb]===-1){prev[nb]=cur; q.push(nb);}
+  }
+  if(prev[b]===-1) return null;
+  const out=[]; let c=b;
+  while(c!==a){out.unshift(c); c=prev[c];}
+  out.unshift(a);
+  return out;
+}
+function bestTrade(cv, house){
+  const here=S.settlements[cv.atIdx];
+  let best=null;
+  for(const r of RKEYS){
+    const surplus = here.stock[r] - here.target[r]*0.95;
+    if(surplus < 2) continue;
+    const buy = priceOf(here,r);
+    for(let j=0;j<S.settlements.length;j++){
+      const dst=S.settlements[j];
+      if(dst===here) continue;
+      const deficit = dst.target[r]*0.95 - dst.stock[r];
+      if(deficit < 2) continue;
+      const dstOwner=org(dst.ownerOrgId);
+      if(!dstOwner) continue;
+      const sell=priceOf(dst,r);
+      const margin=sell-buy;
+      if(margin<=0.3) continue;
+      const p=pathBetween(cv.atIdx,j);
+      if(!p) continue;
+      const dist=p.length-1;
+      const qty=Math.min(cv.capacity, surplus, deficit, Math.floor(house.treasury/Math.max(buy,0.5)));
+      if(qty<2) continue;
+      const score = margin*qty - dist*1.2;
+      if(score>2 && (!best || score>best.score)) best={score, r, j, path:p, qty, buy, sell, deficit};
+    }
+  }
+  return best;
+}
+function caravanStep(){
+  for(const cv of S.caravans){
+    const house=org(cv.orgId);
+    if(!house){cv.dead=true;continue;}
+    if(cv.phase==='idle'){
+      const deal=bestTrade(cv, house);
+      if(!deal){ cv.phase='idle'; continue; }
+      const here=S.settlements[cv.atIdx];
+      const cost=deal.qty*deal.buy;
+      if(house.treasury<cost) continue;
+      house.treasury-=cost;
+      here.stock[deal.r]-=deal.qty;
+      const srcOwner=org(here.ownerOrgId); if(srcOwner) srcOwner.treasury+=cost;
+      cv.cargo=deal.r; cv.qty=deal.qty; cv.buyPrice=deal.buy;
+      cv.path=deal.path; cv.step=0; cv.prog=0; cv.phase='hauling'; cv.dest=deal.j;
+      continue;
+    }
+    if(cv.phase==='hauling' || cv.phase==='returning'){
+      if(!cv.path || cv.path.length<2){ arrive(cv, house); continue; }
+      cv.prog += 0.22;
+      if(cv.prog>=1){
+        cv.prog=0; cv.step++;
+        cv.atIdx=cv.path[Math.min(cv.step, cv.path.length-1)];
+        if(cv.step>=cv.path.length-1){ arrive(cv, house); continue; }
+      }
+      const a=S.settlements[cv.path[cv.step]].dir;
+      const b=S.settlements[cv.path[Math.min(cv.step+1,cv.path.length-1)]].dir;
+      cv.dir = slerp(a,b,cv.prog);
+    }
+  }
+  S.caravans=S.caravans.filter(c=>!c.dead);
+
+  // trade houses grow: buy more caravans when rich
+  for(const h of S.orgs){
+    if(!h.trade) continue;
+    const owned=S.caravans.filter(c=>c.orgId===h.id).length;
+    const cap = Math.min(6, h.caravanCap);
+    if(owned<cap && h.treasury>340){
+      h.treasury-=200; spawnCaravan(h);
+      logEvent('<b>'+h.name+'</b> спорядив новий караван.');
+    }
+    if(owned>=cap && cap<6 && h.treasury>1100){
+      h.treasury-=700; h.caravanCap+=1; h.perks.push('Логістичний хаб');
+      logEvent('<b>'+h.name+'</b> розширився: логістичний хаб (+караванна місткість).');
+    }
+  }
+}
+function arrive(cv, house){
+  const dst=S.settlements[cv.atIdx];
+  if(cv.phase==='hauling' && cv.cargo){
+    const sell=priceOf(dst,cv.cargo);
+    const dstOwner=org(dst.ownerOrgId);
+    const pay=cv.qty*sell;
+    const afford = dstOwner? Math.min(pay, dstOwner.treasury) : 0;
+    const delivered = pay>0 ? cv.qty*(afford/pay) : 0;
+    dst.stock[cv.cargo]+=delivered;
+    if(dstOwner) dstOwner.treasury-=afford;
+    house.treasury+=afford;
+    const profit=afford - cv.qty*cv.buyPrice;
+    cv.profit+=profit; cv.trips++;
+    house.profit=(house.profit||0)*0.8+profit*0.2;
+    if(delivered>1 && chance(0.35))
+      logEvent('Караван <b>'+house.name+'</b>: '+Math.round(delivered)+' '+RES[cv.cargo].label.toLowerCase()+
+        ' → <span class="link" data-sel="settlement:'+dst.id+'">'+dst.name+'</span> ('+(profit>=0?'+':'')+Math.round(profit)+'💰)');
+    cv.cargo=null; cv.qty=0;
+  }
+  cv.phase='idle'; cv.path=null; cv.step=0; cv.prog=0; cv.dir=dst.dir.clone();
+}
+
+/* =====================================================================
+   ORGANIZATIONS — utility AI, slots, loyalty, succession
+   ===================================================================== */
+let POWER=new Map(), POWER_TICK=-1;
+function orgPower(o){
+  if(POWER_TICK!==S.tick){ POWER=new Map(); POWER_TICK=S.tick; }
+  const c=POWER.get(o.id);
+  if(c!==undefined) return c;
+  const v=computePower(o);
+  POWER.set(o.id, v);
+  return v;
+}
+function computePower(o){
+  let p=o.treasury/100;
+  p += S.settlements.filter(s=>s.ownerOrgId===o.id).reduce((a,s)=>a+s.pop/500,0);
+  p += S.squads.filter(s=>{const so=org(s.orgId); return so && (so.id===o.id||so.parentId===o.id);})
+        .reduce((a,s)=>a+s.strength/4,0);
+  return p;
+}
+function orgManagement(o){
+  const L=chr(o.leaderId), A=chr(o.posts.Advisor);
+  return (L?L.skills.management:0) + (A? Math.round(A.skills.management*0.5):0);
+}
+function orgStep(){
+  const byFrom=new Map();
+  for(const e of S.edges){
+    if(!['control','influence','investment'].includes(e.kind)) continue;
+    if(!byFrom.has(e.from)) byFrom.set(e.from,[]);
+    byFrom.get(e.from).push(e);
+  }
+  const squadsByOrg=new Map();
+  for(const sq of S.squads){
+    if(!squadsByOrg.has(sq.orgId)) squadsByOrg.set(sq.orgId,[]);
+    squadsByOrg.get(sq.orgId).push(sq);
+  }
+  for(const o of S.orgs){
+    // salaries on control/influence/investment slots
+    for(const e of (byFrom.get(o.id)||[])){
+      const occ=org(e.to); if(!occ) continue;
+      const pay=Math.min(e.salary, o.treasury);
+      o.treasury-=pay; occ.treasury+=pay;
+      if(pay<e.salary*0.6){
+        occ.loyalty-=0.5;
+        if(occ.loyalty<20 && occ.kind!=='squad' && chance(0.01)){
+          S.edges=S.edges.filter(x=>x.id!==e.id);
+          logEvent('Слот розірвано: <b>'+occ.name+'</b> покинув <b>'+o.name+'</b> — не платили.');
+        }
+      } else occ.loyalty=Math.min(100, occ.loyalty+0.15);
+    }
+    // squad upkeep
+    const mySquads=squadsByOrg.get(o.id)||[];
+    const upkeep=mySquads.reduce((a,s)=>a+s.strength*0.05,0);
+    o.treasury-=upkeep;
+    o.expenses=upkeep;
+    if(o.treasury<0){
+      o.treasury=0;
+      for(const s of mySquads) if(chance(0.08) && s.strength>1) s.strength--;
+    }
+
+    // decision cooldown
+    o.cooldown--;
+    if(o.cooldown>0) continue;
+    o.cooldown = Math.round(18/(0.5+orgUtility(o)));
+    decide(o);
+  }
+  successionAndRevolt();
+}
+
+function decide(o){
+  const u=orgUtility(o);
+  const owned=S.settlements.filter(s=>s.ownerOrgId===o.id);
+  const opts=[];
+
+  if(o.kind==='political' || o.kind==='business'){
+    // Found enterprise where the chain has a gap — economy-driven growth
+    for(const st of owned){
+      if(st.entIds.length >= TIER[st.tier].ents+4) continue;
+      const missing = EKEYS.map(k=>{
+        const def=ENT[k];
+        if(def.zone && !def.zone.includes(st.zone)) return null;
+        if(st.entIds.filter(id=>ent(id) && ent(id).kind===k).length >= 2) return null;
+        const outRes=Object.keys(def.out)[0];
+        const gap = 1 - st.stock[outRes]/Math.max(st.target[outRes],0.001);
+        if(gap < 0.25) return null;                       // no real deficit → don't build
+        // don't build a converter whose inputs the settlement can't get at all
+        let feasible=1;
+        for(const r in def.in){
+          feasible=Math.min(feasible, Math.min(1, st.stock[r]/Math.max(def.in[r]*TIER_SCALE[st.tier]*3,0.001)));
+        }
+        if(feasible < 0.3) return null;   // no inputs reachable → building it would just stall
+        return {k, score: gap*(0.4+0.6*feasible)};
+      }).filter(Boolean).sort((a,b)=>b.score-a.score);
+      if(missing.length && o.treasury>140){
+        opts.push({a:'FoundEnterprise', s:0.9*u + missing[0].score*0.8, st, kind:missing[0].k});
+      }
+    }
+    if(o.treasury>110 && S.squads.filter(s=>{const so=org(s.orgId);return so&&so.parentId===o.id;}).length<3 && owned.length){
+      opts.push({a:'HireSquad', s:0.85*u, st:pick(owned)});
+    }
+    if(o.kind==='business' && !o.trade && o.treasury>500 && owned.length===0 &&
+       S.orgs.filter(x=>x.trade).length < 9){
+      opts.push({a:'FoundTradeHouse', s:0.7*u});
+    }
+    if(o.kind!=='squad' && o.parentId && o.treasury>orgPower(org(o.parentId))*35 && u>0.6){
+      opts.push({a:'SeekIndependence', s:0.6*u});
+    }
+    if(o.treasury>320){
+      const t=pick(S.orgs);
+      if(t && t.id!==o.id && t.kind!=='squad') opts.push({a:'Invest', s:0.5*u, t});
+    }
+    if(o.treasury>260 && u>0.75){
+      const t=pick(S.orgs.filter(x=>x.kind==='political' && x.id!==o.id));
+      if(t) opts.push({a:'CovertInfluence', s:0.55*u, t});
+    }
+  }
+  opts.push({a:'Idle', s:0.25 + rnd()*0.1});
+
+  opts.sort((a,b)=>(b.s+rnd()*0.05)-(a.s+rnd()*0.05));
+  const d=opts[0];
+  o.lastDecision=d.a;
+  switch(d.a){
+    case 'FoundEnterprise': {
+      o.treasury-=140;
+      const st=d.st;
+      // wood+steel actually consumed by construction — another sink
+      st.stock.wood=Math.max(0,st.stock.wood-5); st.stock.steel=Math.max(0,st.stock.steel-3);
+      createEnterprise(st, d.kind, null);
+      logEvent('<span class="link" data-sel="org:'+o.id+'">'+o.name+'</span> збудував '+ENT[d.kind].label.toLowerCase()+
+        ' у <span class="link" data-sel="settlement:'+st.id+'">'+st.name+'</span>.');
+      break;
+    }
+    case 'HireSquad': {
+      o.treasury-=110;
+      spawnSquad(o, d.st, {garrison:false});
+      break;
+    }
+    case 'FoundTradeHouse': {
+      o.treasury-=420; o.trade=true; o.caravanCap=2;
+      o.homeSettlementId=(owned[0]||pick(S.settlements)).id;
+      spawnCaravan(o);
+      logEvent('<span class="link" data-sel="org:'+o.id+'">'+o.name+'</span> став торговим домом.');
+      break;
+    }
+    case 'SeekIndependence': {
+      const p=org(o.parentId);
+      S.edges=S.edges.filter(e=>!(e.kind==='hierarchy'&&e.to===o.id));
+      o.parentId=null; o.factionId=o.id;
+      if(!S.factions.find(f=>f.id===o.id)) S.factions.push({id:o.id, orgId:o.id, color:'#9AA7C0'});
+      logEvent('⚑ <span class="link" data-sel="org:'+o.id+'">'+o.name+'</span> проголосив незалежність від <b>'+(p?p.name:'?')+'</b>.');
+      break;
+    }
+    case 'Invest': {
+      const sum=Math.min(200, o.treasury*0.4);
+      o.treasury-=sum; d.t.treasury+=sum;
+      makeEdge('investment', o.id, d.t.id, {salary:Math.round(sum/40), funding:Math.round(sum)});
+      break;
+    }
+    case 'CovertInfluence': {
+      o.treasury-=180;
+      makeEdge('influence', o.id, d.t.id, {visibility:'covert', salary:rint(3,9)});
+      break;
+    }
+  }
+}
+
+function successionAndRevolt(){
+  for(const c of S.chars){
+    if(!c.alive || !c.ledOrgId) continue;
+    if(!chance(0.0012 + Math.max(0,c.age-55)*0.0004)) continue;
+    const o=org(c.ledOrgId); if(!o) continue;
+    c.alive=false; c.ledOrgId=null;
+    const heir = chr(o.heirId) && chr(o.heirId).alive ? chr(o.heirId) :
+      chr(o.members.map(chr).filter(x=>x&&x.alive&&x.id!==c.id).map(x=>x.id)[0]);
+    if(heir){
+      setLeader(o, heir);
+      o.heirId = o.members.filter(id=>id!==heir.id && chr(id) && chr(id).alive)[0] || null;
+      logEvent('† <b>'+c.name+'</b> помер. <span class="link" data-sel="char:'+heir.id+'">'+heir.name+
+        '</span> очолив <span class="link" data-sel="org:'+o.id+'">'+o.name+'</span>.');
+      // rebellion roll for subordinates
+      for(const sub of S.orgs.filter(x=>x.parentId===o.id)){
+        const legit = (heir.skills.management+heir.skills.social)/24;
+        const p = 0.10 + (100-sub.loyalty)/300 - legit*0.25;
+        if(chance(Math.max(0,p))){
+          sub.parentId=null; sub.factionId=sub.id;
+          S.edges=S.edges.filter(e=>!(e.kind==='hierarchy'&&e.to===sub.id));
+          if(!S.factions.find(f=>f.id===sub.id)) S.factions.push({id:sub.id, orgId:sub.id, color:'#9AA7C0'});
+          logEvent('⚔ Криза спадкоємства: <b>'+sub.name+'</b> відколовся від <b>'+o.name+'</b>.');
+        }
+      }
+    } else {
+      // materialize a resident from the latent pool to take the seat
+      const seat = stl(c.homeId) || S.settlements.find(x=>x.ownerOrgId===o.id) || pick(S.settlements);
+      const fresh = makeChar(seat.id);
+      setLeader(o, fresh);
+      o.heirId=null;
+      logEvent('† <b>'+c.name+'</b> помер. <span class="link" data-sel="char:'+fresh.id+'">'+fresh.name+
+        '</span> зайняв місце в <b>'+o.name+'</b>.');
+    }
+    if(S.playerCharId===c.id){
+      logEvent('Твій персонаж помер. Ти спостерігаєш далі — обери іншого лідера в інспекторі.');
+      S.playerCharId=null;
+    }
+  }
+  // loyalty drift + secession
+  for(const o of S.orgs){
+    if(!o.parentId || o.kind==='squad') continue;
+    const p=org(o.parentId); if(!p) continue;
+    const gap=orgPower(o)-orgPower(p);
+    o.loyalty += (p.taxRate>0.3?-0.15:0.05) + (gap>0? -0.12:0.04);
+    o.loyalty=Math.max(0,Math.min(100,o.loyalty));
+    if(o.loyalty<12 && chance(0.02)){
+      o.parentId=null; o.factionId=o.id;
+      S.edges=S.edges.filter(e=>!(e.kind==='hierarchy'&&e.to===o.id));
+      if(!S.factions.find(f=>f.id===o.id)) S.factions.push({id:o.id, orgId:o.id, color:'#9AA7C0'});
+      logEvent('⚑ <b>'+o.name+'</b> вийшов з-під <b>'+p.name+'</b> — лояльність вичерпана.');
+    }
+  }
+}
+
+/* =====================================================================
+   SQUADS — movement, minimal combat, capture
+   ===================================================================== */
+function slerp(a,b,t){
+  const d=Math.max(-1,Math.min(1,a.dot(b)));
+  const th=Math.acos(d);
+  if(th<1e-4) return a.clone();
+  const s=Math.sin(th);
+  return a.clone().multiplyScalar(Math.sin((1-t)*th)/s)
+    .add(b.clone().multiplyScalar(Math.sin(t*th)/s)).normalize();
+}
+function hostile(fa,fb){
+  if(fa===fb) return false;
+  const a=org(fa), b=org(fb);
+  if(!a||!b) return true;
+  const allied=S.edges.some(e=>e.kind==='alliance' &&
+    ((e.from===fa&&e.to===fb)||(e.from===fb&&e.to===fa)));
+  return !allied;
+}
+function squadStep(){
+  // combat: minimal deterministic resolver (Scale A)
+  for(let i=0;i<S.squads.length;i++){
+    for(let j=i+1;j<S.squads.length;j++){
+      const a=S.squads[i], b=S.squads[j];
+      if(!hostile(a.factionId,b.factionId)) continue;
+      if(a.dir.dot(b.dir) < 0.9993) continue;
+      const ka=a.strength*(a.supplied===false?0.7:1)*(a.garrisonId?1.4:1);
+      const kb=b.strength*(b.supplied===false?0.7:1)*(b.garrisonId?1.4:1);
+      const loss=Math.max(1, Math.round(Math.min(ka,kb)*0.5));
+      a.strength-=Math.round(loss*(kb/(ka+kb))*1.6);
+      b.strength-=Math.round(loss*(ka/(ka+kb))*1.6);
+      if(a.strength<=0) killSquad(a,b);
+      if(b.strength<=0) killSquad(b,a);
+    }
+  }
+  S.squads=S.squads.filter(s=>s.strength>0);
+
+  for(const sq of S.squads){
+    const so=org(sq.orgId); if(!so) continue;
+    if(sq.mode==='manual' && sq.order!=='move') { /* manual squads wait for orders */ }
+    // capture progress
+    const here=S.settlements.find(s=>s.dir.dot(sq.dir)>0.9997);
+    if(here && hostile(sq.factionId, org(here.ownerOrgId)?.factionId)){
+      const defenders=S.squads.filter(s=>s!==sq && s.dir.dot(here.dir)>0.9997 &&
+        !hostile(s.factionId, org(here.ownerOrgId)?.factionId));
+      if(!defenders.length){
+        here.contest++;
+        if(here.contest>4){ capture(here, sq); here.contest=0; }
+      }
+    } else if(here) here.contest=0;
+
+    if(sq.mode==='manual' && sq.target){ moveToward(sq); continue; }
+    if(sq.mode==='manual') continue;
+
+    sq.cooldown--;
+    if(sq.target){ moveToward(sq); continue; }
+    if(sq.cooldown>0) continue;
+    sq.cooldown=rint(14,30);
+
+    // utility: capture nearest hostile settlement if strong enough, else garrison home
+    const cands=S.settlements.map(st=>{
+      const own=org(st.ownerOrgId);
+      if(!own || !hostile(sq.factionId, own.factionId)) return null;
+      const def=S.squads.filter(s=>s.dir.dot(st.dir)>0.9997 && !hostile(s.factionId, own.factionId))
+        .reduce((a,s)=>a+s.strength,0);
+      if(def >= sq.strength) return null;   // veto: never attack when weaker
+      const d=1-sq.dir.dot(st.dir);
+      return {st, s: (1/(1+d*40)) * (1+st.pop/4000)};
+    }).filter(Boolean).sort((a,b)=>b.s-a.s);
+
+    if(cands.length && chance(0.55)){
+      sq.target=cands[0].st.dir.clone(); sq.order='capture'; sq.garrisonId=null;
+      sq.targetName=cands[0].st.name;
+    } else {
+      const home=stl(sq.homeId);
+      if(home && sq.dir.dot(home.dir)<0.9997){ sq.target=home.dir.clone(); sq.order='return'; }
+      else { sq.order='garrison'; sq.garrisonId=sq.homeId; }
+    }
+  }
+}
+function moveToward(sq){
+  const d=sq.dir.dot(sq.target);
+  if(d>0.99995){ sq.dir=sq.target.clone(); sq.target=null;
+    if(sq.order!=='capture') sq.order='idle';
+    return; }
+  const speed=0.048;
+  sq.dir=slerp(sq.dir, sq.target, Math.min(1, speed/Math.max(0.02, Math.acos(Math.min(1,d)))));
+}
+function killSquad(dead, winner){
+  const o=org(dead.orgId);
+  logEvent('⚔ Загін <b>'+(o?o.name:'?')+'</b> знищено.');
+  dead.strength=0;
+}
+function capture(st, sq){
+  const so=org(sq.orgId);
+  const conquerorFaction=sq.factionId;
+  const realm=org(conquerorFaction) || so;
+  const old=org(st.ownerOrgId);
+  // REPLACE: install a fresh political org subordinate to the conqueror
+  const gov=makeOrg('political','Намісництво '+st.name,{
+    parentId:realm.id, factionId:realm.factionId||realm.id,
+    treasury:40, leadershipType: realm.leadershipType==='mercenary'?'warlord':'monarch'});
+  makeEdge('hierarchy', realm.id, gov.id);
+  S.edges=S.edges.filter(e=>!(e.kind==='ownership'&&e.to==='S'+st.id));
+  makeEdge('ownership', gov.id, 'S'+st.id);
+  const resident=S.chars.find(c=>c.homeId===st.id && c.alive && !c.ledOrgId) || makeChar(st.id);
+  setLeader(gov, resident);
+  st.ownerOrgId=gov.id; st.loyalty=45;
+  sq.homeId=st.id; sq.garrisonId=st.id; sq.order='garrison'; sq.target=null;
+  logEvent('⚑ <span class="link" data-sel="settlement:'+st.id+'">'+st.name+'</span> захоплено — '+
+    '<b>'+(old?old.name:'вільне місто')+'</b> → <span class="link" data-sel="org:'+realm.id+'">'+realm.name+'</span>.');
+}
+
+/* =====================================================================
+   TICK
+   ===================================================================== */
+function tick(){
+  S.tick++;
+  for(const sq of S.squads) sq.prevDir = (sq.rdir||sq.dir).clone();
+  for(const cv of S.caravans) cv.prevDir = (cv.rdir||cv.dir).clone();
+  economyStep();
+  caravanStep();
+  orgStep();
+  squadStep();
+  updateMarkers();
+  updateHUD();
+  if(S.selection) renderInspector();
+  renderEcon();
+  if(graphOpen) drawGraph();
+}
+
+/* =====================================================================
+   THREE.JS SCENE — icon-based map, trackball planet, smooth markers
+   ===================================================================== */
+const canvas=document.getElementById('scene');
+const renderer=new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x070A11);
+const camera=new THREE.PerspectiveCamera(40, innerWidth/innerHeight, 0.005, 100);
+let camDist=3.2;   // derived from camAlt each frame
+const root=new THREE.Group(); scene.add(root);   // the planet spins, the camera doesn't
+scene.add(new THREE.AmbientLight(0x8CA4CC, 0.62));
+const sun=new THREE.DirectionalLight(0xFFF3DA, 0.95); sun.position.set(0.4,0.5,1); scene.add(sun);
+
+let planet, roadLines, roadMat, markerGroup;
+
+/* ---------- icon atlas: every object type gets a drawn glyph ---------- */
+const ICONS={};
+const ICON_URL={};
+function iconTexture(draw, size=96){
+  const c=document.createElement('canvas'); c.width=c.height=size;
+  const x=c.getContext('2d');
+  x.lineCap='round'; x.lineJoin='round';
+  x.strokeStyle='#fff'; x.fillStyle='#fff';
+  x.translate(size/2,size/2);
+  draw(x, size/2);
+  const t=new THREE.CanvasTexture(c);
+  t.minFilter=THREE.LinearFilter;
+  t._url=c.toDataURL();
+  return t;
+}
+function outline(x,fn,w){          // dark halo so icons read over any terrain
+  x.save(); x.strokeStyle='rgba(6,9,15,.9)'; x.lineWidth=w||9; fn(x); x.restore();
+}
+function buildIcons(){
+  // ---- settlements, by tier: silhouette says how big the place is ----
+  ICONS.megalopolis=iconTexture((x,r)=>{
+    const towers=[[-26,-6,14,40],[-8,-26,16,60],[10,-14,14,48],[26,-2,12,36]];
+    const path=x=>{x.beginPath();for(const[t,ty,w,h]of towers)x.rect(t-w/2,ty,w,h);x.closePath();};
+    outline(x,xx=>{path(xx);xx.stroke();},10);
+    path(x); x.fill();
+    x.fillStyle='#0A0E17';
+    for(const[t,ty,w,h]of towers){for(let i=0;i<3;i++)x.fillRect(t-3,ty+7+i*11,6,5);}
+  });
+  ICONS.city=iconTexture((x,r)=>{
+    const path=x=>{x.beginPath();
+      x.moveTo(-28,34); x.lineTo(-28,-8); x.lineTo(-20,-8); x.lineTo(-20,-18);
+      x.lineTo(-10,-18); x.lineTo(-10,-8); x.lineTo(0,-8); x.lineTo(0,-24);
+      x.lineTo(12,-24); x.lineTo(12,-8); x.lineTo(22,-8); x.lineTo(22,-16);
+      x.lineTo(30,-16); x.lineTo(30,34); x.closePath();};
+    outline(x,xx=>{path(xx);xx.stroke();},10);
+    path(x); x.fill();
+    x.fillStyle='#0A0E17';
+    x.fillRect(-22,4,7,7); x.fillRect(-6,4,7,7); x.fillRect(12,4,7,7); x.fillRect(-6,18,7,10);
+  });
+  ICONS.village=iconTexture((x,r)=>{
+    const path=x=>{x.beginPath();
+      x.moveTo(-30,4); x.lineTo(-14,-16); x.lineTo(2,4); x.lineTo(2,26); x.lineTo(-30,26); x.closePath();
+      x.moveTo(4,10); x.lineTo(18,-6); x.lineTo(32,10); x.lineTo(32,26); x.lineTo(4,26); x.closePath();};
+    outline(x,xx=>{path(xx);xx.stroke();},9);
+    path(x); x.fill();
+    x.fillStyle='#0A0E17'; x.fillRect(-19,10,8,10); x.fillRect(14,14,8,8);
+  });
+  ICONS.camp=iconTexture((x,r)=>{
+    const path=x=>{x.beginPath(); x.moveTo(0,-24); x.lineTo(26,24); x.lineTo(-26,24); x.closePath();};
+    outline(x,xx=>{path(xx);xx.stroke();},9);
+    path(x); x.fill();
+    x.fillStyle='#0A0E17'; x.beginPath(); x.moveTo(0,-4); x.lineTo(9,24); x.lineTo(-9,24); x.closePath(); x.fill();
+  });
+  // ---- enterprises: the tool of the trade ----
+  ICONS.farm=iconTexture((x)=>{
+    const path=x=>{x.beginPath();
+      x.moveTo(0,26); x.lineTo(0,-10);
+      for(let i=0;i<3;i++){const y=-10+i*11; x.moveTo(0,y); x.lineTo(-15,y-9); x.moveTo(0,y); x.lineTo(15,y-9);} };
+    x.lineWidth=7; outline(x,xx=>{xx.lineWidth=13;path(xx);xx.stroke();});
+    path(x); x.stroke();
+  });
+  ICONS.lumber=iconTexture((x)=>{
+    const tree=x=>{x.beginPath(); x.moveTo(0,-26); x.lineTo(17,-2); x.lineTo(-17,-2); x.closePath();
+      x.moveTo(0,-12); x.lineTo(21,16); x.lineTo(-21,16); x.closePath();};
+    outline(x,xx=>{tree(xx);xx.stroke();},9);
+    tree(x); x.fill();
+    x.fillRect(-4,14,8,14);
+  });
+  ICONS.mine=iconTexture((x)=>{
+    const pick=x=>{x.beginPath(); x.moveTo(-24,-14); x.quadraticCurveTo(0,-30,24,-14);
+      x.moveTo(0,-22); x.lineTo(0,26);};
+    x.lineWidth=8; outline(x,xx=>{xx.lineWidth=14;pick(xx);xx.stroke();});
+    pick(x); x.stroke();
+  });
+  ICONS.forge=iconTexture((x)=>{
+    const anvil=x=>{x.beginPath();
+      x.moveTo(-26,-10); x.lineTo(22,-10); x.lineTo(26,0); x.lineTo(6,2);
+      x.lineTo(4,14); x.lineTo(16,26); x.lineTo(-16,26); x.lineTo(-6,14); x.lineTo(-8,2);
+      x.lineTo(-26,0); x.closePath();};
+    outline(x,xx=>{anvil(xx);xx.stroke();},9);
+    anvil(x); x.fill();
+  });
+  ICONS.workshop=iconTexture((x)=>{
+    const gear=x=>{x.beginPath();
+      for(let i=0;i<8;i++){const a=i/8*Math.PI*2, b=a+Math.PI/16;
+        x.lineTo(Math.cos(a)*28, Math.sin(a)*28); x.lineTo(Math.cos(b)*28, Math.sin(b)*28);
+        const c=b+Math.PI/16; x.lineTo(Math.cos(c)*19, Math.sin(c)*19);
+        const d=c+Math.PI/16; x.lineTo(Math.cos(d)*19, Math.sin(d)*19);}
+      x.closePath();};
+    outline(x,xx=>{gear(xx);xx.stroke();},9);
+    gear(x); x.fill();
+    x.globalCompositeOperation='destination-out';
+    x.beginPath(); x.arc(0,0,9,0,7); x.fill();
+  });
+  ICONS.armory=iconTexture((x)=>{
+    const sword=x=>{x.beginPath();
+      x.moveTo(0,-28); x.lineTo(7,-12); x.lineTo(7,10); x.lineTo(-7,10); x.lineTo(-7,-12); x.closePath();
+      x.moveTo(-18,12); x.lineTo(18,12); x.lineTo(18,18); x.lineTo(-18,18); x.closePath();
+      x.moveTo(-4,18); x.lineTo(4,18); x.lineTo(4,28); x.lineTo(-4,28); x.closePath();};
+    outline(x,xx=>{sword(xx);xx.stroke();},9);
+    sword(x); x.fill();
+  });
+  // ---- units ----
+  ICONS.squad=iconTexture((x)=>{
+    const shield=x=>{x.beginPath(); x.moveTo(0,-28); x.lineTo(24,-18); x.lineTo(24,4);
+      x.quadraticCurveTo(24,22,0,30); x.quadraticCurveTo(-24,22,-24,4); x.lineTo(-24,-18); x.closePath();};
+    outline(x,xx=>{shield(xx);xx.stroke();},9);
+    shield(x); x.fill();
+    x.fillStyle='#0A0E17';
+    x.beginPath(); x.moveTo(0,-14); x.lineTo(13,10); x.lineTo(0,3); x.lineTo(-13,10); x.closePath(); x.fill();
+  });
+  ICONS.caravan=iconTexture((x)=>{
+    const cart=x=>{x.beginPath(); x.rect(-24,-16,44,20);
+      x.moveTo(-10,14); x.arc(-14,14,9,0,7); x.moveTo(20,14); x.arc(16,14,9,0,7);};
+    outline(x,xx=>{cart(xx);xx.stroke();},9);
+    x.beginPath(); x.rect(-24,-16,44,20); x.fill();
+    x.beginPath(); x.arc(-14,14,9,0,7); x.fill();
+    x.beginPath(); x.arc(16,14,9,0,7); x.fill();
+    x.fillStyle='#0A0E17';
+    x.beginPath(); x.arc(-14,14,3.5,0,7); x.fill();
+    x.beginPath(); x.arc(16,14,3.5,0,7); x.fill();
+  });
+  ICONS.person=iconTexture((x)=>{
+    const p=x=>{x.beginPath(); x.arc(0,-14,10,0,7); x.closePath();
+      x.moveTo(-14,28); x.quadraticCurveTo(0,-4,14,28); x.closePath();};
+    outline(x,xx=>{p(xx);xx.stroke();},9);
+    p(x); x.fill();
+  });
+}
+buildIcons();
+
+/* on-map key: what each icon means */
+function buildIconLegend(){
+  const rows=[
+    ['megalopolis','Мегаполіс'],['city','Місто'],['village','Село'],['camp','Табір'],
+    ['squad','Загін'],['caravan','Караван'],
+    ['farm','Ферма'],['lumber','Лісопилка'],['mine','Шахта'],
+    ['forge','Кузня'],['workshop','Майстерня'],['armory','Збройня'],
+    ['person','Мешканець'],
+  ];
+  document.getElementById('keymap').innerHTML =
+    '<div style="color:var(--brass);letter-spacing:.14em;font-size:9px;margin-bottom:5px">ЛЕГЕНДА</div>'+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">'+
+    rows.map(([k,l])=>'<div><img src="'+ICONS[k]._url+'" width="13" height="13" '+
+      'style="vertical-align:-2px;margin-right:5px;filter:invert(78%) sepia(10%) saturate(400%) hue-rotate(190deg)">'+l+'</div>').join('')+
+    '</div><div style="margin-top:5px;color:#4C5975">колір іконки = фракція-власник<br>'+
+    'на близькому зумі місто виростає: вулиці, будинки, мешканці</div>';
+}
+buildIconLegend();
+
+function labelTexture(text, big){
+  const pad=10, fs=big?30:24;
+  const c=document.createElement('canvas');
+  const x0=c.getContext('2d');
+  x0.font=(big?'600 ':'400 ')+fs+'px IBM Plex Mono, monospace';
+  const w=Math.ceil(x0.measureText(text).width)+pad*2;
+  c.width=w; c.height=fs+pad*2;
+  const x=c.getContext('2d');
+  x.font=(big?'600 ':'400 ')+fs+'px IBM Plex Mono, monospace';
+  x.textBaseline='middle';
+  x.lineWidth=6; x.strokeStyle='rgba(6,9,15,.92)';
+  x.strokeText(text, pad, c.height/2);
+  x.fillStyle= big? '#F2E7CC' : '#C2CDE0';
+  x.fillText(text, pad, c.height/2);
+  const t=new THREE.CanvasTexture(c);
+  t.minFilter=THREE.LinearFilter;
+  return {tex:t, aspect:c.width/c.height};
+}
+
+/* markers are screen-space sprites: always the same readable size */
+function makeSprite(tex, size, color){
+  const m=new THREE.Sprite(new THREE.SpriteMaterial({
+    map:tex, color:color||0xffffff, sizeAttenuation:false,
+    depthTest:false, depthWrite:false, transparent:true}));
+  m.scale.set(size,size,1);
+  m.renderOrder=10;
+  return m;
+}
+
+/* ---------- pick registry: screen-space picking, exact and cheap ---------- */
+let picks=[];   // {type,id,dir,px} — px is the icon's screen radius
+
+function buildScene(){
+  root.clear(); picks=[]; pawnBuiltFor=null; pawnSprites=[]; pawnPositions=[];
+  cityCache=new Map(); cityLive=new Set();
+
+  /* --- planet: relief mesh + baked climate texture + per-pixel shader --- */
+  const TEX_W=1536, TEX_H=768;
+  const img=document.createElement('canvas');
+  img.width=TEX_W; img.height=TEX_H;
+  const ictx=img.getContext('2d');
+  const idata=ictx.createImageData(TEX_W,TEX_H);
+  const px=idata.data;
+  const pv=new THREE.Vector3(); const rgb=[0,0,0];
+  for(let y=0;y<TEX_H;y++){
+    const lat=(y+0.5)/TEX_H*Math.PI - Math.PI/2;      // −π/2..π/2
+    const cy=Math.cos(lat), sy=Math.sin(lat);
+    for(let x=0;x<TEX_W;x++){
+      const lon=(x+0.5)/TEX_W*Math.PI*2 - Math.PI;
+      pv.set(cy*Math.cos(lon), sy, cy*Math.sin(lon));
+      const e=elevation(pv);
+      terrainColor(pv, e, rgb);
+      const i=(y*TEX_W+x)*4;
+      px[i]  = rgb[0]*255;
+      px[i+1]= rgb[1]*255;
+      px[i+2]= rgb[2]*255;
+      px[i+3]= Math.max(0, Math.min(255, (e+0.45)/1.15*255));   // height, for bump
+    }
+  }
+  ictx.putImageData(idata,0,0);
+  const terrainTex=new THREE.CanvasTexture(img);
+  terrainTex.wrapS=THREE.RepeatWrapping;
+  terrainTex.wrapT=THREE.ClampToEdgeWrapping;
+  terrainTex.minFilter=THREE.LinearFilter;
+  terrainTex.magFilter=THREE.LinearFilter;
+  terrainTex.generateMipmaps=false;
+
+  const geo=new THREE.IcosahedronGeometry(1, 72);
+  const gpos=geo.attributes.position;
+  const gp=new THREE.Vector3();
+  for(let i=0;i<gpos.count;i++){
+    gp.set(gpos.getX(i),gpos.getY(i),gpos.getZ(i)).normalize();
+    const e=elevation(gp);
+    const h=1 + Math.max(0,e)*0.028 + Math.min(0,e)*0.004;
+    gpos.setXYZ(i, gp.x*h, gp.y*h, gp.z*h);
+  }
+  geo.computeVertexNormals();
+
+  const planetMat=new THREE.ShaderMaterial({
+    uniforms:{
+      map:{value:terrainTex},
+      texel:{value:new THREE.Vector2(1/TEX_W, 1/TEX_H)},
+      lightDir:{value:new THREE.Vector3(0.45,0.55,1.0).normalize()},
+    },
+    vertexShader:`
+      varying vec3 vObj;
+      varying vec3 vWN;
+      void main(){
+        vObj = normalize(position);
+        vWN  = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+      }`,
+    fragmentShader:`
+      precision highp float;
+      uniform sampler2D map;
+      uniform vec2 texel;
+      uniform vec3 lightDir;
+      varying vec3 vObj;
+      varying vec3 vWN;
+
+      float hash(vec3 p){
+        p = fract(p*0.3183099 + vec3(0.1,0.2,0.3));
+        p *= 17.0;
+        return fract(p.x*p.y*p.z*(p.x+p.y+p.z));
+      }
+      float vnoise(vec3 x){
+        vec3 i=floor(x), f=fract(x);
+        f = f*f*(3.0-2.0*f);
+        return mix(mix(mix(hash(i+vec3(0,0,0)),hash(i+vec3(1,0,0)),f.x),
+                       mix(hash(i+vec3(0,1,0)),hash(i+vec3(1,1,0)),f.x),f.y),
+                   mix(mix(hash(i+vec3(0,0,1)),hash(i+vec3(1,0,1)),f.x),
+                       mix(hash(i+vec3(0,1,1)),hash(i+vec3(1,1,1)),f.x),f.y),f.z);
+      }
+      float fbm3(vec3 p){
+        float s=0.0, a=0.5;
+        for(int i=0;i<5;i++){ s+=a*vnoise(p); p*=2.07; a*=0.5; }
+        return s;
+      }
+      vec2 sphUV(vec3 n){
+        return vec2(atan(n.z,n.x)/6.2831853+0.5, asin(clamp(n.y,-1.0,1.0))/3.14159265+0.5);
+      }
+      void main(){
+        vec3 n = normalize(vObj);
+        vec2 uv = sphUV(n);
+        vec4 t = texture2D(map, uv);
+        float h = t.a;
+        float sea = smoothstep(0.383, 0.397, h);      // (e>0) in packed space
+
+        // --- micro relief: high-frequency detail the texture can't hold ---
+        vec3 q = n*140.0;
+        float micro = fbm3(q)-0.5;
+        float grain = (fbm3(n*520.0)-0.5);
+        vec3 col = t.rgb;
+        col *= 1.0 + (micro*0.20 + grain*0.10) * sea;          // land mottling
+        col += vec3(0.02,0.03,0.05) * (1.0-sea) * (fbm3(n*90.0)-0.5); // ocean texture
+
+        // --- normal: baked height gradient + procedural micro bump ---
+        float hl=texture2D(map, uv-vec2(texel.x,0.0)).a;
+        float hr=texture2D(map, uv+vec2(texel.x,0.0)).a;
+        float hd=texture2D(map, uv-vec2(0.0,texel.y)).a;
+        float hu=texture2D(map, uv+vec2(0.0,texel.y)).a;
+        vec3 tang = normalize(cross(vec3(0.0,1.0,0.0), n)+vec3(1e-5));
+        vec3 bit  = normalize(cross(n, tang));
+        float gx=(hr-hl)*22.0 + (fbm3(q+vec3(3.1,0,0))-fbm3(q-vec3(3.1,0,0)))*0.9;
+        float gy=(hu-hd)*22.0 + (fbm3(q+vec3(0,3.1,0))-fbm3(q-vec3(0,3.1,0)))*0.9;
+        vec3 nObj = normalize(n - (tang*gx + bit*gy)*sea*0.9);
+        vec3 N = normalize(mat3(modelMatrix)*nObj);
+
+        vec3 Lw = normalize(lightDir);
+        float lam = max(dot(N, Lw), 0.0);
+        float amb = 0.34 + 0.10*max(dot(vWN, Lw),0.0);
+        vec3 lit = col * (amb + 0.86*lam);
+
+        // specular sheen on water only
+        vec3 V = vec3(0.0,0.0,1.0);
+        vec3 H = normalize(Lw+V);
+        float spec = pow(max(dot(N,H),0.0), 48.0) * (1.0-sea) * 0.35;
+        lit += vec3(0.55,0.68,0.85)*spec;
+
+        // atmospheric rim
+        float rim = pow(1.0 - max(dot(normalize(vWN), V),0.0), 3.0);
+        lit += vec3(0.20,0.33,0.52)*rim*0.35;
+
+        gl_FragColor = vec4(lit, 1.0);
+      }`,
+  });
+  planet=new THREE.Mesh(geo, planetMat);
+  root.add(planet);
+  root.add(new THREE.Mesh(new THREE.SphereGeometry(1.055,64,40),
+    new THREE.MeshBasicMaterial({color:0x4E75A8, transparent:true, opacity:0.09, side:THREE.BackSide})));
+
+  /* --- roads --- */
+  const rp=[];
+  for(const [i,j] of S.roads){
+    const a=S.settlements[i].dir, b=S.settlements[j].dir;
+    for(let k=0;k<18;k++){
+      const p1=slerp(a,b,k/18).multiplyScalar(1.030);
+      const p2=slerp(a,b,(k+1)/18).multiplyScalar(1.030);
+      rp.push(p1.x,p1.y,p1.z,p2.x,p2.y,p2.z);
+    }
+  }
+  const rg=new THREE.BufferGeometry();
+  rg.setAttribute('position', new THREE.Float32BufferAttribute(rp,3));
+  /* Roads are drawn on the sphere's surface, so depth alone can't be trusted at
+     grazing angles — the far hemisphere is discarded outright in the shader. */
+  roadMat=new THREE.ShaderMaterial({
+    uniforms:{ horizon:{value:0.3}, tint:{value:new THREE.Color(0x8A7550)} },
+    transparent:true, depthWrite:false,
+    vertexShader:`
+      varying vec3 vW;
+      void main(){
+        vW = normalize((modelMatrix * vec4(position,1.0)).xyz);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+      }`,
+    fragmentShader:`
+      uniform float horizon;
+      uniform vec3 tint;
+      varying vec3 vW;
+      void main(){
+        // camera sits on +Z: anything with z below the horizon plane is on the far side
+        if(vW.z < horizon) discard;
+        float fade = smoothstep(horizon, horizon+0.12, vW.z);
+        gl_FragColor = vec4(tint, 0.72*fade);
+      }`,
+  });
+  roadLines=new THREE.LineSegments(rg, roadMat);
+  roadLines.renderOrder=1;
+  root.add(roadLines);
+
+  markerGroup=new THREE.Group(); root.add(markerGroup);
+  pawnSprites=[]; pawnPositions=[]; pawnBuiltFor=null;
+
+  const TIER_PX={megalopolis:0.062, city:0.048, village:0.034, camp:0.026};
+  for(const st of S.settlements){
+    const spr=makeSprite(ICONS[st.tier], TIER_PX[st.tier]);
+    spr.position.copy(st.dir).multiplyScalar(1.012);
+    markerGroup.add(spr);
+    st._spr=spr; st._px=TIER_PX[st.tier];
+    const lab=labelTexture(st.name, st.tier==='city'||st.tier==='megalopolis');
+    const ls=makeSprite(lab.tex, 0.03);
+    ls.scale.set(0.028*lab.aspect, 0.028, 1);
+    ls.center.set(0.5, 1.55);
+    ls.position.copy(spr.position);
+    ls.material.depthTest=false;
+    markerGroup.add(ls);
+    st._label=ls;
+  }
+  for(const e of S.ents){
+    if(ENT[e.kind].inside) continue;
+    const st=stl(e.settlementId);
+    if(!e._dir) e._dir=placeOutdoorEnterprise(st, e);
+    const spr=makeSprite(ICONS[e.kind], 0.026, 0xE8CE96);
+    spr.position.copy(e._dir).multiplyScalar(1.01);
+    markerGroup.add(spr);
+    e._spr=spr;
+  }
+  rebuildDynamicMarkers();
+  updateMarkers();
+}
+
+let squadMeshes=new Map(), caravanMeshes=new Map();
+function rebuildDynamicMarkers(){
+  for(const m of squadMeshes.values()) markerGroup.remove(m);
+  for(const m of caravanMeshes.values()) markerGroup.remove(m);
+  squadMeshes.clear(); caravanMeshes.clear();
+}
+function factionColor(fid){
+  const f=S.factions.find(x=>x.id===fid);
+  return f? f.color : '#8894AC';
+}
+
+/* markers follow the sim, but their render position eases — no jitter */
+function updateMarkers(){
+  picks=[];
+  for(const st of S.settlements){
+    if(!st._spr) continue;
+    const o=org(st.ownerOrgId);
+    st._spr.material.color.set(factionColor(o?o.factionId:null));
+    const sel=S.selection && S.selection.type==='settlement' && S.selection.id===st.id;
+    const hov=hover && hover.type==='settlement' && hover.id===st.id;
+    st._spr.scale.setScalar(st._px*(sel?1.35:hov?1.18:1));
+    picks.push({type:'settlement', id:st.id, dir:st.dir, px:st._px});
+  }
+  for(const e of S.ents){
+    if(!e._spr && !ENT[e.kind].inside && markerGroup){
+      e._dir = e._dir || placeOutdoorEnterprise(stl(e.settlementId), e);
+      e._spr = makeSprite(ICONS[e.kind], 0.026, 0xE8CE96);
+      markerGroup.add(e._spr);
+    }
+    if(!e._spr) continue;
+    const sel=S.selection && S.selection.type==='enterprise' && S.selection.id===e.id;
+    e._spr.material.color.set(e.stalled? 0x9A6A62 : 0xE8CE96);
+    e._spr.scale.setScalar(0.026*(sel?1.35:1));
+    picks.push({type:'enterprise', id:e.id, dir:e._dir, px:0.026});
+  }
+  const live=new Set();
+  for(const sq of S.squads){
+    live.add(sq.id);
+    if(!sq.rdir) sq.rdir=sq.dir.clone();
+    let m=squadMeshes.get(sq.id);
+    if(!m){ m=makeSprite(ICONS.squad, 0.034); markerGroup.add(m); squadMeshes.set(sq.id,m); }
+    m.material.color.set(factionColor(sq.factionId));
+    const sel=S.selection && S.selection.type==='squad' && S.selection.id===sq.id;
+    m.scale.setScalar((0.026+Math.min(0.016, sq.strength/900))*(sel?1.4:1));
+    picks.push({type:'squad', id:sq.id, dir:sq.rdir, px:0.034});
+  }
+  for(const [id,m] of squadMeshes) if(!live.has(id)){ markerGroup.remove(m); squadMeshes.delete(id); }
+
+  const cl=new Set();
+  for(const cv of S.caravans){
+    cl.add(cv.id);
+    if(!cv.rdir) cv.rdir=cv.dir.clone();
+    let m=caravanMeshes.get(cv.id);
+    if(!m){ m=makeSprite(ICONS.caravan, 0.024); markerGroup.add(m); caravanMeshes.set(cv.id,m); }
+    m.material.color.set(cv.cargo? RES[cv.cargo].color : '#6C7590');
+    picks.push({type:'caravan', id:cv.id, dir:cv.rdir, px:0.024});
+  }
+  for(const [id,m] of caravanMeshes) if(!cl.has(id)){ markerGroup.remove(m); caravanMeshes.delete(id); }
+}
+/* every frame: ease render positions and hide anything behind the globe */
+function animateMarkers(){
+  const horizon = 1/camDist;
+  if(roadMat) roadMat.uniforms.horizon.value = horizon;
+  const q=root.quaternion;
+  const put=(spr, dir, lift)=>{
+    spr.position.copy(dir).multiplyScalar(lift);
+    const z=dir.clone().applyQuaternion(q).z;
+    spr.visible = z > horizon - 0.02;
+    const fade=Math.min(1, Math.max(0,(z-horizon+0.02)/0.08));
+    spr.material.opacity = fade;
+  };
+  for(const st of S.settlements){
+    if(!st._spr) continue;
+    put(st._spr, st.dir, 1.035);
+    if(cityLive.has(st.id)){ st._spr.material.opacity *= 0.25; }
+    if(st._label){
+      const showLabel = st.tier==='megalopolis' || st.tier==='city' || camDist<2.4;
+      st._label.visible = st._spr.visible && showLabel;
+      st._label.position.copy(st._spr.position);
+      st._label.material.opacity = st._spr.material.opacity*0.95;
+    }
+  }
+  for(const e of S.ents) if(e._spr) put(e._spr, e._dir, 1.032);
+  // render position is the sim's last tick blended into its current one, by elapsed
+  // tick fraction — motion is continuous, not a step per tick
+  for(const sq of S.squads){
+    const m=squadMeshes.get(sq.id); if(!m) continue;
+    sq.rdir = sq.prevDir? slerp(sq.prevDir, sq.dir, tickAlpha) : sq.dir.clone();
+    put(m, sq.rdir, 1.042);
+  }
+  for(const cv of S.caravans){
+    const m=caravanMeshes.get(cv.id); if(!m) continue;
+    cv.rdir = cv.prevDir? slerp(cv.prevDir, cv.dir, tickAlpha) : cv.dir.clone();
+    put(m, cv.rdir, 1.038);
+  }
+  updateCityLOD();
+  updatePawns();
+  for(const pp of pawnPositions) put(pp.spr, pp.dir, 1.030);
+}
+
+/* =====================================================================
+   CLOSE LOD — a real town: blocks first, then perimeter development.
+
+   Streets are not grown as strokes (that yields spaghetti). The city disk is
+   recursively split into blocks; the corridors left between them ARE the road
+   network — so streets come out straight, thin, and consistently connected.
+   Each block is then developed around its perimeter with a courtyard inside,
+   the way actual urban fabric works.
+   ===================================================================== */
+const CITY = {
+  camp:        {radius:0.0060, depth:1, minBlock:0.50, floors:[1,1], build:0.30},
+  village:     {radius:0.0135, depth:4, minBlock:0.19, floors:[1,2], build:0.58},
+  city:        {radius:0.0250, depth:7, minBlock:0.095,floors:[2,6], build:0.86},
+  megalopolis: {radius:0.0380, depth:9, minBlock:0.062,floors:[3,12],build:0.93},
+};
+function cityRng(st){ return mulberry32((st.id*2654435761 ^ S.seed*40503)>>>0); }
+
+/* road corridor width by how major the split is — avenues at the top, lanes at the bottom */
+function roadWidth(d){ return Math.max(0.016, 0.075 * Math.pow(0.72, d)); }
+
+/* --- recursive block subdivision inside the city disk --- */
+function subdivideCity(st){
+  const cfg=CITY[st.tier], rr=cityRng(st);
+  const blocks=[];
+  const baseAng=rr()*Math.PI*2;
+  const rot=(u,a)=>({x:u.x*Math.cos(a)-u.y*Math.sin(a), y:u.x*Math.sin(a)+u.y*Math.cos(a)});
+  const density=(x,y)=>Math.max(0.10, 1-Math.hypot(x,y)*0.85);
+
+  function rec(c, u, hw, hh, d){
+    if(Math.hypot(c.x,c.y) - Math.max(hw,hh) > 1.05) return;
+    const den=density(c.x,c.y);
+    const maxD = Math.max(1, Math.round(cfg.depth*(0.55+den*0.55)));
+    if(d>=maxD || Math.min(hw,hh) < cfg.minBlock){
+      if(Math.hypot(c.x,c.y) < 1.02) blocks.push({c, u, hw, hh, d, den});
+      return;
+    }
+    const v={x:-u.y, y:u.x};
+    const road=roadWidth(d)/2;
+    const t=0.38+rr()*0.24;
+    const jit=(rr()-0.5)*0.07;
+    const rotv=(w,a)=>({x:w.x*Math.cos(a)-w.y*Math.sin(a), y:w.x*Math.sin(a)+w.y*Math.cos(a)});
+    if(hw>=hh){                                   // cut across u
+      const aHW=hw*t-road, bHW=hw*(1-t)-road;
+      if(aHW<0.05||bHW<0.05){ blocks.push({c,u,hw,hh,d,den}); return; }
+      const ca={x:c.x+u.x*(-hw+aHW), y:c.y+u.y*(-hw+aHW)};
+      const cb={x:c.x+u.x*( hw-bHW), y:c.y+u.y*( hw-bHW)};
+      rec(ca, rotv(u, jit), aHW, hh, d+1);
+      rec(cb, rotv(u,-jit), bHW, hh, d+1);
+    } else {                                      // cut across v
+      const aHH=hh*t-road, bHH=hh*(1-t)-road;
+      if(aHH<0.05||bHH<0.05){ blocks.push({c,u,hw,hh,d,den}); return; }
+      const ca={x:c.x+v.x*(-hh+aHH), y:c.y+v.y*(-hh+aHH)};
+      const cb={x:c.x+v.x*( hh-bHH), y:c.y+v.y*( hh-bHH)};
+      rec(ca, rotv(u, jit), hw, aHH, d+1);
+      rec(cb, rotv(u,-jit), hw, bHH, d+1);
+    }
+  }
+  const u0={x:Math.cos(baseAng), y:Math.sin(baseAng)};
+  rec({x:0,y:0}, u0, 1.0, 1.0, 0);
+  return {blocks, cfg, rr, density};
+}
+
+/* --- develop each block: buildings around the perimeter, courtyard inside --- */
+function developBlocks(town){
+  const {blocks, cfg, rr, density}=town;
+  const out=[];
+  const [flo,fhi]=cfg.floors;
+  for(const b of blocks){
+    const u=b.u, v={x:-b.u.y, y:b.u.x};
+    const setback=0.012;
+    const hw=b.hw-setback, hh=b.hh-setback;
+    if(hw<=0.02||hh<=0.02) continue;
+    const den=b.den;
+    const depth=Math.min(0.075, Math.max(0.035, Math.min(hw,hh)*0.55));   // building depth from the street
+    const solid = (Math.min(hw,hh) <= depth*1.25);                        // too small for a courtyard
+    const put=(lx,ly,w,dp,ang)=>{
+      const x=b.c.x + u.x*lx + v.x*ly;
+      const y=b.c.y + u.y*lx + v.y*ly;
+      if(Math.hypot(x,y)>1.0) return;
+      const f=Math.max(1, Math.round((flo + (fhi-flo)*Math.pow(den,1.7)) * (0.75+rr()*0.55)));
+      out.push({x, y, ang, w, d:dp, floors:f,
+        tone:0.45+rr()*0.5, roof: f<=2 && rr()<0.75, den});
+    };
+    const ang0=Math.atan2(u.y,u.x);
+    if(solid){
+      put(0, 0, hw*2*(0.86+rr()*0.12), hh*2*(0.86+rr()*0.12), ang0);
+      continue;
+    }
+    // run a frontage along each of the four sides
+    const side=(len, fixed, along, axis)=>{
+      let t=-len;
+      while(t < len-0.02){
+        const w=Math.min(len-t, 0.030+rr()*0.058);   // narrow frontages: townhouses, not warehouses
+        if(rr() < cfg.build){
+          const cxt=t+w/2;
+          if(axis==='u') put(cxt, fixed, w, depth, ang0);
+          else           put(fixed, cxt, depth, w, ang0);
+        }
+        t += w + 0.004 + rr()*0.010;    // party walls, with the odd gap
+      }
+    };
+    side(hw, hh-depth/2, 0, 'u');
+    side(hw, -(hh-depth/2), 0, 'u');
+    side(hh-depth, hw-depth/2, 0, 'v');
+    side(hh-depth, -(hw-depth/2), 0, 'v');
+  }
+  return out;
+}
+
+/* --- geometry merging: one draw call per layer --- */
+function MeshAcc(){ return {pos:[], nrm:[], col:[]}; }
+const _m3=new THREE.Matrix3();
+function accGeo(acc, geo, mat4, color){
+  _m3.getNormalMatrix(mat4);
+  const gp=geo.attributes.position, gn=geo.attributes.normal;
+  const idx=geo.index? geo.index.array : null;
+  const n=idx? idx.length : gp.count;
+  const v=new THREE.Vector3(), nv=new THREE.Vector3();
+  for(let i=0;i<n;i++){
+    const k=idx? idx[i] : i;
+    v.set(gp.getX(k),gp.getY(k),gp.getZ(k)).applyMatrix4(mat4);
+    nv.set(gn.getX(k),gn.getY(k),gn.getZ(k)).applyMatrix3(_m3).normalize();
+    acc.pos.push(v.x,v.y,v.z); acc.nrm.push(nv.x,nv.y,nv.z);
+    acc.col.push(color.r,color.g,color.b);
+  }
+}
+function accMesh(acc){
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(acc.pos,3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(acc.nrm,3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(acc.col,3));
+  return new THREE.Mesh(g, new THREE.MeshLambertMaterial({vertexColors:true}));
+}
+const BOX=new THREE.BoxGeometry(1,1,1);
+const CYL=new THREE.CylinderGeometry(1,1,1,10,1);
+const SPH=new THREE.SphereGeometry(1,10,8);
+const CONE=new THREE.ConeGeometry(1,1,7);
+const DISK=new THREE.CircleGeometry(1, 44);
+
+/* --- assemble one town on the sphere --- */
+let cityCache=new Map(), cityLive=new Set();
+function buildCity(st){
+  const town=subdivideCity(st);
+  const cfg=town.cfg, rr=town.rr;
+  const lots=developBlocks(town);
+
+  const up=st.dir.clone();
+  const tan=new THREE.Vector3(0,1,0).cross(up).normalize();
+  const bit=up.clone().cross(tan).normalize();
+  const R=1 + Math.max(0, elevation(st.dir))*0.028;
+  const S1=cfg.radius;
+  const FLOOR=0.00080;
+
+  const dirOf=(x,y)=>up.clone().add(tan.clone().multiplyScalar(x*S1))
+                                .add(bit.clone().multiplyScalar(y*S1)).normalize();
+  const M=new THREE.Matrix4();
+  const orient=(x,y,ang,lift)=>{
+    const n=dirOf(x,y);
+    const p=n.clone().multiplyScalar(R+lift);
+    const t2=tan.clone().multiplyScalar(Math.cos(ang)).add(bit.clone().multiplyScalar(Math.sin(ang)));
+    const b2=n.clone().cross(t2).normalize();
+    const t3=b2.clone().cross(n).normalize();
+    M.makeBasis(t3, n, b2); M.setPosition(p);
+    return M.clone();
+  };
+  const scale=(m,x,y,z)=>m.multiply(new THREE.Matrix4().makeScale(x,y,z));
+  const move=(m,x,y,z)=>m.multiply(new THREE.Matrix4().makeTranslation(x,y,z));
+
+  const group=new THREE.Group();
+  const col=new THREE.Color();
+
+  // 1. pavement: one disk under the whole town — the roads are what's left uncovered
+  const gAcc=MeshAcc();
+  {
+    const n=up.clone(), p=n.clone().multiplyScalar(R+0.00002);
+    const t2=tan.clone(), b2=n.clone().cross(t2).normalize(), t3=b2.clone().cross(n).normalize();
+    const m=new THREE.Matrix4().makeBasis(t3, n, b2);
+    m.setPosition(p);
+    m.multiply(new THREE.Matrix4().makeRotationX(-Math.PI/2));   // CircleGeometry is XY
+    m.multiply(new THREE.Matrix4().makeScale(S1*1.03, S1*1.03, 1));
+    col.set(0x3A342C);
+    accGeo(gAcc, DISK, m, col);
+  }
+  // 2. blocks: raised ground patches — the gaps between them read as the street grid
+  for(const b of town.blocks){
+    const ang=Math.atan2(b.u.y,b.u.x);
+    const m=orient(b.c.x, b.c.y, ang, 0.00006);
+    scale(m, b.hw*2*S1, 0.00010, b.hh*2*S1);
+    const grass = b.den < 0.35 || rr()<0.12;
+    col.setHSL(grass?0.26:0.09, grass?0.20:0.10, grass?0.24:0.30);
+    accGeo(gAcc, BOX, m, col);
+  }
+  group.add(accMesh(gAcc));
+
+  // 3. buildings
+  const bAcc=MeshAcc();
+  for(const L of lots){
+    const h=L.floors*FLOOR;
+    const m=orient(L.x, L.y, L.ang, h/2 + 0.00010);
+    scale(m, L.w*S1, h, L.d*S1);
+    col.setHSL(0.075+rr()*0.045, 0.13+L.den*0.06, 0.26+L.tone*0.30);
+    accGeo(bAcc, BOX, m, col);
+    if(L.roof){
+      const rm=orient(L.x, L.y, L.ang, h+0.00010+0.00022);
+      scale(rm, L.w*S1*0.82, 0.00044, L.d*S1*0.82);
+      col.setHSL(0.035, 0.32, 0.20+rr()*0.08);
+      accGeo(bAcc, BOX, rm, col);
+    } else if(L.floors>=4){                      // a plinth line, so towers don't read as bars
+      const cm=orient(L.x, L.y, L.ang, h+0.00012);
+      scale(cm, L.w*S1*1.04, 0.00016, L.d*S1*1.04);
+      col.setHSL(0.07, 0.08, 0.20);
+      accGeo(bAcc, BOX, cm, col);
+    }
+  }
+  group.add(accMesh(bAcc));
+
+  // 4. residents: capsule bodies, cat heads — standing in the streets, not on roofs
+  const people=[];
+  const cAcc=MeshAcc();
+  const residents=S.chars.filter(c=>c.homeId===st.id && c.alive).slice(0,26);
+  const blocks=town.blocks.length? town.blocks : [{c:{x:0,y:0},u:{x:1,y:0},hw:0.3,hh:0.3,den:1}];
+  residents.forEach((c,i)=>{
+    const b=blocks[(c.id*5+i)%blocks.length];
+    const u=b.u, v={x:-b.u.y, y:b.u.x};
+    const s=(c.id%4);
+    const edge=roadWidth(b.d||2)*0.30 + 0.010;
+    const off=(rr()-0.5)*0.6;
+    let lx,ly;
+    if(s===0){lx=b.hw*off*1.6; ly= b.hh+edge;}
+    else if(s===1){lx=b.hw*off*1.6; ly=-(b.hh+edge);}
+    else if(s===2){lx= b.hw+edge; ly=b.hh*off*1.6;}
+    else {lx=-(b.hw+edge); ly=b.hh*off*1.6;}
+    const px=b.c.x+u.x*lx+v.x*ly, py=b.c.y+u.y*lx+v.y*ly;
+    if(Math.hypot(px,py)>1.02) return;
+    const ang=(c.id%360)/360*Math.PI*2;
+    const isLeader=!!c.ledOrgId, isPlayer=c.id===S.playerCharId;
+    const fur = isPlayer? new THREE.Color(0xC89B3C)
+              : isLeader? new THREE.Color(0xEADCB6)
+              : new THREE.Color().setHSL(0.07+((c.id%9)/9)*0.06, 0.18+((c.id%3)*0.10), 0.42+((c.id%5)/5)*0.28);
+    const H=0.00082;
+    let m=orient(px,py,H*0.40,0); m=orient(px,py,H*0.40);
+    scale(m, H*0.19, H*0.56, H*0.19); accGeo(cAcc, CYL, m, fur);            // body
+    m=orient(px,py,H*0.14); scale(m, H*0.19, H*0.19, H*0.19); accGeo(cAcc, SPH, m, fur);  // rounded base
+    const head=fur.clone().offsetHSL(0,0,0.05);
+    m=orient(px,py,H*0.78, ang); scale(m, H*0.22, H*0.20, H*0.22); accGeo(cAcc, SPH, m, head);
+    for(const e of [-1,1]){                                                  // ears
+      const em=orient(px,py,H*0.96, ang);
+      move(em, e*H*0.12, 0, 0);
+      scale(em, H*0.075, H*0.15, H*0.075);
+      accGeo(cAcc, CONE, em, head);
+    }
+    const sn=orient(px,py,H*0.76, ang); move(sn,0,0,H*0.18);                 // muzzle
+    scale(sn, H*0.075, H*0.06, H*0.075);
+    accGeo(cAcc, SPH, sn, head.clone().offsetHSL(0,-0.05,0.10));
+    const tl=orient(px,py,H*0.44, ang); move(tl,0,0,-H*0.20);                // tail
+    scale(tl, H*0.045, H*0.34, H*0.045);
+    accGeo(cAcc, CYL, tl, fur);
+    people.push({id:c.id, dir:dirOf(px,py)});
+  });
+  if(people.length) group.add(accMesh(cAcc));
+
+  root.add(group);
+  return {group, people, st};
+}
+function updateCityLOD(){
+  const show = camDist < 1.30;
+  const camDir=new THREE.Vector3(0,0,1).applyQuaternion(root.quaternion.clone().invert());
+  const near = show
+    ? S.settlements.filter(s=>s.dir.dot(camDir)>0.9955)
+        .sort((a,b)=>b.dir.dot(camDir)-a.dir.dot(camDir)).slice(0,2)
+    : [];
+  for(const [id,c] of cityCache){
+    if(!near.some(s=>s.id===id)){ root.remove(c.group); cityCache.delete(id); }
+  }
+  for(const st of near) if(!cityCache.has(st.id)) cityCache.set(st.id, buildCity(st));
+  cityLive = new Set(near.map(s=>s.id));
+  for(const c of cityCache.values())
+    for(const p of c.people) picks.push({type:'char', id:p.id, dir:p.dir, px:0.022});
+}
+
+/* --- residents: shown only when you're actually standing over a town --- */
+let pawnBuiltFor=null, pawnPositions=[], pawnSprites=[];
+function updatePawns(){
+  const show = camDist < 1.75;
+  if(!show){
+    if(pawnBuiltFor!==null){ for(const s of pawnSprites) markerGroup.remove(s);
+      pawnSprites=[]; pawnPositions=[]; pawnBuiltFor=null; }
+    return;
+  }
+  // only the settlements the camera is genuinely over — not every town on the hemisphere
+  const camDir=new THREE.Vector3(0,0,1).applyQuaternion(root.quaternion.clone().invert());
+  const near=S.settlements.filter(s=>s.dir.dot(camDir)>0.975 && !cityLive.has(s.id));
+  const key=near.map(s=>s.id).join(',');
+  if(key!==pawnBuiltFor){
+    pawnBuiltFor=key;
+    for(const s of pawnSprites) markerGroup.remove(s);
+    pawnSprites=[]; pawnPositions=[];
+    for(const st of near){
+      const residents=S.chars.filter(c=>c.homeId===st.id && c.alive).slice(0,18);
+      const up=st.dir.clone();
+      const tan=new THREE.Vector3(0,1,0).cross(up).normalize();
+      const bit=up.clone().cross(tan).normalize();
+      residents.forEach((c,i)=>{
+        const ang=i/Math.max(1,residents.length)*Math.PI*2 + (c.id%7)*0.31;
+        const rad=0.006+(c.id%5)*0.0018;
+        const d=up.clone()
+          .add(tan.clone().multiplyScalar(Math.cos(ang)*rad))
+          .add(bit.clone().multiplyScalar(Math.sin(ang)*rad)).normalize();
+        const col = c.id===S.playerCharId? 0xC89B3C : c.ledOrgId? 0xEFE0BC : 0xA8B7CE;
+        const spr=makeSprite(ICONS.person, c.ledOrgId? 0.020 : 0.016, col);
+        spr.userData.dir=d;
+        markerGroup.add(spr);
+        pawnSprites.push(spr);
+        pawnPositions.push({type:'char', id:c.id, dir:d, spr});
+      });
+    }
+  }
+  for(const pp of pawnPositions){
+    picks.push({type:'char', id:pp.id, dir:pp.dir, px:0.018});
+  }
+}
+
+/* =====================================================================
+   CAMERA — trackball: the planet turns freely, no poles, no limits
+   ===================================================================== */
+function updateCamera(){
+  camera.position.set(0,0,camDist);
+  camera.lookAt(0,0,0);
+  sun.position.set(0.5,0.6,1.2);
+}
+let drag=null;
+const tmpQ=new THREE.Quaternion(), tmpV=new THREE.Vector3();
+/* Altitude, not distance, is what the controls should scale with: at street level
+   one pixel of drag must sweep a few metres, not a few kilometres. */
+let camAlt=2.2, camAltTarget=2.2;
+const ALT_MIN=0.012, ALT_MAX=6.0;
+const spin={axis:new THREE.Vector3(0,1,0), vel:0};
+
+function dragScale(){
+  // world height visible at the surface, per screen pixel → radians of arc per pixel
+  const visible = 2*(camDist-1)*Math.tan(camera.fov*Math.PI/360);
+  return Math.max(2.0e-5, Math.min(0.004, visible/innerHeight * 1.05));
+}
+canvas.addEventListener('pointerdown',e=>{
+  drag={x:e.clientX, y:e.clientY, moved:0};
+  spin.vel=0;
+  canvas.setPointerCapture(e.pointerId);
+});
+addEventListener('pointermove',e=>{
+  if(!drag){ hoverAt(e.clientX,e.clientY); return; }
+  const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
+  drag.x=e.clientX; drag.y=e.clientY;
+  drag.moved+=Math.abs(dx)+Math.abs(dy);
+  const len=Math.hypot(dx,dy);
+  if(len<0.01) return;
+  const k=dragScale();
+  tmpV.set(dy,dx,0).normalize();
+  const ang=len*k;
+  tmpQ.setFromAxisAngle(tmpV, ang);
+  root.quaternion.premultiply(tmpQ).normalize();
+  spin.axis.copy(tmpV); spin.vel = ang*0.55;      // carry a little momentum
+  flyQ=null;
+});
+addEventListener('pointerup',e=>{
+  if(drag && drag.moved<6){ spin.vel=0; pickAt(e.clientX,e.clientY); }
+  drag=null;
+});
+/* zoom is geometric in altitude, so the last metre takes as many notches as the first
+   thousand — and it eases in instead of snapping */
+canvas.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const step = e.ctrlKey? 0.06 : 0.14;            // ctrl+wheel = fine zoom
+  const f = e.deltaY>0 ? (1+step) : 1/(1+step);
+  camAltTarget = Math.max(ALT_MIN, Math.min(ALT_MAX, camAltTarget*f));
+},{passive:false});
+
+function stepCamera(){
+  camAlt += (camAltTarget-camAlt)*0.16;
+  camDist = 1 + camAlt;
+  if(!drag && spin.vel>1e-6){                     // inertia, damped
+    tmpQ.setFromAxisAngle(spin.axis, spin.vel);
+    root.quaternion.premultiply(tmpQ).normalize();
+    spin.vel *= 0.90;
+    if(spin.vel<2e-6) spin.vel=0;
+  }
+}
+/* keyboard: fine control where the mouse is too coarse */
+addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT') return;
+  const k=dragScale()*22;
+  const nudge=(ax,ay,a)=>{ tmpV.set(ax,ay,0).normalize(); tmpQ.setFromAxisAngle(tmpV,a);
+    root.quaternion.premultiply(tmpQ).normalize(); flyQ=null; };
+  if(e.key==='ArrowLeft')  nudge(0,-1,k);
+  if(e.key==='ArrowRight') nudge(0, 1,k);
+  if(e.key==='ArrowUp')    nudge(-1,0,k);
+  if(e.key==='ArrowDown')  nudge( 1,0,k);
+  if(e.key==='+'||e.key==='=') camAltTarget=Math.max(ALT_MIN,camAltTarget/1.18);
+  if(e.key==='-'||e.key==='_') camAltTarget=Math.min(ALT_MAX,camAltTarget*1.18);
+  if(e.key===' '){ e.preventDefault(); document.getElementById('btnPause').click(); }
+});
+
+/* ---- screen-space picking & hover ---- */
+const projV=new THREE.Vector3();
+function screenPos(dir){
+  projV.copy(dir).multiplyScalar(1.035).applyQuaternion(root.quaternion);
+  const behind = projV.z < 1/camDist - 0.02;
+  projV.project(camera);
+  return {x:(projV.x*0.5+0.5)*innerWidth, y:(-projV.y*0.5+0.5)*innerHeight, behind};
+}
+function nearest(cx,cy){
+  let best=null,bd=1e9;
+  const order={char:0, caravan:1, squad:2, enterprise:3, settlement:4};
+  for(const p of picks){
+    const s=screenPos(p.dir);
+    if(s.behind) continue;
+    const rpx=p.px*innerHeight*0.62;
+    const d=Math.hypot(s.x-cx, s.y-cy);
+    if(d>rpx) continue;
+    const score=d - (4-(order[p.type]||0))*2;
+    if(score<bd){bd=score;best=p;}
+  }
+  return best;
+}
+function pickAt(cx,cy){
+  const p=nearest(cx,cy);
+  if(p) select(p.type,p.id);
+  else { S.selection=null; renderInspector(); renderEcon(); updateMarkers(); }
+}
+let hover=null;
+const tip=document.getElementById('tip');
+function hoverAt(cx,cy){
+  const p=nearest(cx,cy);
+  const same = (!p&&!hover) || (p&&hover&&p.type===hover.type&&p.id===hover.id);
+  hover=p;
+  canvas.style.cursor = p? 'pointer':'default';
+  if(!p){ tip.style.display='none'; return; }
+  tip.style.display='block';
+  tip.style.left=(cx+14)+'px';
+  tip.style.top=(cy+14)+'px';
+  tip.innerHTML=tipHTML(p);
+  if(!same) updateMarkers();
+}
+function tipHTML(p){
+  if(p.type==='settlement'){
+    const st=stl(p.id), o=org(st.ownerOrgId);
+    const worst=RKEYS.map(r=>({r,v:st.stock[r]/Math.max(st.target[r],0.01)})).sort((a,b)=>a.v-b.v)[0];
+    return '<b>'+st.name+'</b><span class="tk">'+TIER[st.tier].label+' · '+num(st.pop)+' осіб</span>'+
+      '<span class="tk">'+(o?o.name:'нічий')+'</span>'+
+      '<span class="tk">дефіцит: '+RES[worst.r].label.toLowerCase()+' '+Math.round(worst.v*100)+'%</span>';
+  }
+  if(p.type==='enterprise'){
+    const e=ent(p.id), st=stl(e.settlementId);
+    return '<b>'+ENT[e.kind].label+'</b><span class="tk">'+st.name+'</span>'+
+      '<span class="tk">'+(e.stalled?'простоює':'працює')+'</span>';
+  }
+  if(p.type==='squad'){
+    const sq=sqd(p.id), o=org(sq.orgId);
+    return '<b>Загін #'+sq.id+'</b><span class="tk">'+(o?o.name:'—')+'</span>'+
+      '<span class="tk">сила '+sq.strength+' · '+sq.order+'</span>';
+  }
+  if(p.type==='caravan'){
+    const cv=byId(S.caravans,p.id), o=org(cv.orgId);
+    return '<b>Караван</b><span class="tk">'+(o?o.name:'—')+'</span>'+
+      '<span class="tk">'+(cv.cargo? RES[cv.cargo].label+' ×'+Math.round(cv.qty):'порожній')+'</span>';
+  }
+  if(p.type==='char'){
+    const c=chr(p.id);
+    return '<b>'+c.name+'</b><span class="tk">'+(c.ledOrgId? 'лідер · '+org(c.ledOrgId).name : 'мешканець')+'</span>';
+  }
+  return '';
+}
+function select(type,id){
+  S.selection={type,id:+id};
+  renderInspector(); updateMarkers(); renderEcon();
+  if(graphOpen) drawGraph();
+}
+/* fly = rotate the planet so the target faces the camera */
+let flyQ=null, flyT=0;
+function flyTo(dir){
+  const target=new THREE.Quaternion().setFromUnitVectors(dir.clone().normalize(), new THREE.Vector3(0,0,1));
+  flyQ=target; flyT=0;
+  if(camAltTarget>2.6) camAltTarget=2.0;
+}
+function stepFly(){
+  if(!flyQ) return;
+  spin.vel=0;
+  flyT=Math.min(1, flyT+0.09);
+  root.quaternion.slerp(flyQ, 0.18);
+  if(flyT>=1) flyQ=null;
+}
+function selectionDir(){
+  const s=S.selection; if(!s) return null;
+  if(s.type==='settlement') return stl(s.id)?.dir;
+  if(s.type==='squad') return sqd(s.id)?.dir;
+  if(s.type==='caravan') return byId(S.caravans,s.id)?.dir;
+  if(s.type==='enterprise'){const e=ent(s.id); return e? (e._dir||stl(e.settlementId)?.dir):null;}
+  if(s.type==='char'){const c=chr(s.id); return c? stl(c.homeId)?.dir : null;}
+  if(s.type==='org'){
+    const o=org(s.id);
+    const st=S.settlements.find(x=>x.ownerOrgId===s.id);
+    if(st) return st.dir;
+    const c=chr(o?.leaderId); return c? stl(c.homeId)?.dir : null;
+  }
+  return null;
+}
+
+/* =====================================================================
+   INSPECTOR — content is a pure function of the selected object type
+   ===================================================================== */
+const insp=document.getElementById('inspector');
+const L=(type,id,label)=>'<span class="link" data-sel="'+type+':'+id+'">'+label+'</span>';
+const num=n=>Math.round(n).toLocaleString('uk-UA');
+const f1=n=>(Math.round(n*10)/10).toFixed(1);
+
+function isPlayerOrg(o){
+  if(!S.playerCharId) return false;
+  const pc=chr(S.playerCharId);
+  if(!pc) return false;
+  if(pc.ledOrgId===o.id) return true;
+  // orgs in the avatar's subtree are controlled too
+  let cur=o, guard=0;
+  while(cur && cur.parentId && guard++<20){
+    if(cur.parentId===pc.ledOrgId) return true;
+    cur=org(cur.parentId);
+  }
+  return false;
+}
+function renderInspector(){
+  const s=S.selection;
+  if(!s){ insp.innerHTML=
+    '<div class="ihead"><div><div class="ikind">Інспектор</div><div class="iname">Нічого не вибрано</div></div></div>'+
+    '<div class="isec empty">Клікни поселення, загін, караван, підприємство або людину. Кожне ім\'я в панелі — посилання.</div>';
+    return; }
+  const fn={settlement:inspSettlement, org:inspOrg, char:inspChar, squad:inspSquad,
+    enterprise:inspEnterprise, caravan:inspCaravan}[s.type];
+  insp.innerHTML = fn? fn(s.id) : '';
+}
+function head(kind,name,sub){
+  return '<div class="ihead"><div><div class="ikind">'+kind+'</div><div class="iname">'+name+'</div></div>'+
+    '<div class="stat">'+(sub||'')+'</div></div>';
+}
+function row(k,v){return '<div class="row"><span class="k">'+k+'</span><span class="v">'+v+'</span></div>';}
+
+function inspSettlement(id){
+  const st=stl(id); if(!st) return '';
+  const o=org(st.ownerOrgId);
+  const parent=o&&o.parentId? org(o.parentId):null;
+  let h=head('Поселення · '+TIER[st.tier].label, st.name, ZONE[st.zone].label);
+  h+='<div class="isec">'+
+    row('Власник', o? L('org',o.id,o.name) : '<span class="empty">нічий</span>')+
+    (parent? row('Підпорядкований', L('org',parent.id,parent.name)) : '')+
+    row('Населення', num(st.pop)+(st.starving?' <span class="neg">· голод</span>':''))+
+    row('Територія', f1(st.area)+' зон')+
+    row('Лояльність', f1(st.loyalty)+'<div class="bar"><i style="width:'+st.loyalty+'%"></i></div>')+
+    '</div>';
+  h+='<div class="isec"><h4>Ринок — запас / потреба · ціна</h4><table class="tbl">';
+  for(const r of RKEYS){
+    const net=st.net[r], g=st.gross[r];
+    h+='<tr><td>'+RES[r].label+'</td>'+
+      '<td class="n">'+f1(st.stock[r])+'/'+f1(st.target[r])+'</td>'+
+      '<td class="n '+(net>=0?'pos':'neg')+'">'+(net>=0?'+':'')+f1(net)+'</td>'+
+      '<td class="n" style="color:var(--dim)">'+f1(st.price[r])+'💰</td></tr>';
+  }
+  h+='</table><div class="stat" style="margin-top:5px">брутто: виробництво / споживання враховано в чистій зміні</div></div>';
+  h+='<div class="isec"><h4>Підприємства ('+st.entIds.length+')</h4>';
+  if(!st.entIds.length) h+='<div class="empty">жодного</div>';
+  for(const eid of st.entIds){
+    const e=ent(eid); if(!e) continue;
+    h+='<div class="row"><span>'+L('enterprise',e.id, ENT[e.kind].label)+'</span>'+
+      '<span class="v '+(e.stalled?'neg':'pos')+'">'+(e.stalled?'простоює':'працює')+'</span></div>';
+  }
+  h+='</div>';
+  const gar=S.squads.filter(x=>x.dir.dot(st.dir)>0.9997);
+  h+='<div class="isec"><h4>Загони тут ('+gar.length+')</h4>';
+  if(!gar.length) h+='<div class="empty">немає</div>';
+  for(const sq of gar) h+=row(L('squad',sq.id,'Загін #'+sq.id), 'сила '+sq.strength);
+  h+='</div>';
+  return h;
+}
+function inspOrg(id){
+  const o=org(id); if(!o) return '';
+  const ctrl=isPlayerOrg(o);
+  const leader=chr(o.leaderId), heir=chr(o.heirId);
+  let h=head('Організація · '+KIND_LABEL[o.kind], o.name, ctrl?'під твоїм контролем':'');
+  // ancestor breadcrumb
+  const chain=[]; let cur=o, g=0;
+  while(cur.parentId && g++<12){ cur=org(cur.parentId); if(!cur) break; chain.unshift(cur); }
+  if(chain.length) h+='<div class="breadcrumb">'+chain.map(a=>L('org',a.id,a.name)).join(' › ')+' › <b>'+o.name+'</b></div>';
+  h+='<div class="isec">'+
+    row('Лідер', leader? L('char',leader.id,leader.name) : '<span class="empty">вакансія</span>')+
+    row('Спадкоємець', heir? L('char',heir.id,heir.name) : '<span class="empty">не призначено</span>')+
+    row('Тип правління', LT_LABEL[o.leadershipType])+
+    row('Учасників', o.members.filter(m=>chr(m)&&chr(m).alive).length)+
+    row('Скарбниця', num(o.treasury)+'💰')+
+    row('Дохід / витрати', '<span class="pos">+'+f1(o.income||0)+'</span> / <span class="neg">−'+f1(o.expenses||0)+'</span>')+
+    row('Управління (derived)', orgManagement(o))+
+    row('Амбіція (utility)', f1(orgUtility(o))+'<div class="bar"><i style="width:'+(orgUtility(o)/1.2*100)+'%"></i></div>')+
+    row('Лояльність', f1(o.loyalty))+
+    row('Останнє рішення', '<span class="chip">'+o.lastDecision+'</span>')+
+    '</div>';
+  if(ctrl){
+    h+='<div class="isec"><h4>Політика (редаговано)</h4>'+
+      '<div class="row"><span class="k">Податок</span><span class="v">'+
+      '<input id="taxIn" type="range" min="0" max="0.5" step="0.01" value="'+o.taxRate+'" style="width:110px;vertical-align:middle"> '+
+      Math.round(o.taxRate*100)+'%</span></div>'+
+      '<div class="row"><span class="k">Тип правління</span><span class="v"><select id="ltIn">'+
+      LEADERSHIP.map(l=>'<option value="'+l+'"'+(l===o.leadershipType?' selected':'')+'>'+LT_LABEL[l]+'</option>').join('')+
+      '</select></span></div>'+
+      '<div style="margin-top:6px;display:flex;gap:5px;flex-wrap:wrap">'+
+      '<button id="actEnt">Збудувати підприємство (140💰)</button>'+
+      '<button id="actSq">Найняти загін (110💰)</button>'+
+      (o.trade?'':'<button id="actTrade">Створити торговий дім (420💰)</button>')+
+      '</div></div>';
+  } else {
+    h+='<div class="isec"><h4>Політика</h4>'+
+      row('Податок', Math.round(o.taxRate*100)+'%')+
+      '<div class="stat" style="margin-top:4px">Панель у режимі читання — ти не контролюєш цю організацію.</div></div>';
+  }
+  if(o.trade){
+    const cvs=S.caravans.filter(c=>c.orgId===o.id);
+    h+='<div class="isec"><h4>Каравани ('+cvs.length+'/'+o.caravanCap+')</h4>';
+    for(const c of cvs) h+=row(L('caravan',c.id,'Караван #'+c.id),
+      c.cargo? RES[c.cargo].label+' ×'+Math.round(c.qty) : '<span class="empty">шукає угоду</span>');
+    h+=row('Середній прибуток','<span class="'+((o.profit||0)>=0?'pos':'neg')+'">'+f1(o.profit||0)+'💰/крок</span>');
+    h+='</div>';
+  }
+  const props=S.settlements.filter(x=>x.ownerOrgId===o.id);
+  const eprops=S.ents.filter(e=>e.ownerOrgId===o.id);
+  h+='<div class="isec"><h4>Власність</h4>';
+  if(!props.length && !eprops.length) h+='<div class="empty">немає</div>';
+  for(const p of props) h+=row(L('settlement',p.id,p.name), TIER[p.tier].label);
+  for(const e of eprops) h+=row(L('enterprise',e.id, ENT[e.kind].label), stl(e.settlementId).name);
+  h+='</div>';
+
+  const out=S.edges.filter(e=>e.from===o.id && e.kind!=='ownership' && e.kind!=='hierarchy');
+  const inn=S.edges.filter(e=>e.to===o.id && e.kind!=='ownership' && e.kind!=='hierarchy');
+  h+='<div class="isec"><h4>Слоти цієї організації в інших</h4>';
+  if(!out.length) h+='<div class="empty">жодного</div>';
+  for(const e of out){
+    const t=org(e.to); if(!t) continue;
+    h+=row(L('org',t.id,t.name), '<span class="chip">'+e.kind+(e.visibility==='covert'?' · covert':'')+'</span>'+
+      (e.salary?' '+e.salary+'💰':''));
+  }
+  h+='</div><div class="isec"><h4>Хто має слоти тут</h4>';
+  const visible=inn.filter(e=>e.visibility!=='covert' || ctrl);
+  if(!visible.length) h+='<div class="empty">жодного відомого</div>';
+  for(const e of visible){
+    const t=org(e.from); if(!t) continue;
+    h+=row(L('org',t.id,t.name), '<span class="chip" style="'+(e.visibility==='covert'?'color:var(--covert);border-color:var(--covert)':'')+'">'+
+      e.kind+(e.visibility==='covert'?' · covert':'')+'</span>');
+  }
+  h+='</div>';
+  const subs=S.orgs.filter(x=>x.parentId===o.id);
+  h+='<div class="isec"><h4>Підлеглі організації ('+subs.length+')</h4>';
+  if(!subs.length) h+='<div class="empty">немає</div>';
+  for(const sb of subs) h+=row(L('org',sb.id,sb.name),'<span class="chip">'+sb.kind+'</span> лояльність '+Math.round(sb.loyalty));
+  h+='</div>';
+  return h;
+}
+function inspChar(id){
+  const c=chr(id); if(!c) return '';
+  const o=org(c.orgId), led=org(c.ledOrgId);
+  const home=stl(c.homeId);
+  let h=head('Персонаж'+(c.id===S.playerCharId?' · твій аватар':''), c.name, c.alive?(c.age+' р.'):'† помер');
+  h+='<div class="isec">'+
+    row('Резиденція', home? L('settlement',home.id,home.name):'—')+
+    row('Організація', o? L('org',o.id,o.name):'<span class="empty">без організації</span>')+
+    row('Веде', led? L('org',led.id,led.name):'—')+
+    row('Посада', c.post || (led?'Leader':'—'))+
+    '</div>';
+  h+='<div class="isec"><h4>Риси</h4>'+c.traits.map(t=>'<span class="chip">'+t+'</span>').join('')+'</div>';
+  h+='<div class="isec"><h4>Навички</h4>';
+  for(const s of SKILLS)
+    h+='<div class="row"><span class="k">'+SKILL_LABEL[s]+'</span><span class="v">'+c.skills[s]+
+      '<div class="bar" style="width:70px;display:inline-block;margin-left:6px"><i style="width:'+(c.skills[s]*8)+'%"></i></div></span></div>';
+  h+='</div>';
+  if(c.alive && c.ledOrgId && c.id!==S.playerCharId)
+    h+='<div class="isec"><button id="beChar">Грати за цього персонажа</button></div>';
+  return h;
+}
+function inspSquad(id){
+  const sq=sqd(id); if(!sq) return '';
+  const o=org(sq.orgId);
+  const ctrl=o&&isPlayerOrg(o);
+  const leader=o? chr(o.leaderId):null;
+  let h=head('Загін', 'Загін #'+sq.id, 'сила '+sq.strength);
+  h+='<div class="isec">'+
+    row('Організація', o? L('org',o.id,o.name):'—')+
+    row('Лідер', leader? L('char',leader.id,leader.name):'—')+
+    row('Наказ', '<span class="chip">'+sq.order+(sq.targetName?' → '+sq.targetName:'')+'</span>')+
+    row('Постачання', sq.supplied===false?'<span class="neg">розрив</span>':'<span class="pos">є</span>')+
+    row('База', stl(sq.homeId)? L('settlement',sq.homeId, stl(sq.homeId).name):'—')+
+    row('Керування', '<span class="chip">'+(sq.mode==='auto'?'AI (auto)':'ручне')+'</span>')+
+    '</div>';
+  if(ctrl){
+    h+='<div class="isec"><h4>Втручання</h4>'+
+      '<div style="display:flex;gap:5px;flex-wrap:wrap">'+
+      '<button id="sqAuto" '+(sq.mode==='auto'?'disabled':'')+'>Повернути на авто</button>'+
+      '<button id="sqHold">Стояти</button>'+
+      '</div><div class="stat" style="margin-top:6px">Обери поселення в списку нижче, щоб відправити загін.</div>'+
+      '<div style="max-height:120px;overflow:auto;margin-top:5px">'+
+      S.settlements.map(st=>'<div class="row"><span class="link" data-order="'+sq.id+':'+st.id+'">→ '+st.name+'</span>'+
+        '<span class="v stat">'+TIER[st.tier].label+'</span></div>').join('')+
+      '</div></div>';
+  }
+  return h;
+}
+function inspEnterprise(id){
+  const e=ent(id); if(!e) return '';
+  const def=ENT[e.kind], st=stl(e.settlementId), o=org(e.ownerOrgId);
+  let h=head('Підприємство', def.label+' · '+st.name, e.stalled?'простоює':'працює');
+  h+='<div class="isec">'+
+    row('Власник', o? L('org',o.id,o.name):'—')+
+    row('Поселення', L('settlement',st.id,st.name))+
+    row('Зона', ZONE[st.zone].label)+
+    row('Темп', f1(e.rate)+'×')+
+    '</div>';
+  h+='<div class="isec"><h4>Ланцюг</h4><table class="tbl">';
+  const ins=Object.keys(def.in);
+  if(!ins.length) h+='<tr><td class="empty">без входів (первинний ресурс)</td></tr>';
+  for(const r of ins) h+='<tr><td class="neg">− '+RES[r].label+'</td><td class="n">'+f1(def.in[r]*e.rate)+'</td>'+
+    '<td class="n stat">запас '+f1(st.stock[r])+'</td></tr>';
+  h+='<tr><td class="neg">− Інструменти</td><td class="n">'+f1(TOOL_WEAR)+'</td><td class="n stat">знос</td></tr>';
+  for(const r in def.out) h+='<tr><td class="pos">+ '+RES[r].label+'</td><td class="n">'+f1(def.out[r]*e.rate)+'</td><td></td></tr>';
+  h+='</table></div>';
+  return h;
+}
+function inspCaravan(id){
+  const cv=byId(S.caravans,id); if(!cv) return '';
+  const o=org(cv.orgId);
+  const from=S.settlements[cv.atIdx], to=cv.dest!=null? S.settlements[cv.dest]:null;
+  let h=head('Караван','Караван #'+cv.id, cv.phase);
+  h+='<div class="isec">'+
+    row('Торговий дім', o? L('org',o.id,o.name):'—')+
+    row('Вантаж', cv.cargo? RES[cv.cargo].label+' ×'+Math.round(cv.qty) : '<span class="empty">порожній</span>')+
+    row('Маршрут', (from?from.name:'?')+(to? ' → '+L('settlement',to.id,to.name):''))+
+    row('Місткість', cv.capacity)+
+    row('Рейсів', cv.trips)+
+    row('Сумарний прибуток','<span class="'+(cv.profit>=0?'pos':'neg')+'">'+(cv.profit>=0?'+':'')+num(cv.profit)+'💰</span>')+
+    '</div>';
+  h+='<div class="isec stat">Караван сам шукає найбільшу маржу: купує там, де надлишок, везе туди, де дефіцит. Прибуток осідає в торговому домі — і той купує ще каравани.</div>';
+  return h;
+}
+
+/* --- inspector interactions --- */
+insp.addEventListener('click',e=>{
+  const link=e.target.closest('[data-sel]');
+  if(link){
+    const [t,id]=link.dataset.sel.split(':');
+    select(t,+id);
+    const d=selectionDir(); if(d) flyTo(d);
+    return;
+  }
+  const ord=e.target.closest('[data-order]');
+  if(ord){
+    const [sid,stid]=ord.dataset.order.split(':').map(Number);
+    const sq=sqd(sid), st=stl(stid);
+    if(sq&&st){ sq.mode='manual'; sq.target=st.dir.clone(); sq.order='move'; sq.targetName=st.name;
+      logEvent('Наказ: загін #'+sq.id+' → <b>'+st.name+'</b>.'); renderInspector(); }
+    return;
+  }
+  if(e.target.id==='sqAuto'){ const sq=sqd(S.selection.id); sq.mode='auto'; sq.target=null; sq.order='idle'; renderInspector(); }
+  if(e.target.id==='sqHold'){ const sq=sqd(S.selection.id); sq.mode='manual'; sq.target=null; sq.order='hold'; renderInspector(); }
+  if(e.target.id==='beChar'){ setAvatar(S.selection.id); }
+  if(e.target.id==='actEnt'){
+    const o=org(S.selection.id);
+    const owned=S.settlements.filter(s=>s.ownerOrgId===o.id);
+    if(o.treasury>=140 && owned.length){
+      const st=owned[0];
+      const opts=EKEYS.filter(k=>!ENT[k].zone || ENT[k].zone.includes(st.zone));
+      o.treasury-=140; createEnterprise(st, pick(opts), null);
+      logEvent('Ти збудував підприємство у <b>'+st.name+'</b>.'); renderInspector();
+    }
+  }
+  if(e.target.id==='actSq'){
+    const o=org(S.selection.id);
+    const owned=S.settlements.filter(s=>s.ownerOrgId===o.id);
+    if(o.treasury>=110 && owned.length){ o.treasury-=110; spawnSquad(o, owned[0], {}); renderInspector(); }
+  }
+  if(e.target.id==='actTrade'){
+    const o=org(S.selection.id);
+    if(o.treasury>=420){ o.treasury-=420; o.trade=true; o.caravanCap=2;
+      const owned=S.settlements.filter(s=>s.ownerOrgId===o.id);
+      o.homeSettlementId=(owned[0]||pick(S.settlements)).id;
+      spawnCaravan(o); logEvent('Ти заснував торговий дім.'); renderInspector(); }
+  }
+});
+insp.addEventListener('input',e=>{
+  if(e.target.id==='taxIn'){ org(S.selection.id).taxRate=parseFloat(e.target.value); renderInspector(); }
+  if(e.target.id==='ltIn'){ org(S.selection.id).leadershipType=e.target.value; renderInspector(); }
+});
+document.getElementById('log').addEventListener('click',e=>{
+  const link=e.target.closest('[data-sel]');
+  if(link){ const [t,id]=link.dataset.sel.split(':'); select(t,+id);
+    const d=selectionDir(); if(d) flyTo(d); }
+});
+
+function setAvatar(charId){
+  // unpin old
+  for(const sq of S.squads) if(sq.pinned){ sq.pinned=false; sq.mode='auto'; }
+  S.playerCharId=charId;
+  const c=chr(charId);
+  const o=org(c.ledOrgId);
+  if(o){
+    for(const sq of S.squads){
+      const so=org(sq.orgId);
+      if(so && (so.id===o.id || so.parentId===o.id)){ sq.pinned=true; sq.mode='manual'; }
+    }
+    logEvent('Ти граєш за <b>'+c.name+'</b>, лідера <span class="link" data-sel="org:'+o.id+'">'+o.name+'</span>. Його загони під ручним контролем.');
+    select('org', o.id);
+  }
+  pawnBuiltFor=null;
+  document.getElementById('start').style.display='none';
+  rebuildViewpointOptions();
+}
+
+/* =====================================================================
+   ECONOMY PANEL (world or selected settlement)
+   ===================================================================== */
+function renderEcon(){
+  const body=document.getElementById('econBody');
+  const title=document.getElementById('econTitle');
+  const sub=document.getElementById('econSub');
+  let st=null;
+  if(S.selection && S.selection.type==='settlement') st=stl(S.selection.id);
+  if(S.selection && S.selection.type==='enterprise') st=stl(ent(S.selection.id)?.settlementId);
+  let h='';
+  if(st){
+    title.textContent=st.name;
+    sub.textContent=TIER[st.tier].label;
+    for(const r of RKEYS){
+      const ratio=Math.max(0,Math.min(1.4, st.stock[r]/Math.max(st.target[r],0.001)));
+      const col = ratio<0.5? '#C4574F' : ratio<0.95? '#C89B3C' : '#5FB58A';
+      h+='<div class="rline"><span class="rname">'+RES[r].label+'</span>'+
+        '<span class="rbar"><i style="width:'+Math.min(100,ratio/1.4*100)+'%;background:'+col+'"></i></span>'+
+        '<span class="rnum '+(st.net[r]>=0?'pos':'neg')+'">'+(st.net[r]>=0?'+':'')+f1(st.net[r])+'</span></div>';
+    }
+    h+='<div class="stat" style="margin-top:6px">червоне = дефіцит → сюди підуть каравани</div>';
+  } else {
+    title.textContent='світ';
+    sub.textContent='дефіцити';
+    for(const r of RKEYS){
+      let stock=0,target=0,def=0;
+      for(const s of S.settlements){ stock+=s.stock[r]; target+=s.target[r];
+        if(s.stock[r]<s.target[r]*0.6) def++; }
+      const ratio=Math.max(0,Math.min(1.4, stock/Math.max(target,0.001)));
+      const col = ratio<0.5? '#C4574F' : ratio<0.95? '#C89B3C' : '#5FB58A';
+      h+='<div class="rline"><span class="rname">'+RES[r].label+'</span>'+
+        '<span class="rbar"><i style="width:'+Math.min(100,ratio/1.4*100)+'%;background:'+col+'"></i></span>'+
+        '<span class="rnum">'+def+'✕</span></div>';
+    }
+    h+='<div class="stat" style="margin-top:6px">✕ — скільки поселень у дефіциті цього ресурсу</div>';
+  }
+  body.innerHTML=h;
+}
+
+/* =====================================================================
+   ORG GRAPH VIEW
+   ===================================================================== */
+let graphOpen=false;
+const gWrap=document.getElementById('graph');
+const gCanvas=document.getElementById('graphCanvas');
+const gctx=gCanvas.getContext('2d');
+const gTip=document.getElementById('gTip');
+let gNodes=new Map(), gShowProp=true, gFocus=false, gBigOnly=true, gViewpoint='spectator';
+let gCam={x:0,y:0,z:1}, gDrag=null, gHover=null, gW=0, gH=0, gLastOrgCount=-99;
+
+/* which orgs are worth drawing: a 400-node hairball helps nobody */
+function orgVisible(o){
+  if(!gBigOnly) return true;
+  if(o.parentId===null) return true;                    // independent
+  if(o.kind==='political' || o.trade) return true;      // realms & trade houses
+  if(S.settlements.some(s=>s.ownerOrgId===o.id)) return true;
+  if(S.selection && S.selection.type==='org' && S.selection.id===o.id) return true;
+  return S.edges.some(e=>e.kind!=='ownership' && e.kind!=='hierarchy' &&
+    (e.from===o.id||e.to===o.id));                      // in a slot relationship
+}
+function gSize(){
+  const r=gWrap.getBoundingClientRect();
+  gW=Math.max(300, Math.round(r.width));
+  gH=Math.max(200, Math.round(r.height));
+  const dpr=Math.min(devicePixelRatio,2);
+  gCanvas.width=gW*dpr; gCanvas.height=gH*dpr;
+  gctx.setTransform(dpr,0,0,dpr,0,0);
+}
+function graphEdges(){
+  const out=[];
+  for(const e of S.edges){
+    if(e.kind==='ownership'){
+      if(!gShowProp) continue;
+      if(!gNodes.has('O'+e.from) || !gNodes.has(String(e.to))) continue;
+      out.push({a:'O'+e.from, b:String(e.to), kind:'ownership', e});
+    } else {
+      if(!gNodes.has('O'+e.from) || !gNodes.has('O'+e.to)) continue;
+      out.push({a:'O'+e.from, b:'O'+e.to, kind:e.kind, e});
+    }
+  }
+  return out;
+}
+/* layout: faction clusters, so politics is legible at a glance */
+function layoutGraph(){
+  gNodes.clear();
+  const orgs=S.orgs.filter(orgVisible);
+  const fids=[...new Set(orgs.map(o=>o.factionId||o.id))];
+  const cx=gW/2, cy=gH/2;
+  const R=Math.min(gW,gH)*0.34;
+  const centers=new Map();
+  fids.forEach((f,i)=>{
+    const a=i/Math.max(1,fids.length)*Math.PI*2;
+    centers.set(f, {x:cx+Math.cos(a)*R, y:cy+Math.sin(a)*R});
+  });
+  orgs.forEach((o,i)=>{
+    const c=centers.get(o.factionId||o.id)||{x:cx,y:cy};
+    const a=(i*2.399);                       // golden-angle scatter inside the cluster
+    const r=18+Math.sqrt(i%40)*16;
+    gNodes.set('O'+o.id, {key:'O'+o.id, type:'org', o,
+      x:c.x+Math.cos(a)*r, y:c.y+Math.sin(a)*r, vx:0, vy:0});
+  });
+  if(gShowProp){
+    for(const st of S.settlements){
+      const on=gNodes.get('O'+st.ownerOrgId);
+      const b=on||{x:cx,y:cy};
+      gNodes.set('S'+st.id, {key:'S'+st.id, type:'settlement', s:st,
+        x:b.x+(Math.random()-0.5)*40, y:b.y+(Math.random()-0.5)*40, vx:0, vy:0});
+    }
+    for(const e of S.ents){
+      const on=gNodes.get('O'+e.ownerOrgId);
+      if(!on) continue;
+      gNodes.set('E'+e.id, {key:'E'+e.id, type:'enterprise', e,
+        x:on.x+(Math.random()-0.5)*30, y:on.y+(Math.random()-0.5)*30, vx:0, vy:0});
+    }
+  }
+  for(let i=0;i<220;i++) relax();
+}
+function relax(){
+  const arr=[...gNodes.values()];
+  const edges=graphEdges();
+  // repulsion on a spatial grid — cheap even with hundreds of nodes
+  const CELL=64, grid=new Map();
+  for(const n of arr){
+    const k=(Math.floor(n.x/CELL))+','+(Math.floor(n.y/CELL));
+    if(!grid.has(k)) grid.set(k,[]);
+    grid.get(k).push(n);
+  }
+  for(const n of arr){
+    const gx=Math.floor(n.x/CELL), gy=Math.floor(n.y/CELL);
+    for(let i=-1;i<=1;i++) for(let j=-1;j<=1;j++){
+      const cell=grid.get((gx+i)+','+(gy+j));
+      if(!cell) continue;
+      for(const m of cell){
+        if(m===n) continue;
+        let dx=m.x-n.x, dy=m.y-n.y;
+        let d2=dx*dx+dy*dy;
+        if(d2>CELL*CELL*4 || d2<0.01){ if(d2<0.01){n.vx+=Math.random()-0.5;n.vy+=Math.random()-0.5;} continue; }
+        const d=Math.sqrt(d2), f=900/d2;
+        n.vx-=dx/d*f; n.vy-=dy/d*f;
+      }
+    }
+  }
+  for(const e of edges){
+    const a=gNodes.get(e.a), b=gNodes.get(e.b);
+    if(!a||!b) continue;
+    const dx=b.x-a.x, dy=b.y-a.y;
+    const d=Math.max(1,Math.hypot(dx,dy));
+    const rest = e.kind==='ownership'? 42 : e.kind==='hierarchy'? 70 : 120;
+    const f=(d-rest)*0.02;
+    a.vx+=dx/d*f; a.vy+=dy/d*f; b.vx-=dx/d*f; b.vy-=dy/d*f;
+  }
+  const cx=gW/2, cy=gH/2;
+  for(const n of arr){
+    n.vx += (cx-n.x)*0.0016; n.vy += (cy-n.y)*0.0016;   // gentle gravity
+    n.x += Math.max(-8,Math.min(8,n.vx));
+    n.y += Math.max(-8,Math.min(8,n.vy));
+    n.vx*=0.62; n.vy*=0.62;
+  }
+}
+function edgeVisible(e){
+  if(e.visibility!=='covert') return true;
+  if(gViewpoint==='spectator') return true;
+  return e.from===+gViewpoint;
+}
+function reachable(startKey){
+  const seen=new Set([startKey]); const q=[startKey];
+  const edges=graphEdges();
+  while(q.length){
+    const cur=q.shift();
+    for(const e of edges){
+      if(e.kind==='ownership') continue;
+      if(e.a===cur && !seen.has(e.b)){seen.add(e.b); q.push(e.b);}
+      if(e.b===cur && !seen.has(e.a)){seen.add(e.a); q.push(e.a);}
+    }
+  }
+  for(const e of edges) if(e.kind==='ownership' && seen.has(e.a)) seen.add(e.b);
+  return seen;
+}
+const EDGE_STYLE={
+  hierarchy:{c:'#4C5975', w:1,   dash:[]},
+  control:  {c:'#C89B3C', w:1.8, dash:[]},
+  influence:{c:'#5FB58A', w:1.5, dash:[6,4]},
+  investment:{c:'#57A9C4',w:1.5, dash:[6,4]},
+  alliance: {c:'#6E9BD8', w:3,   dash:[]},
+  ownership:{c:'#39465F', w:1,   dash:[2,3]},
+};
+function nodeRadius(n){
+  if(n.type==='org') return 4+Math.min(9, orgPower(n.o)/2.6);
+  if(n.type==='settlement') return 3.6;
+  return 2.6;
+}
+function nodeColor(n){
+  if(n.type==='org'){
+    if(n.o.trade) return '#E8C87A';
+    if(n.o.kind==='squad') return '#C4574F';
+    if(n.o.kind==='business') return '#7FA98F';
+    return factionColor(n.o.factionId);
+  }
+  if(n.type==='settlement') return '#6E7C99';
+  return '#4C5975';
+}
+function toScreen(n){ return {x:(n.x-gW/2)*gCam.z+gW/2+gCam.x, y:(n.y-gH/2)*gCam.z+gH/2+gCam.y}; }
+function drawGraph(){
+  if(!graphOpen) return;
+  if(!gW || gCanvas.width===0) gSize();
+  const orgCount=S.orgs.filter(orgVisible).length;
+  if(!gNodes.size || Math.abs(orgCount - gLastOrgCount) > 4){ gLastOrgCount=orgCount; layoutGraph(); }
+  relax(); relax();
+  gctx.clearRect(0,0,gW,gH);
+
+  let focusSet=null;
+  if(gFocus && S.selection && S.selection.type==='org') focusSet=reachable('O'+S.selection.id);
+
+  let drawnEdges=0;
+  for(const ge of graphEdges()){
+    const e=ge.e;
+    if(e.kind!=='ownership' && !edgeVisible(e)) continue;
+    const A=gNodes.get(ge.a), B=gNodes.get(ge.b);
+    if(!A||!B) continue;
+    if(focusSet && (!focusSet.has(ge.a)||!focusSet.has(ge.b))) continue;
+    const a=toScreen(A), b=toScreen(B);
+    const st=EDGE_STYLE[ge.kind]||EDGE_STYLE.hierarchy;
+    gctx.save();
+    gctx.strokeStyle = e.visibility==='covert' ? '#8B5FB5' : st.c;
+    gctx.lineWidth = st.w*Math.max(0.6,gCam.z);
+    gctx.setLineDash(e.visibility==='covert' ? [2,4] : st.dash.map(d=>d*gCam.z));
+    gctx.globalAlpha = ge.kind==='ownership'? 0.45 : 0.8;
+    gctx.beginPath(); gctx.moveTo(a.x,a.y); gctx.lineTo(b.x,b.y); gctx.stroke();
+    if(ge.kind==='alliance'){
+      const nx=-(b.y-a.y), ny=(b.x-a.x), l=Math.hypot(nx,ny)||1;
+      gctx.lineWidth=1; gctx.globalAlpha=0.55;
+      gctx.beginPath();
+      gctx.moveTo(a.x+nx/l*3.5, a.y+ny/l*3.5); gctx.lineTo(b.x+nx/l*3.5, b.y+ny/l*3.5);
+      gctx.stroke();
+    }
+    gctx.restore();
+    drawnEdges++;
+  }
+  gctx.font='11px "IBM Plex Mono", monospace';
+  let drawnNodes=0;
+  for(const n of gNodes.values()){
+    if(focusSet && !focusSet.has(n.key)) continue;
+    const p=toScreen(n);
+    if(p.x<-40||p.x>gW+40||p.y<-30||p.y>gH+30) continue;
+    const r=nodeRadius(n)*Math.max(0.7,gCam.z);
+    const sel = S.selection && (
+      (n.type==='org' && S.selection.type==='org' && S.selection.id===n.o.id) ||
+      (n.type==='settlement' && S.selection.type==='settlement' && S.selection.id===n.s.id) ||
+      (n.type==='enterprise' && S.selection.type==='enterprise' && S.selection.id===n.e.id));
+    const hov = gHover===n;
+    gctx.beginPath(); gctx.arc(p.x,p.y,r,0,7);
+    gctx.fillStyle=nodeColor(n); gctx.globalAlpha = hov?1:0.92; gctx.fill(); gctx.globalAlpha=1;
+    if(n.type==='org' && n.o.kind==='political' && !n.o.parentId){   // independent realm: ringed
+      gctx.strokeStyle='#EFE6D2'; gctx.lineWidth=1.2;
+      gctx.beginPath(); gctx.arc(p.x,p.y,r+2.5,0,7); gctx.stroke();
+    }
+    if(sel){ gctx.strokeStyle='#EFE6D2'; gctx.lineWidth=2;
+      gctx.beginPath(); gctx.arc(p.x,p.y,r+6,0,7); gctx.stroke(); }
+    const label = n.type==='org'? n.o.name : n.type==='settlement'? n.s.name : '';
+    const worth = n.type==='org' && (orgPower(n.o)>3 || !n.o.parentId || n.o.trade);
+    if(label && (hov||sel||worth||gCam.z>1.5)){
+      gctx.fillStyle = hov||sel? '#EFE6D2' : n.type==='org'? '#A9B5CC' : '#6B7897';
+      gctx.fillText(label.slice(0,26), p.x+r+5, p.y+4);
+    }
+    drawnNodes++;
+  }
+  document.getElementById('gCount').innerHTML=
+    '<b style="color:var(--text)">'+drawnNodes+'</b> вузлів · <b style="color:var(--text)">'+drawnEdges+'</b> зв\'язків'+
+    '<br><span style="color:#4C5975">колесо — зум · тягни — панорама</span>';
+}
+/* --- graph interaction --- */
+function gPick(cx,cy){
+  let best=null,bd=1e9;
+  for(const n of gNodes.values()){
+    const p=toScreen(n);
+    const d=Math.hypot(p.x-cx,p.y-cy);
+    const r=nodeRadius(n)*Math.max(0.7,gCam.z)+7;
+    if(d<r && d<bd){bd=d;best=n;}
+  }
+  return best;
+}
+gCanvas.addEventListener('pointerdown',e=>{
+  const r=gCanvas.getBoundingClientRect();
+  gDrag={x:e.clientX, y:e.clientY, moved:0, cx:e.clientX-r.left, cy:e.clientY-r.top};
+});
+gCanvas.addEventListener('pointermove',e=>{
+  const r=gCanvas.getBoundingClientRect();
+  const cx=e.clientX-r.left, cy=e.clientY-r.top;
+  if(gDrag){
+    gDrag.moved+=Math.abs(e.clientX-gDrag.x)+Math.abs(e.clientY-gDrag.y);
+    gCam.x+=e.clientX-gDrag.x; gCam.y+=e.clientY-gDrag.y;
+    gDrag.x=e.clientX; gDrag.y=e.clientY;
+    gTip.style.display='none';
+    return;
+  }
+  const n=gPick(cx,cy);
+  gHover=n;
+  if(!n){ gTip.style.display='none'; return; }
+  gTip.style.display='block';
+  gTip.style.left=(cx+14)+'px';
+  gTip.style.top=(cy+14)+'px';
+  if(n.type==='org'){
+    const o=n.o;
+    const slots=S.edges.filter(x=>x.kind!=='ownership'&&x.kind!=='hierarchy'&&(x.from===o.id||x.to===o.id)).length;
+    gTip.innerHTML='<b>'+o.name+'</b><span class="tk">'+o.kind+' · '+LT_LABEL[o.leadershipType]+'</span>'+
+      '<span class="tk">скарбниця '+num(o.treasury)+'💰 · сила '+f1(orgPower(o))+'</span>'+
+      '<span class="tk">слотів: '+slots+(o.parentId?' · підлеглий':' · незалежний')+'</span>';
+  } else if(n.type==='settlement'){
+    gTip.innerHTML='<b>'+n.s.name+'</b><span class="tk">'+TIER[n.s.tier].label+' · '+num(n.s.pop)+' осіб</span>';
+  } else {
+    gTip.innerHTML='<b>'+ENT[n.e.kind].label+'</b><span class="tk">'+stl(n.e.settlementId).name+'</span>';
+  }
+});
+addEventListener('pointerup',()=>{ gDrag=null; });
+gCanvas.addEventListener('click',e=>{
+  if(gDrag && gDrag.moved>5) return;
+  const r=gCanvas.getBoundingClientRect();
+  const n=gPick(e.clientX-r.left, e.clientY-r.top);
+  if(!n) return;
+  if(n.type==='org') select('org', n.o.id);
+  else if(n.type==='settlement') select('settlement', n.s.id);
+  else select('enterprise', n.e.id);
+});
+gCanvas.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const k=e.deltaY<0? 1.12 : 1/1.12;
+  gCam.z=Math.max(0.35, Math.min(4, gCam.z*k));
+},{passive:false});
+
+function rebuildViewpointOptions(){
+  const sel=document.getElementById('gView');
+  const cur=sel.value;
+  sel.innerHTML='<option value="spectator">Spectator (всевидець)</option>'+
+    S.orgs.filter(o=>o.kind==='political' && !o.parentId)
+      .map(o=>'<option value="'+o.id+'">'+o.name+'</option>').join('');
+  sel.value = [...sel.options].some(o=>o.value===cur)? cur : 'spectator';
+  gViewpoint=sel.value;
+}
+
+/* =====================================================================
+   HUD wiring
+   ===================================================================== */
+function updateHUD(){
+  document.getElementById('stYear').textContent = 1+Math.floor(S.tick/40);
+  document.getElementById('stOrgs').textContent = S.orgs.length;
+  document.getElementById('stSquads').textContent = S.squads.length;
+  document.getElementById('stCaravans').textContent = S.caravans.length;
+  document.getElementById('stPop').textContent = num(S.settlements.reduce((a,s)=>a+s.pop,0));
+}
+function renderLog(){
+  document.getElementById('log').innerHTML =
+    S.events.map(e=>'<div><span class="t">'+String(e.t).padStart(4,'0')+'</span>'+e.html+'</div>').join('');
+}
+document.getElementById('btnPause').onclick=e=>{
+  S.paused=!S.paused; e.target.textContent=S.paused?'▶':'▮▮';
+};
+for(const [id,v] of [['spd1',1],['spd3',3],['spd8',8]]){
+  document.getElementById(id).onclick=()=>{
+    S.speed=v;
+    document.querySelectorAll('.spd').forEach(b=>b.classList.remove('on'));
+    document.getElementById(id).classList.add('on');
+  };
+}
+function regenerate(seed){
+  const ld=document.getElementById('loading');
+  ld.style.display='flex';
+  setTimeout(()=>{
+    generate(seed);
+    renderInspector(); renderEcon(); updateHUD();
+    ld.style.display='none';
+  }, 40);
+}
+document.getElementById('btnRegen').onclick=()=>{
+  regenerate(parseInt(document.getElementById('seedInput').value)||1);
+};
+document.getElementById('btnGraph').onclick=()=>{
+  graphOpen=!graphOpen;
+  document.getElementById('graph').style.display=graphOpen?'block':'none';
+  document.getElementById('btnGraph').classList.toggle('on',graphOpen);
+  if(graphOpen){
+    gSize(); gNodes.clear(); gCam={x:0,y:0,z:1};
+    rebuildViewpointOptions(); drawGraph();
+  } else { gTip.style.display='none'; }
+};
+document.getElementById('gClose').onclick=()=>document.getElementById('btnGraph').click();
+document.getElementById('gProp').onclick=e=>{ gShowProp=!gShowProp; e.target.classList.toggle('on',gShowProp); gNodes.clear(); drawGraph(); };
+document.getElementById('gBig').onclick=e=>{ gBigOnly=!gBigOnly; e.target.classList.toggle('on',gBigOnly); gNodes.clear(); drawGraph(); };
+document.getElementById('gFocus').onclick=e=>{ gFocus=!gFocus; e.target.classList.toggle('on',gFocus); drawGraph(); };
+document.getElementById('gView').onchange=e=>{ gViewpoint=e.target.value; drawGraph(); };
+
+function buildStartScreen(){
+  const card=document.getElementById('startCard');
+  const leaders=S.chars.filter(c=>c.ledOrgId && c.alive)
+    .map(c=>({c,o:org(c.ledOrgId)}))
+    .filter(x=>x.o && (x.o.kind==='political'||x.o.trade))
+    .sort((a,b)=>orgPower(b.o)-orgPower(a.o)).slice(0,10);
+  card.innerHTML='<h1>NEW <span>LORDS</span></h1>'+
+    '<p>Прототип систем: планета, організації, замкнена економіка, каравани. '+
+    'Обери персонажа — ти гратимеш за нього, і його організація стане редагованою. '+
+    'Решта світу живе своїм життям; ти спостерігаєш і втручаєшся.</p>'+
+    leaders.map(x=>'<div class="leader" data-char="'+x.c.id+'">'+
+      '<div><div class="lname">'+x.c.name+'</div>'+
+      '<div class="lorg">'+x.o.name+' · '+LT_LABEL[x.o.leadershipType]+' · '+
+      x.c.traits.join(', ')+'</div></div>'+
+      '<div class="stat">сила '+f1(orgPower(x.o))+'</div></div>').join('')+
+    '<div style="margin-top:12px;display:flex;gap:8px">'+
+    '<button id="obsOnly">Лише спостерігати</button></div>';
+  card.querySelectorAll('[data-char]').forEach(el=>{
+    el.onclick=()=>setAvatar(+el.dataset.char);
+  });
+  document.getElementById('obsOnly').onclick=()=>{
+    document.getElementById('start').style.display='none';
+    rebuildViewpointOptions();
+  };
+  document.getElementById('start').style.display='flex';
+}
+
+/* =====================================================================
+   MAIN LOOP
+   ===================================================================== */
+let acc=0, last=performance.now(), tickAlpha=0;
+const STEP=420;                       // one simulation step, in ms of game time
+function frame(now){
+  const dt=Math.min(100, now-last); last=now;
+  if(!S.paused){
+    acc+=dt*S.speed;
+    let guard=0;
+    while(acc>=STEP && guard++<8){ acc-=STEP; tick(); }
+    tickAlpha=Math.min(1, acc/STEP);
+  }
+  stepCamera();
+  updateCamera();
+  stepFly();
+  animateMarkers();
+  renderer.render(scene,camera);
+  if(graphOpen) drawGraph();
+  requestAnimationFrame(frame);
+}
+addEventListener('resize',()=>{
+  renderer.setSize(innerWidth,innerHeight);
+  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  if(graphOpen){ gSize(); gNodes.clear(); drawGraph(); }
+});
+renderer.setSize(innerWidth,innerHeight);
+document.getElementById('loading').style.display='flex';
+requestAnimationFrame(()=>setTimeout(()=>{
+  generate(1874);
+  renderInspector(); renderEcon(); updateHUD();
+  document.getElementById('loading').style.display='none';
+  requestAnimationFrame(frame);
+}, 30));
+</script>
+</body>
+</html>
