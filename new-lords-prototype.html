@@ -539,15 +539,55 @@ function generate(seed){
     S.settlements.push(st);
   });
 
-  /* --- road graph: each settlement links to 3 nearest --- */
+  /* --- road graph ---
+     Trunk "3 nearest" links are built ONLY between non-camp settlements, so no
+     road ever runs transitively through a camp. Each camp is a leaf spoke: one
+     link to its nearest non-camp settlement. A connectivity pass then guarantees
+     the non-camp trunk is a single component — otherwise caravans between
+     isolated clusters would silently never route (bestTrade skips a null path). */
   S.adj = S.settlements.map(()=>[]);
-  S.settlements.forEach((a,i)=>{
-    const order=S.settlements.map((b,j)=>({j,d:a.dir.dot(b.dir)})).filter(o=>o.j!==i)
+  const link=(i,j)=>{ if(i===j||S.adj[i].includes(j)) return; S.adj[i].push(j); S.adj[j].push(i); S.roads.push([i,j]); };
+  const trunk=S.settlements.map((_,i)=>i).filter(i=>S.settlements[i].tier!=='camp');
+  const trunkSet=new Set(trunk);
+
+  /* trunk magistrals: each non-camp links to its 3 nearest non-camps */
+  for(const i of trunk){
+    const order=trunk.filter(j=>j!==i)
+      .map(j=>({j,d:S.settlements[i].dir.dot(S.settlements[j].dir)}))
       .sort((x,y)=>y.d-x.d).slice(0,3);
-    for(const o of order){
-      if(!S.adj[i].includes(o.j)){S.adj[i].push(o.j); S.adj[o.j].push(i);
-        S.roads.push([i,o.j]);}
+    for(const o of order) link(i,o.j);
+  }
+
+  /* connectivity guard: merge trunk components (runs before camp spokes) */
+  const trunkComponents=()=>{
+    const seen=new Set(), groups=[];
+    for(const s of trunk){
+      if(seen.has(s)) continue;
+      const g=[], q=[s]; seen.add(s);
+      while(q.length){ const c=q.shift(); g.push(c);
+        for(const nb of S.adj[c]) if(trunkSet.has(nb)&&!seen.has(nb)){ seen.add(nb); q.push(nb); } }
+      groups.push(g);
     }
+    return groups;
+  };
+  for(let groups=trunkComponents(); groups.length>1; groups=trunkComponents()){
+    let best=null;
+    for(const a of groups[0]) for(let gi=1;gi<groups.length;gi++) for(const b of groups[gi]){
+      const d=S.settlements[a].dir.dot(S.settlements[b].dir);
+      if(!best||d>best.d) best={a,b,d};
+    }
+    link(best.a,best.b);
+  }
+
+  /* camp spokes: each camp attaches by exactly one link to its nearest non-camp */
+  S.settlements.forEach((s,i)=>{
+    if(s.tier!=='camp') return;
+    let best=null;
+    for(const j of trunk){
+      const d=s.dir.dot(S.settlements[j].dir);
+      if(!best||d>best.d) best={j,d};
+    }
+    if(best) link(i,best.j);
   });
 
   /* --- factions: each is an independent political org (a realm) --- */
