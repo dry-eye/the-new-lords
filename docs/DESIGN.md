@@ -493,7 +493,7 @@ scatter, which is unaffected.
    default to "anywhere within the settlement's zone-kind-matching territory."
 6. Baseline seeding and runtime org-AI enterprise founding shape the same economic baseline from opposite
    directions (world-generation-time seeding vs. runtime founding) — any recorded economy telemetry baseline
-   must be regenerated whenever this seeding logic changes.
+   must be regenerated whenever this seeding logic changes (see Balance telemetry, below).
 
 **Cross-reference:** the long-run growth mechanism once a settlement's baseline is seeded is the org-AI
 enterprise-founding system described elsewhere in this document — baseline seeding sets the starting state,
@@ -1418,6 +1418,28 @@ No settings/options menu is designed yet — there's no documented surface for a
 ---
 
 ## Tooling, telemetry & generation
+
+### Balance telemetry — metrics collection
+
+The simulation exposes a broad telemetry stream for tuning the economy and the political/organization systems — the instrumentation a balance pass reads to see what a long run converges to, and what changing a rule or a constant shifts. It observes existing simulation state; the simulation never reads it back.
+
+**Two channels.** Telemetry is captured two ways at once, because trends and causes are different questions:
+- **Periodic snapshots** sample, on a slow world-wide cadence (the ~1s economy-recompute cadence is the natural default, and the interval is a tunable), the current value of every tracked scalar, distribution, and per-entity series — answering "how did this quantity move over time" (a population curve, a treasury trend, a price).
+- **An append-only event journal** records every discrete world event once, stamped with the tick it occurred on — answering "when, and from what cause, did a step-change happen," the causes a snapshot series shows only as an unexplained jump.
+
+Both are sampled at a fixed point in the tick order, driven only by the seeded simulation RNG, so a run replayed from the same seed produces identical telemetry (the same determinism the materialize/collapse transitions follow, above).
+
+**Snapshot — world and per-faction aggregates.** Per snapshot, for the whole world and split by faction: total treasury; population by settlement tier; world stock and net production of every resource; average resource price and its dispersion across settlements; settlement counts by tier and by owned / unowned / abandoned state; total housing and housing shortfall; enterprise counts split running vs idle; active and stalled construction orders; squad counts split garrison vs mobile and total upkeep drain; and controlled territory area. For organizations: total, independent, and subordinate counts; distributions by kind and by leadership type; wealth and power distributions (spread, not just mean); the subordinate-loyalty distribution and the count sitting below the revolt threshold; active slots by kind with a covert/public split; perk-holding counts; post fill rates; and the war / peace / neutral side-pair counts. For population: materialized-character and latent-pool totals, and trait/skill distributions across leaders.
+
+**Snapshot — per-settlement series.** Each settlement records its own full trajectory: tier, owner and faction, territory area, population with its growth-or-decline rate this step, housing and shortfall, each resource's stock / net-per-step / price, income with its base-plus-territory breakdown, enterprise counts by state, and its abandoned and contested flags.
+
+**Snapshot — per-organization: aggregates for all, series for a watched few.** Every org feeds the population aggregates and distributions above, and every org's creation and destruction is counted (by kind and by cause). A full per-org time series — treasury and income by source, member count, the power score with its wealth / territory / military components, children and subordinate breakdown, slots held and occupied, alliances and agent edges, perks, filled posts, loyalty and opinion of parent, owned property, and last decision taken — is kept only for a small, deliberately bounded **watched set**: the independent orgs (those that top a tree and actually shape the world) plus the player's own org. **Why:** this mirrors the cohort principle that most orgs are idle background population not worth individual detail (see Org cohorts, above) — the aggregates capture the whole population's shape cheaply, while the watched set preserves the full life-story of the handful of actors a balance question is usually about.
+
+**Event journal.** Recorded events span: org lifecycle — creation (with cause: worldgen seeding, squad-pairing, secession, founding a subordinate, founding an independent squad-org, or kind mutation) and destruction (with cause, and the disposition of treasury and property), kind and leadership-type changes, a perk taken, becoming political, becoming independent; political events — secession attempts and outcome, coups, succession crises (with successor type and legitimacy), leader deaths, war declared, peace made; economic events — a settlement captured (with method: direct, puppet, mutate, or replace), abandonment and repopulation, an enterprise founded (with cause) or idled, construction issued / completed / stalled, a squad recruited or disbanded (with cause), a bank loan taken or defaulted, a nationalization attempt and outcome; graph events — a slot created or broken, an alliance formed or broken, a covert edge exposed, an agent recruited, a sabotage or intel action run; and meta events — domination progress and the domination win.
+
+**A run is reproducible.** Each recorded run is stamped with the world seed, the world-generation parameters, and a snapshot of every balance constant then in effect (from the tunable-parameter registry, see Tuning tools, above), so two runs are comparable only when their inputs are known — and a recorded baseline can be regenerated when the rules behind it change (the economy telemetry baseline, see Baseline economy per settlement, above, is one such case). Collected telemetry is exportable for offline analysis rather than only inspectable live.
+
+**Open question:** per-settlement series are unbounded in the settlement count, so a very large world sampled often records a great deal. The snapshot interval and an optional down-sampling of the oldest per-entity series are the levers; no fixed retention policy is set here.
 
 ### World generation pipeline
 World generation runs as a point-based procedural pipeline: point sets with attributes flow through samplers, filters, transforms, and spawners. Points of interest are placed on top of this pipeline as declarative rules — for example, an oil depot can spawn anywhere, while a lumberjack camp spawns near forest. This pairs with the world-generation seed and parameters.
