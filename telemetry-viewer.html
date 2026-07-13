@@ -1,0 +1,956 @@
+<meta charset="utf-8">
+<title>New Lords — Аналіз прогонів телеметрії</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c232d; --line:#2a323d; --line2:#39424f;
+    --ink:#e7edf3; --ink2:#9fb0c0; --ink3:#6d7d8d; --accent:#56B4E9; --warn:#E69F00; --bad:#EB5757; --good:#27AE60;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.45}
+  a{color:var(--accent)}
+  h1{font-size:17px;margin:0;font-weight:600;letter-spacing:.2px}
+  h1 span{color:var(--accent)}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.10em;color:var(--ink3);margin:0 0 8px;font-weight:600}
+  header{display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+  header .sub{color:var(--ink2);font-size:12px}
+  .grow{flex:1}
+  .wrap{padding:14px 18px 40px;max-width:1500px;margin:0 auto}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+  .row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+  .field{display:flex;flex-direction:column;gap:4px}
+  label.lb{font-size:11px;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em}
+  select,input[type=number],input[type=text]{background:var(--panel2);color:var(--ink);border:1px solid var(--line2);border-radius:6px;padding:6px 8px;font-family:var(--mono);font-size:13px;min-height:32px}
+  select:focus,input:focus{outline:2px solid var(--accent);outline-offset:-1px}
+  button{background:var(--panel2);color:var(--ink);border:1px solid var(--line2);border-radius:6px;padding:7px 11px;font-size:13px;cursor:pointer;font-family:var(--sans)}
+  button:hover{border-color:var(--accent);color:#fff}
+  button.primary{background:var(--accent);color:#04121c;border-color:var(--accent);font-weight:600}
+  button.chip{padding:4px 9px;font-size:12px;border-radius:20px}
+  button.chip.on{background:var(--accent);color:#04121c;border-color:var(--accent)}
+  button.mini{padding:3px 7px;font-size:12px}
+  input[type=range]{accent-color:var(--accent);width:100%}
+  .muted{color:var(--ink2)}
+  .tiny{font-size:12px}
+  .mono{font-family:var(--mono)}
+  canvas{display:block;width:100%;border-radius:8px;background:#0b0e13;border:1px solid var(--line)}
+  .legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;font-size:12px}
+  .legend .it{display:flex;align-items:center;gap:6px}
+  .sw{width:12px;height:12px;border-radius:3px;flex:none}
+  .swline{width:16px;height:0;border-top:3px solid;flex:none}
+  .banner{border-radius:8px;padding:9px 12px;font-size:13px;margin-bottom:12px;border:1px solid}
+  .banner.ok{background:#12251a;border-color:#1f5138;color:#8fe0b3}
+  .banner.warn{background:#2a2210;border-color:#5a4a1a;color:#f0d38a}
+  .banner.info{background:#12202b;border-color:#274a63;color:#a9d6ef}
+  .runs{display:flex;flex-direction:column;gap:6px}
+  .runrow{display:flex;align-items:center;gap:10px;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:7px 10px}
+  .runrow .dot{width:14px;height:14px;border-radius:4px;flex:none}
+  .runrow .meta{font-size:12px;color:var(--ink2)}
+  .runrow .nm{font-weight:600}
+  .drop{border:1.5px dashed var(--line2);border-radius:10px;padding:26px;text-align:center;color:var(--ink2);background:var(--panel)}
+  .drop.hot{border-color:var(--accent);background:#12202b;color:var(--ink)}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:900px){.split{grid-template-columns:1fr}}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:12px}
+  .kv b{color:var(--ink2);font-weight:500}
+  .tip{position:fixed;pointer-events:none;background:#0b0e13ee;border:1px solid var(--line2);border-radius:7px;padding:7px 9px;font-family:var(--mono);font-size:12px;z-index:50;display:none;max-width:320px;box-shadow:0 6px 22px #0009}
+  .tip .h{color:var(--accent);margin-bottom:3px}
+  details{background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:6px 10px}
+  details summary{cursor:pointer;font-size:12px;color:var(--ink2);user-select:none}
+  .checks{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:8px}
+  .checks label{display:flex;align-items:center;gap:5px;font-size:12px;font-family:var(--mono)}
+  .hidden{display:none!important}
+  .note{font-size:12px;color:var(--ink3);margin-top:6px}
+  code{font-family:var(--mono);background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:12px}
+</style>
+
+<header>
+  <h1>NEW <span>LORDS</span> · Аналіз телеметрії</h1>
+  <span class="sub">офлайн · один файл · без залежностей</span>
+  <span class="grow"></span>
+  <input type="file" id="file" accept=".json,.csv" multiple class="hidden">
+  <button class="primary" id="btnLoad">Завантажити прогін…</button>
+  <button id="btnClear">Очистити</button>
+</header>
+
+<div class="wrap">
+  <div id="empty" class="drop" ondragover="return false">
+    <div style="font-size:15px;color:var(--ink);margin-bottom:6px">Перетягни сюди експорт телеметрії або натисни «Завантажити прогін…»</div>
+    <div class="tiny">Приймає JSON-експорт зі збору телеметрії (<code>new-lords-telemetry/v1</code>) — а також пласкі CSV (settlements / orgs).<br>
+    Завантаж 2+ прогони, щоб порівняти їх на одній осі (A/B зміни правил).</div>
+  </div>
+
+  <div id="app" class="hidden">
+    <div id="compat"></div>
+
+    <div class="panel">
+      <h2>Прогони</h2>
+      <div id="runs" class="runs"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Часовий графік метрики</h2>
+      <div class="row">
+        <div class="field">
+          <label class="lb" for="scope">Область</label>
+          <select id="scope">
+            <option value="world">Світ (агрегати)</option>
+            <option value="faction">Фракція</option>
+            <option value="settlement">Поселення</option>
+            <option value="org">Watched-організація</option>
+          </select>
+        </div>
+        <div class="field" id="entityField">
+          <label class="lb" for="entity">Сутність</label>
+          <select id="entity"></select>
+        </div>
+        <div class="field" style="min-width:280px;flex:1">
+          <label class="lb" for="metric">Метрика (скаляр зі знімків)</label>
+          <select id="metric"></select>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <div class="field" style="flex:1;min-width:320px">
+          <label class="lb">Проміжок часу (тік): <span id="rangeLabel" class="mono"></span></label>
+          <input type="range" id="tFrom">
+          <input type="range" id="tTo">
+        </div>
+        <div class="field">
+          <label class="lb">Пресети</label>
+          <div style="display:flex;gap:6px">
+            <button class="mini" data-preset="all">увесь</button>
+            <button class="mini" data-preset="first">1-а пол.</button>
+            <button class="mini" data-preset="last">2-а пол.</button>
+          </div>
+        </div>
+        <div class="field">
+          <label class="lb">Маркери подій</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="chip on" id="btnMarkers">увімк.</button>
+            <span class="tiny muted" id="markCount"></span>
+          </div>
+        </div>
+      </div>
+
+      <details id="markerBox" style="margin-top:10px">
+        <summary>Типи подій на осі часу (обери, що показувати)</summary>
+        <div class="checks" id="eventTypes"></div>
+      </details>
+
+      <canvas id="chart" height="430" style="margin-top:12px"></canvas>
+      <div class="legend" id="chartLegend"></div>
+      <div class="note" id="chartNote"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Розподіл / гістограма на момент T</h2>
+      <div class="row">
+        <div class="field">
+          <label class="lb" for="histSrc">Джерело</label>
+          <select id="histSrc">
+            <option value="org">Організації (watched)</option>
+            <option value="settlement">Поселення</option>
+          </select>
+        </div>
+        <div class="field" style="min-width:240px">
+          <label class="lb" for="histMetric">Метрика</label>
+          <select id="histMetric"></select>
+        </div>
+        <div class="field">
+          <label class="lb">Швидкий вибір</label>
+          <div style="display:flex;gap:6px" id="histQuick"></div>
+        </div>
+        <div class="field">
+          <label class="lb" for="bins">Кошики</label>
+          <input type="number" id="bins" value="12" min="4" max="40" style="width:74px">
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <div class="field" style="flex:1;min-width:320px">
+          <label class="lb">Момент T (тік): <span id="tLabel" class="mono"></span></label>
+          <input type="range" id="tPick">
+        </div>
+      </div>
+      <canvas id="hist" height="340" style="margin-top:12px"></canvas>
+      <div class="legend" id="histLegend"></div>
+      <div class="note" id="histNote"></div>
+    </div>
+  </div>
+</div>
+
+<div class="tip" id="tip"></div>
+
+<script>
+"use strict";
+/* =========================================================================
+   New Lords — offline telemetry run analyzer.  Single self-contained file,
+   no build step, no network.  Consumes the #5 telemetry export
+   (schema new-lords-telemetry/v1: meta / config / counters / snapshots /
+   journal) and, as a bonus, the flat settlements/orgs CSV exports.
+   ========================================================================= */
+
+/* ---- palette (Okabe-Ito: colour-blind safe) for A/B run overlays ---- */
+const RUN_COLORS = ['#56B4E9','#E69F00','#009E73','#CC79A7','#F0E442','#0072B2','#D55E00','#999999'];
+/* event-type marker colours + short labels */
+const EVENT_META = {
+  OrgDestroyed:      {c:'#EB5757', l:'Орг. знищена'},
+  OrgCreated:        {c:'#6FCF97', l:'Орг. створена'},
+  SecessionAttempt:  {c:'#BB6BD9', l:'Спроба сецесії'},
+  BecameIndependent: {c:'#9B51E0', l:'Стала незалежною'},
+  WarDeclared:       {c:'#F2994A', l:'Оголошено війну'},
+  PeaceMade:         {c:'#27AE60', l:'Укладено мир'},
+  SettlementCaptured:{c:'#2D9CDB', l:'Захоплено поселення'},
+  EnterpriseFounded: {c:'#56CCF2', l:'Засновано підприємство'},
+  LeaderDeath:       {c:'#9AA6B2', l:'Смерть лідера'},
+  SuccessionCrisis:  {c:'#F2C94C', l:'Криза спадкоємства'},
+  SquadRecruited:    {c:'#00A6A6', l:'Загін набрано'},
+  SquadDisbanded:    {c:'#BDBDBD', l:'Загін розпущено'},
+  SlotCreated:       {c:'#7F8CFF', l:'Слот створено'},
+  SlotBroken:        {c:'#C77DFF', l:'Слот розірвано'},
+  AllianceFormed:    {c:'#1ABC9C', l:'Створено альянс'},
+  Investment:        {c:'#F5A623', l:'Інвестиція'},
+  BecameTradeHouse:  {c:'#4ECDC4', l:'Став торговим домом'},
+};
+const DEFAULT_MARKERS = ['OrgDestroyed','SecessionAttempt','WarDeclared','PeaceMade','SettlementCaptured'];
+function evMeta(t){ return EVENT_META[t] || {c:'#8899aa', l:t}; }
+
+/* keys that are identifiers/labels, not plottable metrics */
+const SKIP_KEYS = new Set(['id','tick','name','color','tier','kind','leadershipType','lastDecision','factionId','ownerOrgId','faction']);
+
+const state = {
+  runs: [],            // {id,name,seed,color,meta,config,counters,snapshots,journal,domain:[a,b],fmt}
+  scope: 'world',
+  entity: {faction:null, settlement:null, org:null},
+  metric: null,
+  range: [0,0],        // [tFrom,tTo] tick
+  markersOn: true,
+  markerTypes: new Set(DEFAULT_MARKERS),
+  hist: {src:'org', metric:'treasury', bins:12, t:0},
+};
+let runSeq = 0;
+
+/* ---------------- generic helpers ---------------- */
+function flattenScalars(obj, prefix, out){
+  out = out || {};
+  if(obj==null || typeof obj!=='object') return out;
+  for(const k in obj){
+    if(SKIP_KEYS.has(k)) continue;
+    const v = obj[k];
+    const p = prefix ? prefix+'.'+k : k;
+    if(v==null) continue;
+    if(typeof v==='number'){ if(isFinite(v)) out[p]=v; }
+    else if(typeof v==='boolean'){ out[p]= v?1:0; }
+    else if(typeof v==='object' && !Array.isArray(v)) flattenScalars(v,p,out);
+  }
+  return out;
+}
+function getPath(obj, path){
+  if(obj==null || path==null || path==='') return undefined;
+  let cur = obj;
+  const parts = path.split('.');
+  for(const pk of parts){ if(cur==null||typeof cur!=='object') return undefined; cur = cur[pk]; }
+  if(typeof cur==='boolean') return cur?1:0;
+  return cur;
+}
+/* per-snapshot merged world object (world aggregates + cumulative lifetime counters) */
+function worldObj(snap){
+  if(snap._w) return snap._w;
+  const lifetime = (snap.orgs && snap.orgs.lifetime) || null;
+  snap._w = Object.assign({}, snap.world, lifetime?{lifetime}:{});
+  return snap._w;
+}
+function scopeSource(snap, scope, entId){
+  if(scope==='world') return worldObj(snap);
+  if(scope==='faction') return (snap.factions||[]).find(f=>f.factionId===entId);
+  if(scope==='settlement') return (snap.settlements||[]).find(s=>s.id===entId);
+  if(scope==='org') return ((snap.orgs&&snap.orgs.watched)||[]).find(o=>o.id===entId);
+  return null;
+}
+function fmtNum(v){
+  if(v==null||!isFinite(v)) return '—';
+  const a=Math.abs(v);
+  if(a>=1e6) return (v/1e6).toFixed(2)+'M';
+  if(a>=1e3) return (v/1e3).toFixed(a>=1e4?1:2)+'k';
+  if(Number.isInteger(v)) return String(v);
+  if(a>=10) return v.toFixed(1);
+  if(a>=1) return v.toFixed(2);
+  return v.toFixed(3);
+}
+function prettyMetric(path){ return path.replace(/\./g,' › '); }
+
+/* ---------------- loading ---------------- */
+function ingestJSON(obj, filename){
+  const snaps = obj.snapshots || [];
+  const meta = obj.meta || null;
+  const seed = meta && meta.seed!=null ? meta.seed : null;
+  const domain = snaps.length ? [snaps[0].tick, snaps[snaps.length-1].tick] : [0,0];
+  return {
+    id:'r'+(++runSeq),
+    name: filename.replace(/\.[^.]+$/,''),
+    seed, meta,
+    config: obj.config||null,
+    counters: obj.counters||null,
+    snapshots: snaps,
+    journal: obj.journal||[],
+    fmt:'json',
+    domain,
+  };
+}
+/* CSV: the #5 flat exports (settlements / orgs). Reconstruct minimal snapshots
+   grouped by tick — no world aggregates, no journal, no meta (→ metadata unknown). */
+function parseCSV(text){
+  const rows=[]; let i=0, field='', row=[], q=false;
+  const push=()=>{ row.push(field); field=''; };
+  const endr=()=>{ push(); rows.push(row); row=[]; };
+  while(i<text.length){
+    const c=text[i];
+    if(q){ if(c==='"'){ if(text[i+1]==='"'){field+='"';i++;} else q=false; } else field+=c; }
+    else{ if(c==='"') q=true; else if(c===',') push(); else if(c==='\n') endr(); else if(c==='\r'){} else field+=c; }
+    i++;
+  }
+  if(field.length||row.length) endr();
+  return rows.filter(r=>r.length>1 || (r.length===1&&r[0]!==''));
+}
+function ingestCSV(text, filename){
+  const rows = parseCSV(text);
+  if(!rows.length) throw new Error('порожній CSV');
+  const header = rows[0];
+  const isOrg = header.includes('kind') && header.includes('power_total');
+  const byTick = new Map();
+  const numCols = new Set(header.filter(h=>h!=='name'&&h!=='kind'&&h!=='leadershipType'&&h!=='lastDecision'&&h!=='tier'&&h!=='independent'&&h!=='abandoned'&&h!=='contested'&&h!=='trade'));
+  for(let r=1;r<rows.length;r++){
+    const line=rows[r]; if(line.length<header.length) continue;
+    const o={};
+    for(let c=0;c<header.length;c++){ const h=header[c], val=line[c];
+      o[h] = numCols.has(h) ? (val===''?null:+val) : val;
+    }
+    const t=+o.tick; if(!byTick.has(t)) byTick.set(t,[]); byTick.get(t).push(o);
+  }
+  const ticks=[...byTick.keys()].sort((a,b)=>a-b);
+  const snapshots = ticks.map(t=>{
+    const items=byTick.get(t);
+    if(isOrg){
+      return {tick:t, factions:[], settlements:[], orgs:{watched: items.map(o=>({
+        id:+o.id, name:o.name, kind:o.kind, leadershipType:o.leadershipType,
+        treasury:o.treasury, income:{blended:o.income_blended,expenses:o.expenses,profit:o.profit},
+        memberCount:o.memberCount,
+        power:{total:o.power_total,wealth:o.power_wealth,territory:o.power_territory,military:o.power_military},
+        children:o.children, slots:{held:o.slots_held,occupied:o.slots_occupied}, alliances:o.alliances,
+        agentEdges:{covert:o.agentCovert,public:o.agentPublic}, perks:o.perks,
+        posts:{filled:o.postsFilled}, loyalty:o.loyalty, ownedProperty:o.ownedProperty,
+      }))}, world:{}};
+    } else {
+      return {tick:t, factions:[], orgs:{watched:[]}, world:{}, settlements: items.map(s=>{
+        const res={};
+        for(const h in s){ const m=/^(\w+)_(stock|net|price)$/.exec(h); if(m){ (res[m[1]]=res[m[1]]||{})[m[2]]=s[h]; } }
+        return {id:+s.id, name:s.name, tier:s.tier, pop:s.pop, popRate:s.popRate, area:s.area,
+          housing:s.housing, shortfall:s.shortfall, resources:res,
+          income:{base:s.income_base,territoryTax:s.income_territoryTax},
+          enterprises:{running:s.entRunning,idle:s.entIdle}};
+      })};
+    }
+  });
+  const domain = snapshots.length? [snapshots[0].tick, snapshots[snapshots.length-1].tick]:[0,0];
+  return {id:'r'+(++runSeq), name:filename.replace(/\.[^.]+$/,''), seed:null, meta:null,
+    config:null, counters:null, snapshots, journal:[], fmt:'csv'+(isOrg?'-org':'-settlement'), domain};
+}
+
+function addRun(run){
+  run.color = RUN_COLORS[state.runs.length % RUN_COLORS.length];
+  state.runs.push(run);
+}
+async function loadFiles(fileList){
+  const errs=[];
+  for(const f of fileList){
+    try{
+      const text = await f.text();
+      let run;
+      if(/\.csv$/i.test(f.name) || (!/^\s*\{/.test(text))) run = ingestCSV(text, f.name);
+      else {
+        const obj = JSON.parse(text);
+        if(!obj.snapshots) throw new Error('немає масиву snapshots — це не експорт телеметрії');
+        run = ingestJSON(obj, f.name);
+      }
+      if(!run.snapshots.length) throw new Error('прогін не містить знімків');
+      addRun(run);
+    }catch(e){ errs.push(f.name+': '+e.message); }
+  }
+  if(errs.length) alert('Не вдалося завантажити:\n'+errs.join('\n'));
+  if(state.runs.length) initAfterLoad();
+}
+
+/* ---------------- after-load wiring ---------------- */
+function primary(){ return state.runs[0]; }
+function unionDomain(){
+  let a=Infinity,b=-Infinity;
+  for(const r of state.runs){ a=Math.min(a,r.domain[0]); b=Math.max(b,r.domain[1]); }
+  if(!isFinite(a)){a=0;b=0;} return [a,b];
+}
+function metricsForScope(scope){
+  // union of scalar leaf paths across a sample of snapshots of the primary run
+  const run = primary(); const out={};
+  const sample = run.snapshots;
+  const take = Math.min(sample.length, 6);
+  for(let i=0;i<take;i++){
+    const snap = sample[Math.floor(i*(sample.length-1)/Math.max(1,take-1))];
+    if(scope==='world'){ Object.assign(out, flattenScalars(worldObj(snap),'')); }
+    else{
+      const arr = scope==='faction'? (snap.factions||[]) : scope==='settlement'? (snap.settlements||[]) : ((snap.orgs&&snap.orgs.watched)||[]);
+      for(const row of arr) Object.assign(out, flattenScalars(row,''));
+    }
+  }
+  return Object.keys(out).sort();
+}
+function entitiesForScope(scope){
+  const seen=new Map();
+  for(const run of state.runs){
+    for(const snap of run.snapshots){
+      const arr = scope==='faction'? (snap.factions||[]) : scope==='settlement'? (snap.settlements||[]) : ((snap.orgs&&snap.orgs.watched)||[]);
+      for(const row of arr){
+        const id = scope==='faction'? row.factionId : row.id;
+        if(id==null) continue;
+        if(!seen.has(id)) seen.set(id, row.name || (scope+' '+id));
+      }
+    }
+  }
+  return [...seen.entries()].sort((a,b)=>a[0]-b[0]).map(([id,name])=>({id,name}));
+}
+
+function pickDefaultScope(){
+  for(const sc of ['world','settlement','org','faction']) if(metricsForScope(sc).length) return sc;
+  return 'world';
+}
+function initAfterLoad(){
+  document.getElementById('empty').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  state.range = unionDomain();
+  state.hist.t = state.range[1];
+  renderCompat();
+  renderRuns();
+  buildEventTypeChecks();
+  // keep the user's scope if it still has data; otherwise fall back to one that does (e.g. CSV-only runs)
+  if(!metricsForScope(state.scope).length) state.scope = pickDefaultScope();
+  document.getElementById('scope').value = state.scope;
+  refreshScope(true);
+  // histogram source: prefer whichever entity kind the primary run actually has
+  const pr=primary();
+  const hasOrg=pr.snapshots.some(s=>s.orgs&&s.orgs.watched&&s.orgs.watched.length);
+  const hasSet=pr.snapshots.some(s=>s.settlements&&s.settlements.length);
+  if(state.hist.src==='org' && !hasOrg && hasSet) state.hist.src='settlement';
+  if(state.hist.src==='settlement' && !hasSet && hasOrg) state.hist.src='org';
+  document.getElementById('histSrc').value=state.hist.src;
+  refreshHistControls(true);
+  syncRangeInputs();
+  drawAll();
+}
+
+function renderRuns(){
+  const el=document.getElementById('runs'); el.innerHTML='';
+  state.runs.forEach((r,idx)=>{
+    const div=document.createElement('div'); div.className='runrow';
+    const seedTxt = r.seed!=null? ('seed '+r.seed) : 'seed невідомий';
+    const fmtTxt = r.fmt==='json'? 'JSON' : ('CSV '+(r.fmt.includes('org')?'orgs':'settlements'));
+    div.innerHTML =
+      '<span class="dot" style="background:'+r.color+'"></span>'+
+      '<span class="nm">'+esc(r.name)+'</span>'+
+      '<span class="meta">'+fmtTxt+' · '+seedTxt+' · '+r.snapshots.length+' знімків · тіки '+r.domain[0]+'–'+r.domain[1]+' · '+r.journal.length+' подій</span>'+
+      '<span class="grow"></span>';
+    const rm=document.createElement('button'); rm.className='mini'; rm.textContent='прибрати';
+    rm.onclick=()=>{ state.runs.splice(idx,1); if(!state.runs.length){ resetToEmpty(); } else { reassignColors(); initAfterLoad(); } };
+    div.appendChild(rm);
+    el.appendChild(div);
+  });
+}
+function reassignColors(){ state.runs.forEach((r,i)=>r.color=RUN_COLORS[i%RUN_COLORS.length]); }
+function resetToEmpty(){
+  state.runs=[]; runSeq=0;
+  document.getElementById('app').classList.add('hidden');
+  document.getElementById('empty').classList.remove('hidden');
+}
+
+/* ---- metadata compatibility check across runs ---- */
+function deepEqual(a,b){ return JSON.stringify(a)===JSON.stringify(b); }
+function renderCompat(){
+  const box=document.getElementById('compat'); box.innerHTML='';
+  if(state.runs.length<2){
+    const r=primary();
+    let html='<div class="banner info">Завантажено 1 прогін';
+    if(r.seed!=null && r.meta) html+=' · <b>seed '+r.seed+'</b> · схема <span class="mono">'+esc(r.meta.schema||'?')+'</span>. Додай ще прогін, щоб порівняти A/B.';
+    else html+=' · метадані невідомі (CSV) — порівняння за seed/параметрами недоступне.';
+    html+='</div>';
+    box.innerHTML=html; return;
+  }
+  const withMeta = state.runs.filter(r=>r.meta);
+  const noMeta = state.runs.filter(r=>!r.meta);
+  const diffs=[]; const seeds=[];
+  const base = withMeta[0];
+  for(const r of withMeta){
+    seeds.push(r.seed);
+    if(r===base) continue;
+    if((r.meta.schema)!==(base.meta.schema)) diffs.push(r.name+': інша схема ('+r.meta.schema+' ≠ '+base.meta.schema+')');
+    if((r.meta.buildId)!==(base.meta.buildId)) diffs.push(r.name+': інший buildId ('+r.meta.buildId+' ≠ '+base.meta.buildId+')');
+    if(!deepEqual(r.meta.worldgen, base.meta.worldgen)) diffs.push(r.name+': інші worldgen-параметри');
+    if(!deepEqual(r.meta.balanceConstants, base.meta.balanceConstants)) diffs.push(r.name+': інші балансові константи ⚠ (порівняння балансу некоректне)');
+    const se=r.config&&r.config.snapshotEveryTicks, be=base.config&&base.config.snapshotEveryTicks;
+    if(se!=null&&be!=null&&se!==be) diffs.push(r.name+': інша каденція знімків ('+se+' ≠ '+be+')');
+  }
+  const allSeedsDiffer = new Set(seeds).size===seeds.length;
+  let cls, html;
+  if(diffs.length || noMeta.length){
+    cls='warn';
+    html='<b>Порівняння з попередженням.</b> ';
+    if(noMeta.length) diffs.unshift(noMeta.map(r=>r.name).join(', ')+': метадані невідомі (CSV) — сумісність не перевірена');
+    html+='<ul style="margin:6px 0 0;padding-left:18px">'+diffs.map(d=>'<li>'+esc(d)+'</li>').join('')+'</ul>';
+  } else {
+    cls='ok';
+    html='<b>Прогони сумісні.</b> Однакові schema / buildId / worldgen / балансові константи. '+
+         'Seed: '+seeds.join(' vs ')+(allSeedsDiffer?' (усі різні — коректна A/B пара).':' (увага: збігаються).');
+  }
+  box.innerHTML='<div class="banner '+cls+'">'+html+'</div>';
+}
+
+/* ---- scope / entity / metric selectors ---- */
+function refreshScope(reset){
+  const scope=state.scope;
+  const entField=document.getElementById('entityField');
+  entField.style.display = scope==='world'? 'none':'flex';
+  // entities
+  const entSel=document.getElementById('entity'); entSel.innerHTML='';
+  if(scope!=='world'){
+    const ents=entitiesForScope(scope);
+    for(const e of ents){ const o=document.createElement('option'); o.value=e.id; o.textContent=e.id+' · '+e.name; entSel.appendChild(o); }
+    if(reset || state.entity[scope]==null || !ents.some(e=>e.id===state.entity[scope]))
+      state.entity[scope] = ents.length? ents[0].id : null;
+    entSel.value = state.entity[scope];
+  }
+  // metrics
+  const metrics=metricsForScope(scope);
+  const metSel=document.getElementById('metric'); metSel.innerHTML='';
+  for(const m of metrics){ const o=document.createElement('option'); o.value=m; o.textContent=prettyMetric(m); metSel.appendChild(o); }
+  if(!metrics.length){ state.metric=null; return; }
+  let want = state.metric;
+  if(reset || !metrics.includes(want)){
+    const prefer = scope==='world'? ['orgs.total','economy.treasury',metrics[0]]
+                 : scope==='org'? ['power.total','treasury',metrics[0]]
+                 : scope==='settlement'? ['pop','resources.food.price',metrics[0]]
+                 : ['treasury','orgs.total',metrics[0]];
+    want = prefer.find(p=>metrics.includes(p)) || metrics[0];
+  }
+  state.metric = want; metSel.value = want;
+}
+
+/* ---- time range ---- */
+function syncRangeInputs(){
+  const [da,db]=unionDomain();
+  const f=document.getElementById('tFrom'), t=document.getElementById('tTo');
+  for(const el of [f,t]){ el.min=da; el.max=db; el.step=1; }
+  state.range[0]=Math.max(da,Math.min(state.range[0],db));
+  state.range[1]=Math.max(da,Math.min(state.range[1],db));
+  if(state.range[0]>state.range[1]) state.range=[da,db];
+  f.value=state.range[0]; t.value=state.range[1];
+  document.getElementById('rangeLabel').textContent = state.range[0]+' → '+state.range[1];
+  const tp=document.getElementById('tPick'); tp.min=da; tp.max=db; tp.step=1;
+  if(state.hist.t<da||state.hist.t>db) state.hist.t=db;
+  tp.value=state.hist.t;
+  document.getElementById('tLabel').textContent=state.hist.t;
+}
+
+/* ---- event type checkboxes ---- */
+function buildEventTypeChecks(){
+  const counts={};
+  for(const run of state.runs) for(const ev of run.journal) counts[ev.type]=(counts[ev.type]||0)+1;
+  const types=Object.keys(counts).sort((a,b)=>counts[b]-counts[a]);
+  const box=document.getElementById('eventTypes'); box.innerHTML='';
+  if(!types.length){ box.innerHTML='<span class="tiny muted">У завантажених прогонах немає журналу подій (напр. CSV).</span>'; return; }
+  for(const t of types){
+    const m=evMeta(t);
+    const lab=document.createElement('label');
+    const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=state.markerTypes.has(t);
+    cb.onchange=()=>{ if(cb.checked) state.markerTypes.add(t); else state.markerTypes.delete(t); drawChart(); updateMarkCount(); };
+    lab.appendChild(cb);
+    const sw=document.createElement('span'); sw.className='sw'; sw.style.background=m.c; sw.style.width='10px'; sw.style.height='10px';
+    lab.appendChild(sw);
+    lab.appendChild(document.createTextNode(' '+(m.l)+' ('+counts[t]+')'));
+    box.appendChild(lab);
+  }
+  updateMarkCount();
+}
+function updateMarkCount(){
+  let n=0;
+  for(const run of state.runs) for(const ev of run.journal)
+    if(state.markerTypes.has(ev.type) && ev.tick>=state.range[0] && ev.tick<=state.range[1]) n++;
+  document.getElementById('markCount').textContent = state.markersOn? (n+' маркерів у проміжку') : 'вимкнено';
+}
+
+/* ---- histogram controls ---- */
+function refreshHistControls(reset){
+  const src=state.hist.src;
+  const run=primary();
+  // discover metrics from entity rows
+  const out={};
+  for(const snap of run.snapshots){
+    const arr = src==='org'? ((snap.orgs&&snap.orgs.watched)||[]) : (snap.settlements||[]);
+    for(const row of arr){ Object.assign(out, flattenScalars(row,'')); if(Object.keys(out).length>4) break; }
+    if(Object.keys(out).length>4) break;
+  }
+  const metrics=Object.keys(out).sort();
+  const sel=document.getElementById('histMetric'); sel.innerHTML='';
+  for(const m of metrics){ const o=document.createElement('option'); o.value=m; o.textContent=prettyMetric(m); sel.appendChild(o); }
+  if(reset || !metrics.includes(state.hist.metric)){
+    const prefer = src==='org'? ['treasury','power.total','loyalty',metrics[0]] : ['pop','resources.food.price',metrics[0]];
+    state.hist.metric = prefer.find(p=>metrics.includes(p)) || metrics[0];
+  }
+  sel.value=state.hist.metric;
+  // quick chips
+  const quick=document.getElementById('histQuick'); quick.innerHTML='';
+  const chips = src==='org'
+    ? [['treasury','Багатство'],['power.total','Сила'],['loyalty','Лояльність']]
+    : [['pop','Населення'],['income.territoryTax','Податок'],['resources.food.price','Ціна їжі']];
+  for(const [path,label] of chips){
+    if(!metrics.includes(path)) continue;
+    const b=document.createElement('button'); b.className='chip'+(state.hist.metric===path?' on':''); b.textContent=label;
+    b.onclick=()=>{ state.hist.metric=path; refreshHistControls(false); drawHist(); };
+    quick.appendChild(b);
+  }
+}
+
+/* ======================= SERIES + DRAW ======================= */
+function getSeries(run, scope, entId, path, from, to){
+  const pts=[];
+  for(const snap of run.snapshots){
+    if(snap.tick<from||snap.tick>to) continue;
+    const src=scopeSource(snap, scope, entId);
+    let v = src? getPath(src, path) : undefined;
+    pts.push({tick:snap.tick, v:(typeof v==='number'&&isFinite(v))? v : null});
+  }
+  return pts;
+}
+/* entity id for a run under current scope: same id if present, else null (world ignores) */
+function entIdForRun(run, scope){
+  if(scope==='world') return null;
+  const want=state.entity[scope];
+  // does this run contain that id?
+  for(const snap of run.snapshots){
+    const arr = scope==='faction'? (snap.factions||[]) : scope==='settlement'? (snap.settlements||[]) : ((snap.orgs&&snap.orgs.watched)||[]);
+    for(const row of arr){ const id=scope==='faction'?row.factionId:row.id; if(id===want) return want; }
+  }
+  return want; // may be absent → empty series (handled)
+}
+
+const DPR = Math.max(1, Math.min(2, window.devicePixelRatio||1));
+function setupCanvas(cv, cssH){
+  const w = cv.clientWidth || cv.parentElement.clientWidth || 900;
+  cv.width = Math.round(w*DPR); cv.height=Math.round(cssH*DPR);
+  const ctx=cv.getContext('2d'); ctx.setTransform(DPR,0,0,DPR,0,0);
+  return {ctx, w, h:cssH};
+}
+function niceTicks(min,max,n){
+  if(min===max){ min-=1; max+=1; }
+  const span=max-min, raw=span/n, mag=Math.pow(10,Math.floor(Math.log10(raw)));
+  const norm=raw/mag; let step;
+  step = norm<1.5?1: norm<3?2: norm<7?5:10; step*=mag;
+  const lo=Math.floor(min/step)*step, hi=Math.ceil(max/step)*step, out=[];
+  for(let v=lo; v<=hi+step*0.5; v+=step) out.push(+v.toFixed(10));
+  return out;
+}
+
+let chartGeom=null;
+function drawChart(){
+  const cv=document.getElementById('chart');
+  const {ctx,w,h}=setupCanvas(cv,430);
+  ctx.clearRect(0,0,w,h);
+  const scope=state.scope, path=state.metric, [from,to]=state.range;
+  const pad={l:64,r:16,t:14,b:34};
+  const px0=pad.l, px1=w-pad.r, py0=pad.t, py1=h-pad.b;
+  if(!path){ ctx.fillStyle='#6d7d8d'; ctx.font='13px system-ui'; ctx.fillText('Для цієї області немає скалярних метрик (напр. CSV без потрібних стовпців). Обери іншу область.', px0, (py0+py1)/2); chartGeom=null; document.getElementById('chartLegend').innerHTML=''; return; }
+
+  // collect series per run
+  const series=state.runs.map(run=>({
+    run, pts:getSeries(run, scope, entIdForRun(run,scope), path, from, to)
+  }));
+  // y-extent
+  let ymin=Infinity,ymax=-Infinity, any=false;
+  for(const s of series) for(const p of s.pts) if(p.v!=null){ any=true; ymin=Math.min(ymin,p.v); ymax=Math.max(ymax,p.v); }
+  if(!any){ ctx.fillStyle='#6d7d8d'; ctx.font='13px system-ui'; ctx.fillText('Немає даних для цієї метрики у вибраному проміжку.', px0, (py0+py1)/2); chartGeom=null; return; }
+  if(ymin===ymax){ ymin-=1; ymax+=1; }
+  const yPad=(ymax-ymin)*0.08; ymin-=yPad; ymax+=yPad;
+  if(ymin>0 && ymin< (ymax-ymin)) ymin=0; // include zero baseline when close
+
+  const xmin=from, xmax=to;
+  const X=t=> xmax===xmin? (px0+px1)/2 : px0+(t-xmin)/(xmax-xmin)*(px1-px0);
+  const Y=v=> py1-(v-ymin)/(ymax-ymin)*(py1-py0);
+
+  // grid + y labels
+  ctx.font='11px '+getMono();
+  const yt=niceTicks(ymin,ymax,5);
+  ctx.strokeStyle='#1e2630'; ctx.fillStyle='#6d7d8d'; ctx.lineWidth=1;
+  for(const v of yt){ if(v<ymin||v>ymax)continue; const y=Y(v);
+    ctx.beginPath(); ctx.moveTo(px0,y+.5); ctx.lineTo(px1,y+.5); ctx.stroke();
+    ctx.textAlign='right'; ctx.textBaseline='middle'; ctx.fillText(fmtNum(v), px0-8, y);
+  }
+  // x labels
+  const xt=niceTicks(xmin,xmax,7);
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  for(const v of xt){ if(v<xmin||v>xmax) continue; const x=X(v);
+    ctx.strokeStyle='#161c24'; ctx.beginPath(); ctx.moveTo(x+.5,py0); ctx.lineTo(x+.5,py1); ctx.stroke();
+    ctx.fillStyle='#6d7d8d'; ctx.fillText(String(v), x, py1+6);
+  }
+  ctx.fillStyle='#6d7d8d'; ctx.textAlign='center'; ctx.fillText('тік', (px0+px1)/2, py1+20);
+
+  // event markers (behind lines)
+  if(state.markersOn){
+    for(const run of state.runs){
+      const grouped=new Map(); // tick -> [types]
+      for(const ev of run.journal){
+        if(!state.markerTypes.has(ev.type)) continue;
+        if(ev.tick<xmin||ev.tick>xmax) continue;
+        if(!grouped.has(ev.tick)) grouped.set(ev.tick,[]);
+        grouped.get(ev.tick).push(ev.type);
+      }
+      for(const [tick,types] of grouped){
+        const x=X(tick);
+        // colour by the highest-priority (first default) type present
+        const t0 = DEFAULT_MARKERS.find(t=>types.includes(t)) || types[0];
+        const col=evMeta(t0).c;
+        ctx.strokeStyle=col; ctx.globalAlpha=state.runs.length>1?0.34:0.5; ctx.lineWidth=1;
+        ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(x+.5,py0); ctx.lineTo(x+.5,py1); ctx.stroke();
+        ctx.setLineDash([]); ctx.globalAlpha=1;
+        // small tick badge at top
+        ctx.fillStyle=col; ctx.fillRect(x-1.5,py0,3,4);
+      }
+    }
+  }
+
+  // series lines
+  series.forEach(s=>{
+    ctx.strokeStyle=s.run.color; ctx.lineWidth=2; ctx.lineJoin='round';
+    let started=false;
+    ctx.beginPath();
+    for(const p of s.pts){
+      if(p.v==null){ started=false; continue; }
+      const x=X(p.tick), y=Y(p.v);
+      if(!started){ ctx.moveTo(x,y); started=true; } else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+    // points
+    ctx.fillStyle=s.run.color;
+    for(const p of s.pts){ if(p.v==null) continue; const x=X(p.tick), y=Y(p.v); ctx.beginPath(); ctx.arc(x,y,2.6,0,7); ctx.fill(); }
+  });
+
+  chartGeom={px0,px1,py0,py1,xmin,xmax,ymin,ymax,X,Y,series};
+  renderChartLegend();
+  document.getElementById('chartNote').textContent =
+    (scope==='world'?'Світові агрегати':scope==='faction'?('Фракція '+state.entity.faction):scope==='settlement'?('Поселення '+state.entity.settlement):('Організація '+state.entity.org))
+    +' · метрика '+prettyMetric(path)+ (state.runs.length>1 && scope!=='world'? '  ·  увага: у різних прогонах ту саму сутність за id зіставлено умовно (різний seed → різні світи).':'');
+}
+function renderChartLegend(){
+  const el=document.getElementById('chartLegend'); el.innerHTML='';
+  for(const r of state.runs){
+    const it=document.createElement('span'); it.className='it';
+    it.innerHTML='<span class="swline" style="border-color:'+r.color+'"></span>'+esc(r.name)+(r.seed!=null?' <span class="muted">(seed '+r.seed+')</span>':'');
+    el.appendChild(it);
+  }
+  if(state.markersOn && state.markerTypes.size){
+    const sep=document.createElement('span'); sep.className='muted'; sep.textContent='│ події:'; el.appendChild(sep);
+    for(const t of state.markerTypes){
+      const m=evMeta(t); const it=document.createElement('span'); it.className='it';
+      it.innerHTML='<span class="sw" style="background:'+m.c+'"></span>'+esc(m.l);
+      el.appendChild(it);
+    }
+  }
+}
+
+/* ---- histogram ---- */
+let histGeom=null;
+function nearestSnap(run, t){
+  let best=null, bd=Infinity;
+  for(const snap of run.snapshots){ const d=Math.abs(snap.tick-t); if(d<bd){bd=d;best=snap;} }
+  return best;
+}
+function drawHist(){
+  const cv=document.getElementById('hist');
+  const {ctx,w,h}=setupCanvas(cv,340);
+  ctx.clearRect(0,0,w,h);
+  const src=state.hist.src, path=state.hist.metric, t=state.hist.t, nb=Math.max(4,Math.min(40,state.hist.bins|0));
+  const pad={l:56,r:16,t:14,b:40};
+  const px0=pad.l,px1=w-pad.r,py0=pad.t,py1=h-pad.b;
+
+  // gather values per run at nearest snapshot to t
+  const perRun=state.runs.map(run=>{
+    const snap=nearestSnap(run,t); const vals=[];
+    if(snap){
+      const arr = src==='org'? ((snap.orgs&&snap.orgs.watched)||[]) : (snap.settlements||[]);
+      for(const row of arr){ const v=getPath(row,path); if(typeof v==='number'&&isFinite(v)) vals.push(v); }
+    }
+    return {run, snapTick:snap?snap.tick:null, vals};
+  });
+  let all=[]; for(const p of perRun) all=all.concat(p.vals);
+  if(!all.length){ ctx.fillStyle='#6d7d8d'; ctx.font='13px system-ui'; ctx.fillText('Немає значень для розподілу на цьому T.', px0,(py0+py1)/2); histGeom=null; document.getElementById('histLegend').innerHTML=''; return; }
+  let lo=Math.min(...all), hi=Math.max(...all); if(lo===hi){lo-=1;hi+=1;}
+  const bw=(hi-lo)/nb;
+  const binsPer=perRun.map(p=>{
+    const counts=new Array(nb).fill(0);
+    for(const v of p.vals){ let bi=Math.floor((v-lo)/bw); if(bi<0)bi=0; if(bi>=nb)bi=nb-1; counts[bi]++; }
+    return counts;
+  });
+  let maxC=0; for(const c of binsPer) for(const v of c) maxC=Math.max(maxC,v);
+  if(maxC===0) maxC=1;
+
+  const X=x=> px0+(x-lo)/(hi-lo)*(px1-px0);
+  const Y=c=> py1-c/maxC*(py1-py0);
+
+  // y grid
+  ctx.font='11px '+getMono();
+  const yt=niceTicks(0,maxC,4);
+  ctx.strokeStyle='#1e2630'; ctx.fillStyle='#6d7d8d';
+  for(const v of yt){ if(v<0||v>maxC)continue; const y=Y(v);
+    ctx.beginPath(); ctx.moveTo(px0,y+.5); ctx.lineTo(px1,y+.5); ctx.stroke();
+    ctx.textAlign='right'; ctx.textBaseline='middle'; ctx.fillText(String(v), px0-8, y);
+  }
+  // x labels
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillStyle='#6d7d8d';
+  const xt=niceTicks(lo,hi,6);
+  for(const v of xt){ if(v<lo||v>hi)continue; ctx.fillText(fmtNum(v), X(v), py1+6); }
+  ctx.fillText(prettyMetric(path), (px0+px1)/2, py1+22);
+
+  // bars (overlay runs)
+  const nRuns=perRun.length;
+  for(let b=0;b<nb;b++){
+    const bx0=X(lo+b*bw), bx1=X(lo+(b+1)*bw);
+    const bWidth=bx1-bx0;
+    for(let ri=0;ri<nRuns;ri++){
+      const c=binsPer[ri][b]; if(!c) continue;
+      const y=Y(c);
+      const inset=2, sub=(bWidth-inset*2)/nRuns;
+      const x = bx0+inset+ri*sub;
+      ctx.fillStyle=hexA(perRun[ri].run.color, nRuns>1?0.72:0.85);
+      ctx.fillRect(x, y, Math.max(1,sub-1), py1-y);
+    }
+  }
+  histGeom={px0,px1,py0,py1,lo,hi,bw,nb,maxC,X,Y,perRun,binsPer};
+  // legend
+  const leg=document.getElementById('histLegend'); leg.innerHTML='';
+  perRun.forEach(p=>{
+    const it=document.createElement('span'); it.className='it';
+    const mean = p.vals.length? (p.vals.reduce((a,b)=>a+b,0)/p.vals.length):0;
+    it.innerHTML='<span class="sw" style="background:'+p.run.color+'"></span>'+esc(p.run.name)+
+      ' <span class="muted">n='+p.vals.length+(p.snapTick!=null?(' @тік '+p.snapTick):'')+' · сер.='+fmtNum(mean)+'</span>';
+    leg.appendChild(it);
+  });
+  document.getElementById('histNote').textContent =
+    'Розподіл «'+prettyMetric(path)+'» по '+(src==='org'?'watched-організаціях':'поселеннях')+' на момент, найближчий до тіку '+t+'.';
+}
+
+function hexA(hex,a){ const n=parseInt(hex.slice(1),16); return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')'; }
+function getMono(){ return "'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace"; }
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function drawAll(){ drawChart(); drawHist(); updateMarkCount(); }
+
+/* ======================= HOVER TOOLTIPS ======================= */
+const tip=document.getElementById('tip');
+function showTip(html,x,y){ tip.innerHTML=html; tip.style.display='block';
+  const r=tip.getBoundingClientRect(); let nx=x+14, ny=y+14;
+  if(nx+r.width>innerWidth-8) nx=x-r.width-14; if(ny+r.height>innerHeight-8) ny=y-r.height-14;
+  tip.style.left=nx+'px'; tip.style.top=ny+'px';
+}
+function hideTip(){ tip.style.display='none'; }
+
+document.getElementById('chart').addEventListener('mousemove',e=>{
+  if(!chartGeom){ hideTip(); return; }
+  const cv=e.currentTarget, rect=cv.getBoundingClientRect();
+  const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+  const g=chartGeom;
+  if(mx<g.px0-4||mx>g.px1+4){ hideTip(); return; }
+  // tick under cursor
+  const tick = Math.round(g.xmin + (mx-g.px0)/(g.px1-g.px0)*(g.xmax-g.xmin));
+  let html='<div class="h">тік '+tick+'</div>';
+  // nearest snapshot value per run
+  for(const s of g.series){
+    let best=null,bd=Infinity;
+    for(const p of s.pts){ if(p.v==null)continue; const d=Math.abs(p.tick-tick); if(d<bd){bd=d;best=p;} }
+    if(best) html+='<div><span style="color:'+s.run.color+'">■</span> '+esc(s.run.name)+': <b>'+fmtNum(best.v)+'</b> <span style="color:#6d7d8d">@'+best.tick+'</span></div>';
+  }
+  // events near this tick (within range)
+  if(state.markersOn){
+    const near=[];
+    for(const run of state.runs) for(const ev of run.journal){
+      if(!state.markerTypes.has(ev.type)) continue;
+      if(Math.abs(ev.tick-tick)<=Math.max(1,(g.xmax-g.xmin)/120)) near.push(ev);
+    }
+    if(near.length){
+      html+='<div style="margin-top:4px;border-top:1px solid #2a323d;padding-top:3px">';
+      const shown=near.slice(0,6);
+      for(const ev of shown){ const m=evMeta(ev.type);
+        html+='<div><span style="color:'+m.c+'">▏</span> т'+ev.tick+' '+esc(m.l)+(ev.name?(' — '+esc(ev.name)):'')+(ev.cause?(' <span style="color:#6d7d8d">['+esc(ev.cause)+']</span>'):'')+'</div>';
+      }
+      if(near.length>shown.length) html+='<div style="color:#6d7d8d">…ще '+(near.length-shown.length)+'</div>';
+      html+='</div>';
+    }
+  }
+  showTip(html, e.clientX, e.clientY);
+});
+document.getElementById('chart').addEventListener('mouseleave',hideTip);
+
+document.getElementById('hist').addEventListener('mousemove',e=>{
+  if(!histGeom){ hideTip(); return; }
+  const g=histGeom, rect=e.currentTarget.getBoundingClientRect();
+  const mx=e.clientX-rect.left;
+  if(mx<g.px0||mx>g.px1){ hideTip(); return; }
+  let b=Math.floor((mx-g.px0)/(g.px1-g.px0)*g.nb); if(b<0)b=0; if(b>=g.nb)b=g.nb-1;
+  const a=g.lo+b*g.bw, z=g.lo+(b+1)*g.bw;
+  let html='<div class="h">['+fmtNum(a)+' … '+fmtNum(z)+')</div>';
+  g.perRun.forEach((p,ri)=>{ html+='<div><span style="color:'+p.run.color+'">■</span> '+esc(p.run.name)+': <b>'+g.binsPer[ri][b]+'</b></div>'; });
+  showTip(html, e.clientX, e.clientY);
+});
+document.getElementById('hist').addEventListener('mouseleave',hideTip);
+
+/* ======================= EVENTS / WIRING ======================= */
+document.getElementById('btnLoad').onclick=()=>document.getElementById('file').click();
+document.getElementById('file').onchange=e=>{ loadFiles([...e.target.files]); e.target.value=''; };
+document.getElementById('btnClear').onclick=()=>{ resetToEmpty(); };
+
+['dragenter','dragover'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();
+  const d=document.getElementById('empty'); if(!d.classList.contains('hidden')) d.classList.add('hot');}));
+['dragleave','drop'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();
+  const d=document.getElementById('empty'); d.classList.remove('hot');}));
+document.addEventListener('drop',e=>{ if(e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files.length) loadFiles([...e.dataTransfer.files]); });
+
+document.getElementById('scope').onchange=e=>{ state.scope=e.target.value; refreshScope(true); drawChart(); };
+document.getElementById('entity').onchange=e=>{ state.entity[state.scope]=+e.target.value; drawChart(); };
+document.getElementById('metric').onchange=e=>{ state.metric=e.target.value; drawChart(); };
+
+document.getElementById('tFrom').oninput=e=>{ let v=+e.target.value; if(v>state.range[1]) v=state.range[1]; state.range[0]=v; e.target.value=v; syncRangeInputs(); drawChart(); updateMarkCount(); };
+document.getElementById('tTo').oninput=e=>{ let v=+e.target.value; if(v<state.range[0]) v=state.range[0]; state.range[1]=v; e.target.value=v; syncRangeInputs(); drawChart(); updateMarkCount(); };
+document.querySelectorAll('[data-preset]').forEach(b=>b.onclick=()=>{
+  const [a,z]=unionDomain(); const mid=Math.round((a+z)/2);
+  if(b.dataset.preset==='all') state.range=[a,z];
+  else if(b.dataset.preset==='first') state.range=[a,mid];
+  else state.range=[mid,z];
+  syncRangeInputs(); drawChart(); updateMarkCount();
+});
+document.getElementById('btnMarkers').onclick=e=>{ state.markersOn=!state.markersOn; e.target.textContent=state.markersOn?'увімк.':'вимк.'; e.target.classList.toggle('on',state.markersOn); drawChart(); updateMarkCount(); };
+
+document.getElementById('histSrc').onchange=e=>{ state.hist.src=e.target.value; refreshHistControls(true); drawHist(); };
+document.getElementById('histMetric').onchange=e=>{ state.hist.metric=e.target.value; refreshHistControls(false); drawHist(); };
+document.getElementById('bins').oninput=e=>{ state.hist.bins=+e.target.value||12; drawHist(); };
+document.getElementById('tPick').oninput=e=>{ state.hist.t=+e.target.value; document.getElementById('tLabel').textContent=state.hist.t; drawHist(); };
+
+let raf=null;
+window.addEventListener('resize',()=>{ if(raf)cancelAnimationFrame(raf); raf=requestAnimationFrame(()=>{ if(state.runs.length) drawAll(); }); });
+
+/* debug/inspection hook (used by the automated verification harness) */
+window.__dbg = {
+  get runs(){ return state.runs; },
+  get chartGeom(){ return chartGeom; },
+  get histGeom(){ return histGeom; },
+  get state(){ return state; },
+};
+/* expose a tiny hook so an automated check can load without a real file dialog */
+window.__loadRunObjects = function(list){
+  for(const {name,obj} of list){ const run=ingestJSON(obj, name||('run'+(state.runs.length+1))); addRun(run); }
+  if(state.runs.length) initAfterLoad();
+};
+</script>
