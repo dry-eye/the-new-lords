@@ -1995,7 +1995,7 @@ const CITY = {
 function cityRng(st){ return mulberry32((st.id*2654435761 ^ S.seed*40503)>>>0); }
 
 /* road corridor width by how major the split is — avenues at the top, lanes at the bottom */
-function roadWidth(d){ return Math.max(0.016, 0.075 * Math.pow(0.72, d)); }
+function roadWidth(d){ return Math.max(0.018, 0.075 * Math.pow(0.72, d)); }   // floor nudged up so the deepest lanes stay walkable beside the taller buildings
 
 /* --- recursive block subdivision inside the city disk --- */
 function subdivideCity(st){
@@ -2050,7 +2050,7 @@ function developBlocks(town){
     const hw=b.hw-setback, hh=b.hh-setback;
     if(hw<=0.02||hh<=0.02) continue;
     const den=b.den;
-    const depth=Math.min(0.075, Math.max(0.035, Math.min(hw,hh)*0.55));   // building depth from the street
+    const depth=Math.min(0.098, Math.max(0.048, Math.min(hw,hh)*0.60));   // building depth from the street — chunkier footprints read as real buildings, not slivers
     const solid = (Math.min(hw,hh) <= depth*1.25);                        // too small for a courtyard
     const put=(lx,ly,w,dp,ang)=>{
       const x=b.c.x + u.x*lx + v.x*ly;
@@ -2069,7 +2069,7 @@ function developBlocks(town){
     const side=(len, fixed, along, axis)=>{
       let t=-len;
       while(t < len-0.02){
-        const w=Math.min(len-t, 0.030+rr()*0.058);   // narrow frontages: townhouses, not warehouses
+        const w=Math.min(len-t, 0.040+rr()*0.072);   // frontage width: townhouses, sized up alongside the taller storeys
         if(rr() < cfg.build){
           const cxt=t+w/2;
           if(axis==='u') put(cxt, fixed, w, depth, ang0);
@@ -2145,7 +2145,7 @@ function buildCity(st){
   const bit=up.clone().cross(tan).normalize();
   const R=1 + Math.max(0, elevation(st.dir))*0.028;
   const S1=cfg.radius;
-  const FLOOR=0.00080;
+  const FLOOR=0.00160;   // storey height — scaled up so buildings tower over the cat heads (H=0.00045)
 
   const dirOf=(x,y)=>up.clone().add(tan.clone().multiplyScalar(x*S1))
                                 .add(bit.clone().multiplyScalar(y*S1)).normalize();
