@@ -296,7 +296,7 @@ The hot-region/cohort materialize system above is an instance of a broader rule:
 
 ## Experience-driven architecture
 
-A session isn't always the full game — it can instead be a **curated slice of the whole simulation** (e.g. econ-only, combat-only, entrepreneur-start), assembled from the same systems as the full game and selected up front as an **Experience** (see [`TECH_REFERENCES.md`](TECH_REFERENCES.md) for a candidate implementation pattern). With no Experience chosen, the game behaves exactly like the full default game.
+A session isn't always the full game — it can instead be a **curated slice of the whole simulation** (e.g. econ-only, combat-only, entrepreneur-start), assembled from the same systems as the full game and selected up front as an **Experience**. With no Experience chosen, the game behaves exactly like the full default game.
 
 - An **Experience** selects a subset of the game's systems (economy, organizations, combat, trade, worldgen, vehicles, AI, movement — roughly this many, at this granularity), plus an optional starting scenario, an optional player role, and optional tuning overrides for that specific session (e.g. a proving-ground Experience could force every faction to always secede rather than fight).
 - **Player role** is what "you" are at session start — entrepreneur, character, squad, or political — each with its own starting kit, driving the "found a new character/org" entry point instead of a single hardcoded default. Player control stays implicit (whichever character the player is currently controlling), with no separate "controller" concept.
@@ -360,7 +360,7 @@ A player-controlled character can found a brand-new independent squad organizati
 
 ## Worldgen
 
-Worldgen produces the game world deterministically from a seed (see [`TECH_REFERENCES.md`](TECH_REFERENCES.md) for candidate implementation techniques). Generation is **region-local**: any region of the map can be regenerated in isolation and will always produce the same result. One shared underlying layout, built once from the world's settlement and zone positions, yields territory borders, road-candidate topology, and terrain-zone borders together, so all three stay consistent with each other rather than risking disagreement between separately-generated passes.
+Worldgen produces the game world deterministically from a seed. Generation is **region-local**: any region of the map can be regenerated in isolation and will always produce the same result. One shared underlying layout, built once from the world's settlement and zone positions, yields territory borders, road-candidate topology, and terrain-zone borders together, so all three stay consistent with each other rather than risking disagreement between separately-generated passes.
 
 **Determinism** means the same seed always reproduces the same map when regenerated. This is a single-player
 guarantee — it lets a region be regenerated in isolation, lets a bug be reproduced exactly by replaying a seed,
@@ -1314,7 +1314,75 @@ The strongest robot city's boss can be promoted into a full boss encounter. Desi
 
 ## UI, input & camera
 
-**Note:** the abilities registry is the source of truth for input-model semantics — what each command does, how targeting and cancel work, and which hotkey or mouse button triggers it. This section is the camera/UI-shell layer built on top of that: camera behavior (pan/zoom/focus), panel/HUD layout, and UI features that aren't a specific ability (search, tooltips, teleport-to-name). The abilities registry remains the only place hotkeys and activation are enumerated; this section doesn't duplicate that table.
+**Note:** the abilities registry (below) is the source of truth for input-model semantics — what each command does, how targeting and cancel work, and which hotkey or mouse button triggers it. The rest of this section is the camera/UI-shell layer built on top of that: camera behavior (pan/zoom/focus), panel/HUD layout, and UI features that aren't a specific ability (search, tooltips, teleport-to-name). The abilities registry remains the only place hotkeys and activation are enumerated; the rest of this section doesn't duplicate that table.
+
+### Abilities registry
+
+The player's vocabulary for commanding the world, and what a squad can actually do once commanded.
+
+**Ability** = a player command, defined by:
+- **modes**: Quick and/or Confirmation. Some abilities support both (Move, Attack).
+- **activation**: mouse button, hotkey, UI button, or an inspector action list.
+- **cancellable**: yes for Confirmation-mode abilities.
+- **cursor**: an arrow while idle or during Quick activation; a crosshair while targeting during Confirmation mode.
+
+**Quick mode** — executes immediately on activation, no targeting phase, arrow cursor.
+
+**Confirmation mode** — activation enters a targeting state: the cursor becomes a crosshair, an on-screen prompt shows what's about to happen (e.g. "Attack — left-click a target, right-click to cancel"), the player designates a target or point with the left mouse button, then it executes. Right-click cancels.
+
+**Quick Context Action (QCA)** — when no confirmation-mode ability is currently armed, right-click performs whatever action makes sense for what's under the cursor:
+- over an enemy unit → **Attack** (pursue and engage)
+- over your own settlement, with your own squad selected → **Garrison**
+- over open ground, or anything else → **Move**
+- extensible to further target types as they're added
+
+**Right-click is fully defined by state, never overloaded:** if a confirmation-mode ability is armed, right-click cancels it. If nothing is armed, right-click performs the Quick Context Action. The on-screen prompt always states which of the two it will do.
+
+**Inspector action list** — selecting an organization, property, or squad shows its full list of available actions in the inspector panel, as an alternate way to reach any ability besides clicking in the world or using a hotkey.
+
+**Move and Attack are the model dual-mode abilities.** Both support Quick and Confirmation, both target with a left-click, both cancel with a right-click, both show a crosshair while targeting. A single shared "go to a point" engine underlies Quick-Move, Confirmation-Move, attack-move (go to a point, engaging any enemies encountered along the way, then continuing), and Attack (pursuing a specific unit is just "go to that unit's point" plus engaging on arrival). An "attacking" stance makes a plain Quick-Move behave as an attack-move automatically.
+
+**Player abilities**
+
+| Ability | Modes | Activation | Confirm | Cancel | Cursor | What it commands |
+|---|---|---|---|---|---|---|
+| Select / drag unit | Quick | left-click | — | — | arrow | — |
+| Marquee-select | Quick | left-click-drag on empty ground | — | — | arrow | — |
+| Pan camera | Quick | middle-click, or left-click-drag on empty ground | — | — | arrow | — |
+| **Move** | Quick + Confirmation | right-click (QCA on ground), or a hotkey / UI / options menu | left-click a point | right-click | arrow / crosshair | Move |
+| **Attack** | Quick + Confirmation | right-click (QCA on an enemy), or a hotkey / inspector / options menu | left-click an enemy or point | right-click | arrow / crosshair | Attack / attack-move |
+| **Garrison** | Quick (QCA) | right-click on your own settlement, or options menu / inspector | — | right-click, if armed | arrow | Garrison |
+| **Options window** | Confirmation | hold right-click on a target, or the inspector action list | left-click to pick | right-click | arrow / crosshair | (dispatches to whichever ability is picked) |
+| Patrol (route) | Confirmation | hotkey → place points → confirm | left-click points | right-click | crosshair | Patrol |
+| Set Camp | Confirmation | options menu / hotkey → click ground | left-click a point | right-click | crosshair | Camp |
+| Board / Leave / Return to transport | Quick | hotkeys | — | — | arrow | Board / Dismount |
+| Toggle Caravan | Quick | hotkey | — | — | arrow | Caravan |
+| Split / merge crew | Quick | hotkey | — | — | arrow | Split / Merge |
+| Attack / Hold stance | Quick | inspector toggle | — | — | arrow | (sets the attacking flag) |
+| Un-hold | Quick | hotkey | — | — | arrow | — |
+| Ruler (measuring tool) | Quick (tool) | hotkey | left-click ends it | right-click | crosshair | — |
+| Delete unit | Quick | hotkey | — | — | arrow | — (world-editing use) |
+| Queue modifier | modifier | held while right-clicking | — | — | — | (appends to the order queue instead of replacing it) |
+
+**Squad capabilities** — what a squad can actually do, whether the order comes from the player or from its own AI.
+
+| Capability | What it does | Driven by |
+|---|---|---|
+| Move | go to a point, using the shared go-to-point engine | player or AI |
+| Attack / attack-move | pursue a unit, or move to a point while engaging anything encountered along the way | player or AI |
+| Patrol | loop a route | player or AI |
+| Hold / Stop | stand still | player or systems |
+| Garrison | defend a settlement from inside it — divides incoming damage, cheaper upkeep than standing in the open | player |
+| Camp | build or occupy a camp at a point | player |
+| Capture | flip a settlement's ownership on arrival, when set to an attacking stance | player or AI |
+| Caravan | autonomously hop along roads trading | AI, once toggled on by the player |
+| Work | occupy an enterprise to staff it | player or AI |
+| Board / Dismount | enter or exit a vehicle or transport | player |
+| Split / Merge | divide one squad into two, or combine two into one | player |
+| Wander | aimless idle drift | AI only — no player-issuable equivalent |
+| Reconnect | rejoin its parent organization's forces after being cut off | AI only — no player-issuable equivalent |
+
+**A player ability is not the same thing as a squad capability.** An ability is the act of commanding — the click, the hotkey, the targeting phase. A capability is what the squad actually does once commanded. Wander and Reconnect are capabilities with no corresponding player ability (they only ever happen under AI control); Select, Pan, and the Options window are abilities with no corresponding squad capability (they're pure interface, not something a squad "does").
 
 ### Click a name to teleport the camera
 Clicking an entity name anywhere in the UI pans the camera to it and selects it, with a short (~300ms) animated pan. The current zoom level is preserved — it's only clamped to a readable minimum if the camera is zoomed very far out. Applies to enterprises, points of interest, and settlements directly; a character resolves through their org's seat. A character that can't be resolved to a location isn't clickable. Any manual pan or zoom cancels an in-progress teleport. Hover cue is a pointer cursor with a dotted underline.
