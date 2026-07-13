@@ -65,14 +65,16 @@ Spawn one background Agent with `isolation: "worktree"`, once the PR exists, fil
 
 ## Staying alive (persistence)
 
-The worker is a daemon; keep it running with the least babysitting:
-- **Durable backstop** — one hourly cron trigger named `nl-worker-heartbeat` that fires a `/worker` tick into this session (`create_trigger`, cron `0 * * * *`). Survives container reclaim. Ensure exactly one exists (`list_triggers`); create it if missing, never duplicate it.
-- **Event-driven top-ups** — background sub-agents re-invoke this session when they finish; handle the handoff/top-up immediately (§5) instead of waiting for a tick.
-- **Warm heartbeat** — only while there is active work *or* a non-empty `to-do`, re-arm a ~15-min `send_later` each tick for sub-hour pickup of newly-added `to-do` items. Skip it when fully idle; the hourly cron covers the idle case.
+The worker is a daemon kept alive by two recurring heartbeats plus event-driven wakeups. All are already armed — **a tick just does its work; it does not re-arm timers** (both heartbeats are recurring, so re-arming would create duplicates).
+- **Durable backstop** — recurring trigger `nl-worker-heartbeat` (`create_trigger`, hourly) fires a worker tick into this session and **survives container reclaim**. Ensure exactly one exists (`list_triggers`); create if missing, never duplicate.
+- **Warm heartbeat** — a recurring `CronCreate` job (~every 15 min) gives sub-hour pickup of new `to-do` items while the session is warm. Session-only (lost on reclaim; the durable trigger revives things afterward) and auto-expires after 7 days — re-create it if it lapses.
+- **Event-driven top-ups** — background sub-agents re-invoke this session when they finish; handle the handoff/top-up immediately (§5) rather than waiting for a heartbeat.
 
-There is no push notification for issue **label** changes (only PR events), so a `to-do` added by a design session is picked up on the next heartbeat/cron tick — within ~15 min while active, ~1 h when idle — not instantly.
+There is no push notification for issue **label** changes (only PR events), so a `to-do` added by a design session is picked up on the next heartbeat — within ~15 min while warm, ~1 h after a reclaim — not instantly.
 
-**Stop the worker:** delete the `nl-worker-heartbeat` trigger (`delete_trigger`) and stop any live sub-agents (`TaskStop`). In-flight PRs are left untouched.
+> Survive-reclaim note: the durable trigger resumes this session, but a reclaimed container may re-clone the repo on `main`. This skill must therefore live on `main` for a cold resume to find it — keep the worker infrastructure merged.
+
+**Stop the worker:** `CronDelete` the warm heartbeat, `delete_trigger` the `nl-worker-heartbeat` trigger, and `TaskStop` any live sub-agents. In-flight PRs are left untouched.
 
 ## Empty queue
 
