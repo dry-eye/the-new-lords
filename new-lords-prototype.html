@@ -73,6 +73,13 @@
   .pos{color:var(--good)}.neg{color:var(--bad)}
   .breadcrumb{font-size:10px;color:var(--dim);padding:6px 11px;border-bottom:1px solid rgba(36,48,73,.6)}
   .empty{color:var(--dim);font-style:italic}
+  .avatarcard{display:flex;align-items:center;gap:9px;padding:7px 9px;cursor:pointer;
+    border:1px solid var(--brass-dim);border-radius:3px;background:rgba(200,155,60,.06)}
+  .avatarcard:hover{border-color:var(--brass);background:rgba(200,155,60,.12)}
+  .avatarcard .av-dot{width:16px;height:16px;border-radius:50%;flex:none;
+    background:radial-gradient(circle at 35% 32%,#F0D488,#C89B3C 70%);box-shadow:0 0 6px rgba(200,155,60,.5)}
+  .avatarcard .av-name{font-family:var(--serif);font-size:15px;color:#EFE6D2;line-height:1.1}
+  .avatarcard .av-sub{font-size:10px;color:var(--dim);margin-top:1px}
 
   #log{position:fixed;left:10px;bottom:10px;width:340px;height:150px;overflow-y:auto;
     background:rgba(16,22,36,.9);border:1px solid var(--rule);padding:7px 9px;z-index:9;border-radius:3px}
@@ -2393,9 +2400,20 @@ function isPlayerOrg(o){
 }
 function renderInspector(){
   const s=S.selection;
-  if(!s){ insp.innerHTML=
-    '<div class="ihead"><div><div class="ikind">Інспектор</div><div class="iname">Нічого не вибрано</div></div></div>'+
-    '<div class="isec empty">Клікни поселення, загін, караван, підприємство або людину. Кожне ім\'я в панелі — посилання.</div>';
+  if(!s){
+    const pc = S.playerCharId? chr(S.playerCharId) : null;
+    let h='<div class="ihead"><div><div class="ikind">Інспектор</div><div class="iname">Нічого не вибрано</div></div></div>';
+    if(pc && pc.alive){
+      const led=org(pc.ledOrgId);
+      h+='<div class="isec"><h4>Твій персонаж</h4>'+
+        '<div class="avatarcard" data-sel="char:'+pc.id+'" title="Перейти до свого персонажа">'+
+          '<div class="av-dot"></div>'+
+          '<div><div class="av-name">'+pc.name+'</div>'+
+          '<div class="av-sub">'+(led? led.name : 'без організації')+'</div></div>'+
+        '</div></div>';
+    }
+    h+='<div class="isec empty">Клікни поселення, загін, караван, підприємство або людину. Кожне ім\'я в панелі — посилання.</div>';
+    insp.innerHTML=h;
     return; }
   const fn={settlement:inspSettlement, org:inspOrg, char:inspChar, squad:inspSquad,
     enterprise:inspEnterprise, caravan:inspCaravan}[s.type];
