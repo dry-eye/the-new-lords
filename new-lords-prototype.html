@@ -1600,11 +1600,64 @@ function makeSprite(tex, size, color){
   return m;
 }
 
+/* ---------- settlement territory footprint ---------------------------------
+   An organic outline drawn on the sphere around each settlement: a circle
+   perturbed by a few low harmonics, seeded from the settlement (cityRng) so the
+   shape is irregular-but-smooth and fully deterministic — worldgen stays
+   reproducible / region-local. Bigger tiers get a wider outline, and the whole
+   enclosed area becomes the settlement's click / hover target (see pointInRing). */
+const FOOT_R = {camp:0.030, village:0.042, city:0.058, megalopolis:0.075};
+let footMats=[];
+function footprintRing(st){
+  const rr=cityRng(st);
+  const base=FOOT_R[st.tier]||0.042;
+  const harm=[];                                   // low freqs → gentle lobes, not spikes
+  for(let h=0;h<3;h++) harm.push({f:2+h, ph:rr()*Math.PI*2, a:(0.13/(h+1))*(0.5+rr()*0.8)});
+  const up=st.dir.clone();
+  const ref=Math.abs(up.y)>0.9? new THREE.Vector3(1,0,0):new THREE.Vector3(0,1,0);
+  const tan=ref.clone().cross(up).normalize();
+  const bit=up.clone().cross(tan).normalize();
+  const N=44, ring=[];
+  for(let k=0;k<N;k++){
+    const th=k/N*Math.PI*2;
+    let r=1; for(const w of harm) r+=w.a*Math.sin(w.f*th+w.ph);
+    const rad=base*Math.max(0.55,r);
+    ring.push(up.clone()
+      .add(tan.clone().multiplyScalar(Math.cos(th)*rad))
+      .add(bit.clone().multiplyScalar(Math.sin(th)*rad)).normalize());
+  }
+  return ring;
+}
+/* same on-sphere-line trick the roads use: discard the far hemisphere in-shader
+   (plain depth can't be trusted for a line hugging the surface at grazing angles). */
+function makeFootprintMat(){
+  const m=new THREE.ShaderMaterial({
+    uniforms:{ horizon:{value:0.3}, tint:{value:new THREE.Color(0x8894AC)}, alpha:{value:0.4} },
+    transparent:true, depthWrite:false, depthTest:false,
+    vertexShader:`
+      varying vec3 vW;
+      void main(){
+        vW = normalize((modelMatrix * vec4(position,1.0)).xyz);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+      }`,
+    fragmentShader:`
+      uniform float horizon; uniform vec3 tint; uniform float alpha;
+      varying vec3 vW;
+      void main(){
+        if(vW.z < horizon) discard;
+        float fade = smoothstep(horizon, horizon+0.12, vW.z);
+        gl_FragColor = vec4(tint, alpha*fade);
+      }`,
+  });
+  footMats.push(m);
+  return m;
+}
+
 /* ---------- pick registry: screen-space picking, exact and cheap ---------- */
-let picks=[];   // {type,id,dir,px} — px is the icon's screen radius
+let picks=[];   // {type,id,dir,px,ring} — px is the icon radius, ring the footprint
 
 function buildScene(){
-  root.clear(); picks=[]; pawnBuiltFor=null; pawnSprites=[]; pawnPositions=[];
+  root.clear(); picks=[]; footMats=[]; pawnBuiltFor=null; pawnSprites=[]; pawnPositions=[];
   cityCache=new Map(); cityLive=new Set();
 
   /* --- planet: relief mesh + baked climate texture + per-pixel shader --- */
@@ -1789,6 +1842,13 @@ function buildScene(){
     spr.position.copy(st.dir).multiplyScalar(1.012);
     markerGroup.add(spr);
     st._spr=spr; st._px=TIER_PX[st.tier];
+    /* territory outline — an organic loop hugging the surface around the town */
+    const ring=footprintRing(st); st._footRing=ring;
+    const pos=[]; for(const d of ring) pos.push(d.x*1.030, d.y*1.030, d.z*1.030);
+    const fg=new THREE.BufferGeometry();
+    fg.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+    const foot=new THREE.LineLoop(fg, makeFootprintMat());
+    foot.renderOrder=1; root.add(foot); st._foot=foot;
     const lab=labelTexture(st.name, st.tier==='city'||st.tier==='megalopolis');
     const ls=makeSprite(lab.tex, 0.03);
     ls.scale.set(0.028*lab.aspect, 0.028, 1);
@@ -1828,11 +1888,16 @@ function updateMarkers(){
   for(const st of S.settlements){
     if(!st._spr) continue;
     const o=org(st.ownerOrgId);
-    st._spr.material.color.set(factionColor(o?o.factionId:null));
+    const col=factionColor(o?o.factionId:null);
+    st._spr.material.color.set(col);
     const sel=S.selection && S.selection.type==='settlement' && S.selection.id===st.id;
     const hov=hover && hover.type==='settlement' && hover.id===st.id;
     st._spr.scale.setScalar(st._px*(sel?1.35:hov?1.18:1));
-    picks.push({type:'settlement', id:st.id, dir:st.dir, px:st._px});
+    if(st._foot){
+      st._foot.material.uniforms.tint.value.set(col);
+      st._foot.material.uniforms.alpha.value = sel?0.9 : hov?0.6 : 0.38;
+    }
+    picks.push({type:'settlement', id:st.id, dir:st.dir, px:st._px, ring:st._footRing});
   }
   for(const e of S.ents){
     if(!e._spr && !ENT[e.kind].inside && markerGroup){
@@ -1874,6 +1939,7 @@ function updateMarkers(){
 function animateMarkers(){
   const horizon = 1/camDist;
   if(roadMat) roadMat.uniforms.horizon.value = horizon;
+  for(const m of footMats) m.uniforms.horizon.value = horizon;
   const q=root.quaternion;
   const put=(spr, dir, lift)=>{
     spr.position.copy(dir).multiplyScalar(lift);
@@ -2320,6 +2386,19 @@ function screenPos(dir){
   projV.project(camera);
   return {x:(projV.x*0.5+0.5)*innerWidth, y:(-projV.y*0.5+0.5)*innerHeight, behind};
 }
+/* point-in-polygon against a footprint ring projected to the screen: the whole
+   territory is the settlement's hit target, not just the tiny icon disk. Bail to
+   the icon radius if any vertex crosses the limb (polygon can't be trusted then). */
+function pointInRing(cx,cy,ring){
+  const pts=[];
+  for(const d of ring){ const s=screenPos(d); if(s.behind) return false; pts.push(s); }
+  let inside=false;
+  for(let i=0,j=pts.length-1;i<pts.length;j=i++){
+    const xi=pts[i].x, yi=pts[i].y, xj=pts[j].x, yj=pts[j].y;
+    if(((yi>cy)!==(yj>cy)) && (cx < (xj-xi)*(cy-yi)/(yj-yi)+xi)) inside=!inside;
+  }
+  return inside;
+}
 function nearest(cx,cy){
   let best=null,bd=1e9;
   const order={char:0, caravan:1, squad:2, enterprise:3, settlement:4};
@@ -2328,7 +2407,9 @@ function nearest(cx,cy){
     if(s.behind) continue;
     const rpx=p.px*innerHeight*0.62;
     const d=Math.hypot(s.x-cx, s.y-cy);
-    if(d>rpx) continue;
+    let inside = d<=rpx;
+    if(!inside && p.ring) inside = pointInRing(cx,cy,p.ring);   // enlarged: full footprint
+    if(!inside) continue;
     const score=d - (4-(order[p.type]||0))*2;
     if(score<bd){bd=score;best=p;}
   }
