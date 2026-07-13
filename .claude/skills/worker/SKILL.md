@@ -65,6 +65,10 @@ Spawn one background Agent with `isolation: "worktree"`, once the PR exists, fil
 > 5. **Fixable defects** → fix them on the PR branch, commit, push, re-verify, then squash-merge. Return `FIXED+MERGED #M (#N): <what you fixed>`.
 > 6. **Fundamentally unclear / underspecified** → relabel #N to `status:to-design` with a Ukrainian comment on what's unclear, close PR #M, and return `BOUNCED #N: <reason>`. Never merge in this case.
 
+## Environment notes (browser verify)
+
+The prototype pulls **three.js r128** and a webfont from a CDN, which the sandbox egress policy **blocks**. Load `new-lords-prototype.html` with Playwright **route-interception serving three.js r128 locally** — do not edit the HTML to work around it. Two console errors are present on a clean `main` as well (planet-shader `modelMatrix` warning ~line 142; blocked-webfont `ERR_CONNECTION_RESET`) — treat them as **pre-existing/environmental, not regressions**. Chromium is at `/opt/pw-browsers/chromium`; never run `playwright install`.
+
 ## Staying alive (persistence)
 
 The worker is a daemon kept alive by two recurring heartbeats plus event-driven wakeups. All are already armed — **a tick just does its work; it does not re-arm timers** (both heartbeats are recurring, so re-arming would create duplicates).
