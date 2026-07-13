@@ -161,6 +161,7 @@
   <span class="stat">населення <b id="stPop">0</b></span>
   <div class="sep"></div>
   <button id="btnGraph">Граф організацій</button>
+  <button id="btnTele" title="Експорт телеметрії балансу (JSON знімки + журнал + метадані)">Телеметрія ⬇</button>
   <div class="sep"></div>
   <span class="stat">seed</span>
   <input id="seedInput" size="7" value="1874">
@@ -304,6 +305,422 @@ function logEvent(html){
   if(S.events.length>90) S.events.pop();
   renderLog();
 }
+
+/* =====================================================================
+   BALANCE TELEMETRY — metrics collection
+   Source of truth: DESIGN.md → "Balance telemetry — metrics collection".
+
+   Two channels captured at once:
+     • periodic SNAPSHOTS on a slow cadence — "how did this quantity move"
+       (world + per-faction aggregates, per-settlement series, per-org
+        aggregates for all + full series for a bounded watched set);
+     • an append-only EVENT JOURNAL, tick-stamped — "when & from what cause
+       did a step-change happen".
+   Both are sampled at a fixed point in the tick order (end of tick()),
+   driven only by the seeded sim RNG and by reading existing state — the
+   sim never reads telemetry back — so a replay from the same seed yields
+   byte-identical telemetry. No wall-clock / Math.random enters the payload.
+
+   SCOPE: this instruments what the prototype actually simulates today. The
+   DESIGN lists more than the sim currently has state for (13 resources vs 6
+   here; coups; bank loans/defaults; nationalization; settlement abandon /
+   repopulate; domination win; dynamic alliance-break; covert-edge exposure;
+   agent networks; first-class construction orders). Those are marked
+   "EXTENSION POINT" below — the collector shape is ready for them, they
+   just have no backing state to read yet.
+   ===================================================================== */
+const TELE_BUILD_ID = 'nl-proto-telemetry-v1';   // fixed id (NOT a timestamp) → determinism
+const TELE_SLOT_KINDS = ['control','influence','investment'];
+
+const TELE = {
+  cfg: {
+    enabled: true,
+    // ≈ the ~1s economy-recompute cadence is the natural default (DESIGN); tunable.
+    // Lower = denser series & larger export; this is the primary retention lever.
+    snapshotEveryTicks: 5,
+    watchedCap: 50,          // full per-org series kept only for this many independent orgs (+player's)
+    revoltThreshold: 12,     // subordinate loyalty below this = revolt risk (see successionAndRevolt)
+    // EXTENSION POINT (retention): optional down-sampling of the oldest per-entity
+    // rows on very large / long runs. null = keep every row (no thinning).
+    thinPerEntityKeepEvery: null,
+    autoDumpAtTick: null,    // set a tick to auto-download a JSON dump at run end; null = off
+  },
+  snapshots: [],
+  journal: [],
+  meta: null,
+  counters: null,            // lifetime org created/destroyed by kind & cause, + capture/squad tallies
+  phase: 'runtime',          // 'worldgen' during generate(); default OrgCreated/EnterpriseFounded cause
+  _prevPop: {},              // settlement id -> pop at previous snapshot (growth/decline rate)
+  _sidePair: {},             // "a:b" -> 'war'|'peace'|'neutral' (war/peace transition detection)
+  _sidePairSeeded: false,
+  _deadOrgs: {},             // org id -> true once OrgDestroyed emitted (no double-report)
+};
+
+function teleFreshCounters(){
+  return {
+    orgCreated:   {total:0, byKind:{}, byCause:{}},
+    orgDestroyed: {total:0, byKind:{}, byCause:{}},
+    settlementCaptured:0, squadRecruited:0, squadDisbanded:0,
+  };
+}
+function teleBump(obj, key){ obj[key]=(obj[key]||0)+1; }
+function teleCloneCounters(){   // per-snapshot value of the lifetime tallies (a real time-series, not a live ref)
+  const c=TELE.counters;
+  return {
+    orgCreated:{total:c.orgCreated.total, byKind:Object.assign({},c.orgCreated.byKind), byCause:Object.assign({},c.orgCreated.byCause)},
+    orgDestroyed:{total:c.orgDestroyed.total, byKind:Object.assign({},c.orgDestroyed.byKind), byCause:Object.assign({},c.orgDestroyed.byCause)},
+    settlementCaptured:c.settlementCaptured, squadRecruited:c.squadRecruited, squadDisbanded:c.squadDisbanded,
+  };
+}
+
+/* distribution summary (spread, not just mean) for a numeric array */
+function teleDist(arr){
+  const n=arr.length;
+  if(!n) return {n:0,min:0,max:0,mean:0,std:0,p25:0,p50:0,p75:0};
+  const a=arr.slice().sort((x,y)=>x-y);
+  let sum=0; for(const v of a) sum+=v;
+  const mean=sum/n;
+  let vs=0; for(const v of a) vs+=(v-mean)*(v-mean);
+  const q=p=>{ const i=(n-1)*p, lo=Math.floor(i), hi=Math.ceil(i); return a[lo]+(a[hi]-a[lo])*(i-lo); };
+  return {n, min:a[0], max:a[n-1], mean, std:Math.sqrt(vs/n), p25:q(0.25), p50:q(0.5), p75:q(0.75)};
+}
+/* power decomposed into its three DESIGN components (mirrors computePower) */
+function telePowerParts(o){
+  const wealth=o.treasury/100;
+  let territory=0; for(const s of S.settlements) if(s.ownerOrgId===o.id) territory+=s.pop/500;
+  let military=0; for(const s of S.squads){ const so=org(s.orgId); if(so&&(so.id===o.id||so.parentId===o.id)) military+=s.strength/4; }
+  return {total:wealth+territory+military, wealth, territory, military};
+}
+function teleHousing(st){ return TIER[st.tier].pop*1.5; }   // derived: growth cap = housing capacity
+
+/* ---------- run metadata (seed + worldgen params + balance-constant snapshot) ---------- */
+function teleReset(seed){
+  TELE.snapshots.length=0;
+  TELE.journal.length=0;
+  TELE.counters=teleFreshCounters();
+  TELE._prevPop={}; TELE._sidePair={}; TELE._sidePairSeeded=false; TELE._deadOrgs={};
+  TELE.phase='worldgen';
+  TELE.meta={
+    schema:'new-lords-telemetry/v1',
+    buildId:TELE_BUILD_ID,
+    seed:seed>>>0,
+    // worldgen params — kept in sync with generate() by hand (no param registry in the prototype yet)
+    worldgen:{ landFraction:0.32, settlementTarget:26, minSeparationDot:0.965, capitals:4 },
+    // snapshot of every balance constant then in effect. EXTENSION POINT: the DESIGN's formal
+    // tunable-parameter registry ("Tuning tools") isn't built yet — when it lands, dump it here.
+    balanceConstants:{
+      STEP, TOOL_WEAR, FOOD_PER_1K, SQUAD_FOOD, SQUAD_WEAPONS,
+      TIER_SCALE:Object.assign({},TIER_SCALE),
+      resourceBase:Object.fromEntries(RKEYS.map(r=>[r,RES[r].base])),
+      tierPop:Object.fromEntries(Object.keys(TIER).map(t=>[t,TIER[t].pop])),
+      snapshotEveryTicks:TELE.cfg.snapshotEveryTicks, watchedCap:TELE.cfg.watchedCap,
+      revoltThreshold:TELE.cfg.revoltThreshold,
+    },
+  };
+}
+
+/* ---------- event journal ---------- */
+function teleEvent(type, data){
+  if(!TELE.cfg.enabled) return null;
+  const ev=Object.assign({tick:S.tick, type}, data);
+  TELE.journal.push(ev);
+  return ev;
+}
+function teleOrgCreated(o, cause){
+  if(!TELE.cfg.enabled) return;
+  cause=cause||TELE.phase;
+  const c=TELE.counters.orgCreated;
+  c.total++; teleBump(c.byKind,o.kind); teleBump(c.byCause,cause);
+  teleEvent('OrgCreated',{orgId:o.id, kind:o.kind, leadershipType:o.leadershipType, cause, name:o.name});
+}
+function teleOrgDestroyed(o, cause, disposition){
+  if(!TELE.cfg.enabled || TELE._deadOrgs[o.id]) return;
+  TELE._deadOrgs[o.id]=true;
+  const c=TELE.counters.orgDestroyed;
+  c.total++; teleBump(c.byKind,o.kind); teleBump(c.byCause,cause);
+  teleEvent('OrgDestroyed',{orgId:o.id, kind:o.kind, cause, name:o.name, disposition:disposition||null});
+}
+
+/* ---------- war / peace transition detection (side is DERIVED from faction pairs + alliances) ---------- */
+function teleBelligerentFactions(){
+  const owns={}, hasSq={};
+  for(const st of S.settlements){ const o=org(st.ownerOrgId); if(o) owns[o.factionId||o.id]=true; }
+  for(const sq of S.squads){ const o=org(sq.orgId); if(o) hasSq[o.factionId||o.id]=true; }
+  const out=[];
+  for(const f of S.factions) if(org(f.id) && (owns[f.id]||hasSq[f.id])) out.push(f.id);
+  return out;
+}
+function teleDetectSidePairs(){
+  const facs=teleBelligerentFactions();
+  const cur={};
+  for(let i=0;i<facs.length;i++) for(let j=i+1;j<facs.length;j++){
+    const a=facs[i], b=facs[j], key=a<b? a+':'+b : b+':'+a;
+    const allied=S.edges.some(e=>e.kind==='alliance' && ((e.from===a&&e.to===b)||(e.from===b&&e.to===a)));
+    cur[key]= allied? 'peace' : (hostile(a,b)? 'war':'neutral');
+  }
+  if(TELE._sidePairSeeded){   // first snapshot only seeds the baseline (no flood of worldgen wars)
+    for(const key in cur){
+      const prev=TELE._sidePair[key];
+      if(prev===cur[key]) continue;
+      const parts=key.split(':'); const a=+parts[0], b=+parts[1];
+      if(cur[key]==='war'   && prev!=='war')   teleEvent('WarDeclared',{factionA:a, factionB:b, prev:prev||'none'});
+      else if(cur[key]==='peace' && prev!=='peace') teleEvent('PeaceMade',{factionA:a, factionB:b, prev:prev||'none'});
+      // EXTENSION POINT: pairs that DISAPPEAR here = a faction was eliminated/absorbed; the
+      // prototype has no explicit "faction eliminated" event, so that transition is not journaled.
+    }
+  }
+  TELE._sidePair=cur; TELE._sidePairSeeded=true;
+}
+
+/* ---------- periodic snapshot ---------- */
+function teleSnapshot(){
+  if(!TELE.cfg.enabled) return;
+  const tick=S.tick;
+
+  /* ---- world + per-faction economy aggregates ---- */
+  const facMap={};
+  const facRec=fid=>{
+    if(fid==null) return null;
+    if(!facMap[fid]){
+      const fo=org(fid), fdef=S.factions.find(f=>f.id===fid);
+      facMap[fid]={ factionId:fid, name:fo?fo.name:('faction '+fid), color:fdef?fdef.color:null,
+        treasury:0, popByTier:{camp:0,village:0,city:0,megalopolis:0}, territory:0,
+        settlements:{total:0, byTier:{camp:0,village:0,city:0,megalopolis:0}, owned:0, unowned:0, abandoned:0},
+        housing:{total:0, shortfall:0}, enterprises:{running:0, idle:0},
+        squads:{garrison:0, mobile:0, upkeep:0}, orgs:{total:0, independent:0, subordinate:0} };
+    }
+    return facMap[fid];
+  };
+
+  const world={
+    economy:{
+      treasury:0,
+      populationByTier:{camp:0,village:0,city:0,megalopolis:0},
+      resources:{}, settlements:{total:S.settlements.length,
+        byTier:{camp:0,village:0,city:0,megalopolis:0}, owned:0, unowned:0, abandoned:0},
+      housing:{total:0, shortfall:0}, enterprises:{running:0, idle:0},
+      // EXTENSION POINT: no first-class construction-order system (FoundEnterprise spends
+      // instantly), so active/stalled construction is always 0/0 here.
+      construction:{active:0, stalled:0},
+      squads:{garrison:0, mobile:0, upkeep:0}, territory:0,
+    },
+    orgs:{}, population:{},
+  };
+  const priceSamples={}; for(const r of RKEYS){ world.economy.resources[r]={stock:0, net:0, priceMean:0, priceStd:0}; priceSamples[r]=[]; }
+
+  const settlementRows=[];
+  for(const st of S.settlements){
+    const owner=org(st.ownerOrgId);
+    const fid=owner? (owner.factionId||owner.id) : null;
+    const fr=facRec(fid);
+    const house=teleHousing(st), shortfall=Math.max(0, st.pop-house);
+    // EXTENSION POINT: no abandon/repopulate system — pop floors at 20, so "abandoned" is derived false.
+    const abandoned=false;
+    // enterprises by state at this settlement
+    let running=0, idle=0;
+    for(const id of st.entIds){ const e=ent(id); if(!e) continue; if(e.staffed && !e.stalled) running++; else idle++; }
+    // income breakdown (mirrors economyStep territory/tax)
+    const incBase=(st.pop/1000)*2.2*st.area;
+    const incTax = owner? incBase*(0.4+owner.taxRate*2) : 0;
+
+    world.economy.populationByTier[st.tier]+=st.pop;
+    world.economy.settlements.byTier[st.tier]++;
+    if(owner) world.economy.settlements.owned++; else world.economy.settlements.unowned++;
+    if(abandoned) world.economy.settlements.abandoned++;
+    world.economy.housing.total+=house; world.economy.housing.shortfall+=shortfall;
+    world.economy.enterprises.running+=running; world.economy.enterprises.idle+=idle;
+    world.economy.territory+=st.area;
+    const resRow={};
+    for(const r of RKEYS){
+      const stock=st.stock[r]||0, net=st.net[r]||0, price=st.price[r]||0;
+      world.economy.resources[r].stock+=stock; world.economy.resources[r].net+=net;
+      priceSamples[r].push(price);
+      resRow[r]={stock, net, price};
+    }
+    if(fr){
+      // faction treasury is summed from org treasuries in the org loop below
+      fr.popByTier[st.tier]+=st.pop; fr.territory+=st.area;
+      fr.settlements.total++; fr.settlements.byTier[st.tier]++; fr.settlements.owned++;
+      if(abandoned) fr.settlements.abandoned++;
+      fr.housing.total+=house; fr.housing.shortfall+=shortfall;
+      fr.enterprises.running+=running; fr.enterprises.idle+=idle;
+    }
+    settlementRows.push({
+      tick, id:st.id, name:st.name, tier:st.tier, ownerOrgId:st.ownerOrgId, faction:fid,
+      area:st.area, pop:st.pop, popRate: st.pop-(TELE._prevPop[st.id]!=null?TELE._prevPop[st.id]:st.pop),
+      housing:house, shortfall, resources:resRow,
+      income:{ base:incBase, territoryTax:incTax, taxRate: owner?owner.taxRate:0 },
+      enterprises:{running, idle}, abandoned, contested: st.contest>0,
+    });
+    TELE._prevPop[st.id]=st.pop;
+  }
+  for(const r of RKEYS){ const d=teleDist(priceSamples[r]); world.economy.resources[r].priceMean=d.mean; world.economy.resources[r].priceStd=d.std; }
+
+  /* ---- world squad split + upkeep ---- */
+  for(const sq of S.squads){
+    const up=sq.strength*0.05;
+    world.economy.squads.upkeep+=up;
+    if(sq.garrisonId){ world.economy.squads.garrison++; } else { world.economy.squads.mobile++; }
+    const so=org(sq.orgId); const fid=so? (so.factionId||so.id) : null; const fr=facRec(fid);
+    if(fr){ if(sq.garrisonId) fr.squads.garrison++; else fr.squads.mobile++; fr.squads.upkeep+=up; }
+  }
+
+  /* ---- org aggregates (ALL orgs) + per-faction org counts + treasury ---- */
+  const kindSeed={political:0,business:0,squad:0,network:0};
+  const ltSeed={}; for(const lt of LEADERSHIP) ltSeed[lt]=0;
+  const oByKind=Object.assign({},kindSeed), oByLT=Object.assign({},ltSeed);
+  const treasuries=[], powers=[], subLoyalties=[];
+  let independent=0, subordinate=0, belowRevolt=0, perkHolders=0, perksTotal=0, postsFilled=0, postsTotal=0;
+  for(const o of S.orgs){
+    world.economy.treasury+=o.treasury;
+    teleBump(oByKind,o.kind); teleBump(oByLT,o.leadershipType);
+    treasuries.push(o.treasury); powers.push(orgPower(o));
+    if(o.parentId==null) independent++; else { subordinate++; subLoyalties.push(o.loyalty); if(o.loyalty<TELE.cfg.revoltThreshold) belowRevolt++; }
+    if(o.perks.length){ perkHolders++; perksTotal+=o.perks.length; }
+    for(const k in o.posts){ postsTotal++; if(o.posts[k]) postsFilled++; }
+    const fid=o.factionId||o.id, fr=facRec(fid);
+    if(fr){ fr.treasury+=o.treasury; fr.orgs.total++; if(o.parentId==null) fr.orgs.independent++; else fr.orgs.subordinate++; }
+  }
+  // slot / edge inventory
+  const slotByKind={}, allianceCount={f:0};
+  let covert=0, pub=0;
+  for(const e of S.edges){
+    teleBump(slotByKind, e.kind);
+    if(TELE_SLOT_KINDS.includes(e.kind)){ if(e.visibility==='covert') covert++; else pub++; }
+    if(e.kind==='alliance') allianceCount.f++;
+  }
+  // side-pair counts (war / peace / neutral) among belligerent factions
+  let warPairs=0, peacePairs=0, neutralPairs=0;
+  for(const k in TELE._sidePair){ const v=TELE._sidePair[k]; if(v==='war')warPairs++; else if(v==='peace')peacePairs++; else neutralPairs++; }
+  world.orgs={
+    total:S.orgs.length, independent, subordinate,
+    byKind:oByKind, byLeadershipType:oByLT,
+    wealth:teleDist(treasuries), power:teleDist(powers),
+    subordinateLoyalty:teleDist(subLoyalties), belowRevoltThreshold:belowRevolt,
+    slots:{ byKind:slotByKind, covert, public:pub, alliances:allianceCount.f },
+    perks:{ holders:perkHolders, total:perksTotal },
+    posts:{ filled:postsFilled, total:postsTotal, rate: postsTotal? postsFilled/postsTotal : 0 },
+    sidePairs:{ war:warPairs, peace:peacePairs, neutral:neutralPairs },
+  };
+
+  /* ---- population aggregates + leader trait/skill distributions ---- */
+  let materialized=0, latent=0;
+  const traitCounts={}, skillSums={}; for(const s of SKILLS) skillSums[s]=0; let leaderCount=0;
+  for(const t of TRAITS) traitCounts[t]=0;
+  for(const c of S.chars){ if(!c.alive) continue; materialized++;
+    if(c.ledOrgId){ leaderCount++; for(const t of c.traits) teleBump(traitCounts,t); for(const s of SKILLS) skillSums[s]+=(c.skills[s]||0); }
+  }
+  for(const st of S.settlements) latent+=st.pop;   // demographic reservoir (latent pool)
+  const skillMeans={}; for(const s of SKILLS) skillMeans[s]= leaderCount? skillSums[s]/leaderCount : 0;
+  world.population={ materializedChars:materialized, latentPool:latent,
+    leaders:{ count:leaderCount, traitCounts, skillMeans } };
+
+  /* ---- per-org: full series for the WATCHED SET (independent orgs + player's org, bounded) ---- */
+  const indep=S.orgs.filter(o=>o.parentId==null).slice().sort((a,b)=>orgPower(b)-orgPower(a));
+  const watchedList=indep.slice(0, TELE.cfg.watchedCap);
+  const pOrg = S.playerCharId!=null ? org((chr(S.playerCharId)||{}).ledOrgId) : null;
+  if(pOrg && !watchedList.includes(pOrg)) watchedList.push(pOrg);
+  const watchedRows=watchedList.map(o=>{
+    const pw=telePowerParts(o);
+    const childrenByKind=Object.assign({},kindSeed); let children=0;
+    for(const x of S.orgs) if(x.parentId===o.id){ children++; teleBump(childrenByKind,x.kind); }
+    let held=0, occupied=0, agentCovert=0, agentPublic=0, alliances=0;
+    for(const e of S.edges){
+      if(e.from===o.id && TELE_SLOT_KINDS.includes(e.kind)){ held++; if(org(e.to)) occupied++;
+        if(e.kind!=='control'){ if(e.visibility==='covert') agentCovert++; else agentPublic++; } }
+      if(e.kind==='alliance' && (e.from===o.id||e.to===o.id)) alliances++;
+    }
+    let owned=0; for(const s of S.settlements) if(s.ownerOrgId===o.id) owned++;
+    let postsF=0; for(const k in o.posts) if(o.posts[k]) postsF++;
+    return {
+      tick, id:o.id, name:o.name, kind:o.kind, leadershipType:o.leadershipType, independent:o.parentId==null,
+      treasury:o.treasury,
+      income:{ blended:o.income||0, expenses:o.expenses||0, profit:o.profit||0, trade:!!o.trade },
+      memberCount:o.members.length, power:pw,
+      children, childrenByKind,
+      slots:{ held, occupied }, alliances, agentEdges:{ covert:agentCovert, public:agentPublic },
+      perks:o.perks.length, posts:{ filled:postsF, total:Object.keys(o.posts).length },
+      loyalty:o.loyalty, ownedProperty:owned, lastDecision:o.lastDecision,
+    };
+  });
+
+  const factionsOut=Object.keys(facMap).map(Number).sort((a,b)=>a-b).map(k=>facMap[k]);
+
+  TELE.snapshots.push({
+    tick, world, factions:factionsOut, settlements:settlementRows,
+    orgs:{
+      // aggregates answer "how many orgs" and "how many created/destroyed by kind & cause"
+      aggregate:world.orgs,
+      lifetime:teleCloneCounters(),   // cumulative created/destroyed (by kind & cause) as of this tick
+      watched:watchedRows,
+    },
+  });
+
+  // EXTENSION POINT (retention): if thinPerEntityKeepEvery is set, down-sample the oldest
+  // per-entity rows of already-stored snapshots here. Left as a no-op (keep everything) by default.
+}
+
+/* called at the end of every tick() — fixed point in tick order */
+function teleTick(){
+  if(!TELE.cfg.enabled) return;
+  const N=Math.max(1, TELE.cfg.snapshotEveryTicks|0);
+  if(S.tick % N !== 0) return;
+  teleDetectSidePairs();
+  teleSnapshot();
+  if(TELE.cfg.autoDumpAtTick!=null && S.tick===TELE.cfg.autoDumpAtTick) teleExport({download:true});
+}
+
+/* ---------- export: JSON (snapshots + journal + metadata) + optional flat CSV ---------- */
+function teleExport(opts={}){
+  const payload={ meta:TELE.meta, config:Object.assign({},TELE.cfg),
+    counters:TELE.counters, snapshots:TELE.snapshots, journal:TELE.journal };
+  if(opts.download){
+    const blob=new Blob([JSON.stringify(payload)], {type:'application/json'});
+    teleDownload(blob, 'telemetry-seed'+(TELE.meta?TELE.meta.seed:'x')+'.json');
+  }
+  return payload;
+}
+function teleCSV(){
+  const esc=v=>{ v=(v==null?'':String(v)); return /[",\n]/.test(v)? '"'+v.replace(/"/g,'""')+'"' : v; };
+  // per-settlement flat table
+  const sCols=['tick','id','name','tier','ownerOrgId','faction','area','pop','popRate','housing','shortfall'];
+  for(const r of RKEYS){ sCols.push(r+'_stock', r+'_net', r+'_price'); }
+  sCols.push('income_base','income_territoryTax','entRunning','entIdle','abandoned','contested');
+  const sRows=[sCols.join(',')];
+  for(const snap of TELE.snapshots) for(const row of snap.settlements){
+    const line=[row.tick,row.id,row.name,row.tier,row.ownerOrgId,row.faction,row.area,row.pop,row.popRate,row.housing,row.shortfall];
+    for(const r of RKEYS){ const rr=row.resources[r]; line.push(rr.stock, rr.net, rr.price); }
+    line.push(row.income.base, row.income.territoryTax, row.enterprises.running, row.enterprises.idle, row.abandoned, row.contested);
+    sRows.push(line.map(esc).join(','));
+  }
+  // per-watched-org flat table
+  const oCols=['tick','id','name','kind','leadershipType','independent','treasury','income_blended','expenses','profit',
+    'memberCount','power_total','power_wealth','power_territory','power_military','children','slots_held','slots_occupied',
+    'alliances','agentCovert','agentPublic','perks','postsFilled','loyalty','ownedProperty','lastDecision'];
+  const oRows=[oCols.join(',')];
+  for(const snap of TELE.snapshots) for(const row of snap.orgs.watched){
+    oRows.push([row.tick,row.id,row.name,row.kind,row.leadershipType,row.independent,row.treasury,row.income.blended,
+      row.income.expenses,row.income.profit,row.memberCount,row.power.total,row.power.wealth,row.power.territory,
+      row.power.military,row.children,row.slots.held,row.slots.occupied,row.alliances,row.agentEdges.covert,
+      row.agentEdges.public,row.perks,row.posts.filled,row.loyalty,row.ownedProperty,row.lastDecision].map(esc).join(','));
+  }
+  return { settlements:sRows.join('\n'), orgs:oRows.join('\n') };
+}
+function teleDownload(blob, name){
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a);
+  a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url), 4000);
+}
+function teleExportCSV(){
+  const csv=teleCSV();
+  teleDownload(new Blob([csv.settlements],{type:'text/csv'}), 'telemetry-settlements.csv');
+  teleDownload(new Blob([csv.orgs],{type:'text/csv'}), 'telemetry-orgs.csv');
+}
+// console handles + live inspection (telemetry is inspectable live as well as exportable)
+window.TELE=TELE;
+window.S=S;                         // world state, for live console inspection
+window.exportTelemetry=teleExport;
+window.exportTelemetryCSV=teleExportCSV;
 
 /* =====================================================================
    WORLDGEN
@@ -491,11 +908,15 @@ function makeOrg(kind, name, opts={}){
     lastDecision:'—', income:0, expenses:0, profit:0,
   };
   S.orgs.push(o);
+  teleOrgCreated(o, opts.cause);          // telemetry: org lifecycle (cause defaults to run phase)
   return o;
 }
 function makeEdge(kind, from, to, extra={}){
   const e=Object.assign({id:uid(), kind, from, to, visibility:'public', salary:0}, extra);
   S.edges.push(e);
+  // telemetry: graph events — a control/influence/investment slot, or an alliance, was created
+  if(TELE_SLOT_KINDS.includes(kind)) teleEvent('SlotCreated',{edgeId:e.id, kind, from, to, visibility:e.visibility, salary:e.salary});
+  else if(kind==='alliance') teleEvent('AllianceFormed',{edgeId:e.id, from, to});
   return e;
 }
 function setLeader(o, c){
@@ -506,6 +927,7 @@ function setLeader(o, c){
 
 function generate(seed){
   RNG=mulberry32(seed>>>0);
+  teleReset(seed);                        // telemetry: clear buffers, stamp run metadata, enter worldgen phase
   Object.assign(S,{seed, tick:0, settlements:[],orgs:[],chars:[],squads:[],caravans:[],ents:[],edges:[],
     roads:[],adj:[],factions:[],events:[],playerCharId:null,selection:null,nextId:1});
 
@@ -719,6 +1141,8 @@ function generate(seed){
   buildStartScreen();
   renderLog();
   logEvent('Світ згенеровано. Seed <b>'+seed+'</b> · '+S.settlements.length+' поселень · '+S.orgs.length+' організацій.');
+  TELE.phase='runtime';                   // telemetry: worldgen done — subsequent creations are runtime
+  teleTick();                             // baseline snapshot at tick 0 (also seeds war/peace pairs)
 }
 
 function createEnterprise(st, kind, ownerOrgId){
@@ -737,7 +1161,7 @@ function createEnterprise(st, kind, ownerOrgId){
     owner = makeOrg('business', ENT[kind].label+' «'+st.name+'»', {
       parentId: chance(0.7)? (parent?parent.id:null) : null,
       factionId: parent? parent.factionId : null,
-      leadershipType:'economic', treasury:rint(40,120)});
+      leadershipType:'economic', treasury:rint(40,120), cause:'enterprise-founding'});
     setLeader(owner, makeChar(st.id));
     if(owner.parentId) makeEdge('hierarchy', owner.parentId, owner.id);
   }
@@ -745,6 +1169,8 @@ function createEnterprise(st, kind, ownerOrgId){
   makeEdge('ownership', owner.id, 'E'+e.id);
   S.ents.push(e);
   st.entIds.push(e.id);
+  teleEvent('EnterpriseFounded',{entId:e.id, kind, settlementId:st.id, ownerOrgId:owner.id,
+    cause: TELE.phase==='worldgen'?'worldgen':'org-decision'});
   return e;
 }
 
@@ -785,7 +1211,7 @@ function placeOutdoorEnterprise(st, e){
 function spawnSquad(ownerOrg, st, opts={}){
   const so = ownerOrg.kind==='squad' ? ownerOrg :
     makeOrg('squad','Загін '+st.name+' '+rint(1,99),{
-      parentId:ownerOrg.id, factionId:ownerOrg.factionId, leadershipType:'mercenary', treasury:rint(10,60)});
+      parentId:ownerOrg.id, factionId:ownerOrg.factionId, leadershipType:'mercenary', treasury:rint(10,60), cause:'squad-pairing'});
   if(so!==ownerOrg){
     makeEdge('hierarchy', ownerOrg.id, so.id);
     makeEdge('control', ownerOrg.id, so.id, {salary:rint(1,3)});
@@ -801,6 +1227,8 @@ function spawnSquad(ownerOrg, st, opts={}){
   };
   S.squads.push(sq);
   so.squadId=sq.id;
+  teleEvent('SquadRecruited',{squadId:sq.id, orgId:so.id, garrison:!!opts.garrison, strength:sq.strength});
+  TELE.counters.squadRecruited++;
   return sq;
 }
 function spawnCaravan(tradeOrg){
@@ -1101,6 +1529,7 @@ function orgStep(){
         if(occ.loyalty<20 && occ.kind!=='squad' && chance(0.01)){
           S.edges=S.edges.filter(x=>x.id!==e.id);
           logEvent('Слот розірвано: <b>'+occ.name+'</b> покинув <b>'+o.name+'</b> — не платили.');
+          teleEvent('SlotBroken',{edgeId:e.id, kind:e.kind, from:o.id, to:occ.id, cause:'unpaid'});
         }
       } else occ.loyalty=Math.min(100, occ.loyalty+0.15);
     }
@@ -1196,6 +1625,7 @@ function decide(o){
       o.homeSettlementId=(owned[0]||pick(S.settlements)).id;
       spawnCaravan(o);
       logEvent('<span class="link" data-sel="org:'+o.id+'">'+o.name+'</span> став торговим домом.');
+      teleEvent('BecameTradeHouse',{orgId:o.id, homeSettlementId:o.homeSettlementId});
       break;
     }
     case 'SeekIndependence': {
@@ -1204,12 +1634,16 @@ function decide(o){
       o.parentId=null; o.factionId=o.id;
       if(!S.factions.find(f=>f.id===o.id)) S.factions.push({id:o.id, orgId:o.id, color:'#9AA7C0'});
       logEvent('⚑ <span class="link" data-sel="org:'+o.id+'">'+o.name+'</span> проголосив незалежність від <b>'+(p?p.name:'?')+'</b>.');
+      // telemetry: political event — a secession attempt (this path always succeeds) + became independent
+      teleEvent('SecessionAttempt',{orgId:o.id, fromOrgId:p?p.id:null, outcome:'success', trigger:'ambition'});
+      teleEvent('BecameIndependent',{orgId:o.id, fromOrgId:p?p.id:null});
       break;
     }
     case 'Invest': {
       const sum=Math.min(200, o.treasury*0.4);
       o.treasury-=sum; d.t.treasury+=sum;
       makeEdge('investment', o.id, d.t.id, {salary:Math.round(sum/40), funding:Math.round(sum)});
+      teleEvent('Investment',{fromOrgId:o.id, toOrgId:d.t.id, amount:Math.round(sum)});
       break;
     }
     case 'CovertInfluence': {
@@ -1228,6 +1662,8 @@ function successionAndRevolt(){
     c.alive=false; c.ledOrgId=null;
     const heir = chr(o.heirId) && chr(o.heirId).alive ? chr(o.heirId) :
       chr(o.members.map(chr).filter(x=>x&&x.alive&&x.id!==c.id).map(x=>x.id)[0]);
+    // telemetry: political event — leader death (successorType recorded on the branches below)
+    teleEvent('LeaderDeath',{charId:c.id, orgId:o.id, age:c.age});
     if(heir){
       setLeader(o, heir);
       o.heirId = o.members.filter(id=>id!==heir.id && chr(id) && chr(id).alive)[0] || null;
@@ -1242,6 +1678,8 @@ function successionAndRevolt(){
           S.edges=S.edges.filter(e=>!(e.kind==='hierarchy'&&e.to===sub.id));
           if(!S.factions.find(f=>f.id===sub.id)) S.factions.push({id:sub.id, orgId:sub.id, color:'#9AA7C0'});
           logEvent('⚔ Криза спадкоємства: <b>'+sub.name+'</b> відколовся від <b>'+o.name+'</b>.');
+          // telemetry: political event — succession crisis (successor type + legitimacy score)
+          teleEvent('SuccessionCrisis',{orgId:sub.id, parentOrgId:o.id, successorType:'heir', legitimacy:legit});
         }
       }
     } else {
@@ -1252,6 +1690,8 @@ function successionAndRevolt(){
       o.heirId=null;
       logEvent('† <b>'+c.name+'</b> помер. <span class="link" data-sel="char:'+fresh.id+'">'+fresh.name+
         '</span> зайняв місце в <b>'+o.name+'</b>.');
+      // telemetry: no heir → a fresh resident is materialized to fill the seat
+      teleEvent('SuccessionCrisis',{orgId:o.id, parentOrgId:o.parentId, successorType:'materialized', legitimacy:0});
     }
     if(S.playerCharId===c.id){
       logEvent('Твій персонаж помер. Ти спостерігаєш далі — обери іншого лідера в інспекторі.');
@@ -1266,10 +1706,14 @@ function successionAndRevolt(){
     o.loyalty += (p.taxRate>0.3?-0.15:0.05) + (gap>0? -0.12:0.04);
     o.loyalty=Math.max(0,Math.min(100,o.loyalty));
     if(o.loyalty<12 && chance(0.02)){
+      const fromId=p.id;
       o.parentId=null; o.factionId=o.id;
       S.edges=S.edges.filter(e=>!(e.kind==='hierarchy'&&e.to===o.id));
       if(!S.factions.find(f=>f.id===o.id)) S.factions.push({id:o.id, orgId:o.id, color:'#9AA7C0'});
       logEvent('⚑ <b>'+o.name+'</b> вийшов з-під <b>'+p.name+'</b> — лояльність вичерпана.');
+      // telemetry: political event — secession driven by exhausted loyalty (always succeeds here)
+      teleEvent('SecessionAttempt',{orgId:o.id, fromOrgId:fromId, outcome:'success', trigger:'loyalty'});
+      teleEvent('BecameIndependent',{orgId:o.id, fromOrgId:fromId});
     }
   }
 }
@@ -1366,6 +1810,17 @@ function killSquad(dead, winner){
   const o=org(dead.orgId);
   logEvent('⚔ Загін <b>'+(o?o.name:'?')+'</b> знищено.');
   dead.strength=0;
+  teleEvent('SquadDisbanded',{squadId:dead.id, orgId:dead.orgId,
+    byOrgId: winner?winner.orgId:null, cause:'combat'});
+  TELE.counters.squadDisbanded++;
+  // A squad-kind org whose only squad is destroyed and which owns no property is now defunct →
+  // record its destruction with the disposition of what it held. (Only squad orgs are removed this
+  // way; a realm losing one of several squads is untouched.)
+  if(o && o.kind==='squad'){
+    const otherSquads=S.squads.some(s=>s!==dead && s.orgId===o.id && s.strength>0);
+    const ownsProp=S.settlements.some(s=>s.ownerOrgId===o.id);
+    if(!otherSquads && !ownsProp) teleOrgDestroyed(o, 'military-defeat', {treasury:o.treasury, property:0});
+  }
 }
 function capture(st, sq){
   const so=org(sq.orgId);
@@ -1375,7 +1830,7 @@ function capture(st, sq){
   // REPLACE: install a fresh political org subordinate to the conqueror
   const gov=makeOrg('political','Намісництво '+st.name,{
     parentId:realm.id, factionId:realm.factionId||realm.id,
-    treasury:40, leadershipType: realm.leadershipType==='mercenary'?'warlord':'monarch'});
+    treasury:40, leadershipType: realm.leadershipType==='mercenary'?'warlord':'monarch', cause:'settlement-capture'});
   makeEdge('hierarchy', realm.id, gov.id);
   S.edges=S.edges.filter(e=>!(e.kind==='ownership'&&e.to==='S'+st.id));
   makeEdge('ownership', gov.id, 'S'+st.id);
@@ -1385,6 +1840,11 @@ function capture(st, sq){
   sq.homeId=st.id; sq.garrisonId=st.id; sq.order='garrison'; sq.target=null;
   logEvent('⚑ <span class="link" data-sel="settlement:'+st.id+'">'+st.name+'</span> захоплено — '+
     '<b>'+(old?old.name:'вільне місто')+'</b> → <span class="link" data-sel="org:'+realm.id+'">'+realm.name+'</span>.');
+  // telemetry: economic event — a settlement captured, with method (this path installs a fresh
+  // subordinate governor: "replace"; direct/puppet/mutate are EXTENSION POINTS — not modelled yet).
+  teleEvent('SettlementCaptured',{settlementId:st.id, fromOrgId: old?old.id:null,
+    byOrgId:realm.id, toFactionId: realm.factionId||realm.id, governorOrgId:gov.id, method:'replace'});
+  TELE.counters.settlementCaptured++;
 }
 
 /* =====================================================================
@@ -1398,6 +1858,7 @@ function tick(){
   caravanStep();
   orgStep();
   squadStep();
+  teleTick();                 // telemetry: sample at a fixed point in tick order (post-sim, pre-render)
   updateMarkers();
   updateHUD();
   if(S.selection) renderInspector();
@@ -3228,6 +3689,11 @@ function regenerate(seed){
 }
 document.getElementById('btnRegen').onclick=()=>{
   regenerate(parseInt(document.getElementById('seedInput').value)||1);
+};
+document.getElementById('btnTele').onclick=()=>{
+  // export JSON (snapshots + event journal + run metadata); console: exportTelemetryCSV() for flat CSV
+  const p=teleExport({download:true});
+  logEvent('Телеметрію експортовано: <b>'+p.snapshots.length+'</b> знімків, <b>'+p.journal.length+'</b> подій.');
 };
 document.getElementById('btnGraph').onclick=()=>{
   graphOpen=!graphOpen;
