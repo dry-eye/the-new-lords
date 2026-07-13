@@ -35,6 +35,8 @@ The New Lords build worker. Queue = GitHub Issues in `dry-eye/the-new-lords`, st
    - Tester returns `MERGED` / `BOUNCED` → the slot frees → top up from READY.
 6. **Re-arm** the loop (§5) and end the tick. If READY is empty and no agents are live, just idle — re-arm and end.
 
+**Blocked / dependencies.** Before starting a READY issue, check whether it declares a dependency on another issue — an explicit `Залежить від #N` in the body, or a worker hold-comment `⛔ HELD by worker: depends on #N`. If that `#N` is still **open**, skip the issue (leave it in `to-do`); if you are the one who discovered the dependency, post the `⛔ HELD by worker: depends on #N` comment so later ticks skip it too. It becomes eligible automatically once `#N` closes.
+
 Never run a Builder and a Tester on the same issue at once (they are sequential: a Tester only starts once the PR exists).
 
 ## Builder sub-agent — prompt template
