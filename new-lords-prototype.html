@@ -2744,12 +2744,29 @@ function subdivideCity(st){
   return {blocks, cfg, rr, density};
 }
 
+/* --- pick which blocks become parks / sports grounds (green, no buildings) --- */
+function markParks(town){
+  const {blocks, rr}=town;
+  let footballBudget=2;                                            // a couple of full pitches per town at most
+  for(const b of [...blocks].sort((a,z)=>(z.hw*z.hh)-(a.hw*a.hh))){ // biggest greens first -> they get football
+    const big=b.hw>0.22 && b.hh>0.15;
+    if(b.den<0.32 || rr()<0.14 || (big && rr()<0.55)){
+      b.park=true;
+      const s=Math.min(b.hw,b.hh);
+      if(big && footballBudget>0 && rr()<0.75){ b.field='football'; footballBudget--; }
+      else if(s>0.13 && rr()<0.5) b.field='fivepitch';
+      else if(s>0.07 && rr()<0.4) b.field='tennis';
+    }
+  }
+}
+
 /* --- develop each block: buildings around the perimeter, courtyard inside --- */
 function developBlocks(town){
   const {blocks, cfg, rr, density}=town;
   const out=[];
   const [flo,fhi]=cfg.floors;
   for(const b of blocks){
+    if(b.park) continue;                            // parks carry no buildings
     const u=b.u, v={x:-b.u.y, y:b.u.x};
     const setback=0.012;
     const hw=b.hw-setback, hh=b.hh-setback;
@@ -2884,6 +2901,7 @@ let cityCache=new Map(), cityLive=new Set(), frameDtMs=16;
 function buildCity(st, maxResidents=48){
   const town=subdivideCity(st);
   const cfg=town.cfg, rr=town.rr;
+  markParks(town);                       // choose green/recreation blocks before buildings are placed
   const lots=developBlocks(town);
 
   const up=st.dir.clone();
@@ -2927,8 +2945,8 @@ function buildCity(st, maxResidents=48){
     const ang=Math.atan2(b.u.y,b.u.x);
     const m=orient(b.c.x, b.c.y, ang, 0.00006);
     scale(m, b.hw*2*S1, 0.00010, b.hh*2*S1);
-    const grass = b.den < 0.35 || rr()<0.12;
-    col.setHSL(grass?0.26:0.09, grass?0.20:0.10, grass?0.24:0.30);
+    if(b.park){ if(b.field==='tennis') col.setHSL(0.58,0.42,0.40); else col.setHSL(0.30,0.32,0.30); } // green park / blue tennis court
+    else col.setHSL(0.09, 0.10, 0.30);
     accGeo(gAcc, BOX, m, col);
   }
   group.add(accMesh(gAcc));
@@ -2954,6 +2972,33 @@ function buildCity(st, maxResidents=48){
     }
   }
   group.add(accMesh(bAcc));
+
+  // 3b. parks — trees on green blocks, white line-markings on the sports pitches
+  const pAcc=MeshAcc(), wAcc=MeshAcc();
+  const fieldLine=(cx,cy,lineAng,len)=>{ const m=orient(cx,cy,lineAng,0.00022); scale(m,len,0.00026,0.00060); col.set(0xeef1f2); accGeo(wAcc,BOX,m,col); };
+  for(const b of town.blocks){
+    if(!b.park) continue;
+    const u=b.u, v={x:-b.u.y,y:b.u.x}, ang=Math.atan2(u.y,u.x);
+    const W=(lx,ly)=>({x:b.c.x+u.x*lx+v.x*ly, y:b.c.y+u.y*lx+v.y*ly});
+    if(b.field){
+      const fhw=b.hw*0.9, fhh=b.hh*0.9; let p;
+      p=W(0,fhh);  fieldLine(p.x,p.y,ang,2*fhw*S1);
+      p=W(0,-fhh); fieldLine(p.x,p.y,ang,2*fhw*S1);
+      p=W(fhw,0);  fieldLine(p.x,p.y,ang+Math.PI/2,2*fhh*S1);
+      p=W(-fhw,0); fieldLine(p.x,p.y,ang+Math.PI/2,2*fhh*S1);
+      fieldLine(b.c.x,b.c.y,ang+Math.PI/2,2*fhh*S1);         // halfway / net line
+    } else {
+      const n=Math.max(2, Math.round(b.hw*b.hh*70));
+      for(let i=0;i<n;i++){
+        const lx=(rr()-0.5)*1.7*b.hw, ly=(rr()-0.5)*1.7*b.hh, p=W(lx,ly);
+        if(Math.hypot(p.x,p.y)>1.0) continue;
+        const m=orient(p.x,p.y,0,0.0016); scale(m,0.0015,0.0032,0.0015);
+        col.set(0x3f7d4f); accGeo(pAcc, CONE, m, col);
+      }
+    }
+  }
+  if(pAcc.pos.length) group.add(accMesh(pAcc));
+  if(wAcc.pos.length) group.add(accMesh(wAcc));
 
   // 4. residents: flying cat heads that WALK the streets — movable, stepped per frame
   //    (stepWalkers). Streets are the corridors between blocks; a head drifts between
