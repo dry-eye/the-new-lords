@@ -3576,13 +3576,16 @@ function updateSquadPawns(){
 
 /* =====================================================================
    CAMERA — trackball: the planet turns freely, no poles, no limits.
-   Tilt (#28): the view can pitch off the default top-down toward the horizon
-   and yaw (orbit) around the focused near-surface point. Pitch 0 = straight
-   down — byte-identical to the old fixed camera; pitch is clamped short of the
-   horizon (never up into the sky). Driven by a middle-button drag (below).
+   Tilt (#28): only while zoomed in close (camAlt ≤ TILT_ALT_MAX) can the view
+   pitch off the default top-down toward the horizon and yaw (orbit) around the
+   focused near-surface point. Pitch 0 = straight down — byte-identical to the
+   old fixed camera; pitch is clamped short of the horizon (never up into the
+   sky). Driven by an Alt + middle-button drag (below); the moment the camera
+   climbs past TILT_ALT_MAX the view snaps firmly back to a strict top-down.
    ===================================================================== */
 let camPitch=0, camYaw=0;                  // radians — off-top-down tilt (#28)
 const PITCH_MAX=70*Math.PI/180;            // clamp: toward the horizon, never past it
+const TILT_ALT_MAX=0.2;                     // tilt only at very low altitude — street level, well below city geometry (camAlt 0.45); above it the view snaps to strict top-down
 const TILT_PITCH_PER_PX=0.006, TILT_YAW_PER_PX=0.006;
 const _camNrm=new THREE.Vector3(0,0,1);    // unit camera direction from the planet centre
 function updateCamera(){
@@ -3592,7 +3595,11 @@ function updateCamera(){
   const alt=Math.max(0, camDist-1);
   const sp=Math.sin(camPitch), cp=Math.cos(camPitch);
   const sy=Math.sin(camYaw),   cy=Math.cos(camYaw);
-  camera.position.set(alt*sp*cy, alt*sp*sy, 1+alt*cp);
+  // The pitch swing must lie ALONG the screen-vertical (camera up), not across it — else a
+  // vertical drag orbits sideways (swapped axes). With up=(-sy,cy,0), that in-plane offset
+  // is (sp*sy, -sp*cy): at yaw=0 the camera swings back along -Y as pitch grows, so dragging
+  // up tilts the view toward the horizon (horizon rises from the top edge), not sideways.
+  camera.position.set(alt*sp*sy, -alt*sp*cy, 1+alt*cp);
   camera.up.set(-sy, cy, 0);               // yaw-locked up → stable orbit, level horizon
   camera.lookAt(0,0,1);
   _camNrm.copy(camera.position).normalize();
@@ -3628,7 +3635,7 @@ canvas.addEventListener('pointerdown',e=>{
     try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
     return;
   }
-  if(e.button===1) e.preventDefault();            // middle: suppress autoscroll; we pin on release
+  if(e.button===1) e.preventDefault();            // middle: suppress autoscroll (a drag rotates the globe / Alt-drag tilts; a stationary press pins on release)
   drag={x:e.clientX, y:e.clientY, moved:0, button:e.button};
   spin.vel=0;
   canvas.setPointerCapture(e.pointerId);
@@ -3647,20 +3654,28 @@ addEventListener('pointermove',e=>{
   const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
   drag.x=e.clientX; drag.y=e.clientY;
   drag.moved+=Math.abs(dx)+Math.abs(dy);
-  if(drag.button===1){                            // MIDDLE-DRAG = TILT (#28), not pan
-    // vertical drag → pitch (top-down 0° … ~70° toward the horizon, clamped short of it);
-    // horizontal drag → yaw (orbit that oblique view around the focused surface point).
-    // A stationary middle press stays under the drag.moved<6 threshold → pins (pointerup).
+  if(drag.button===2) return;                     // right-drag without a squad selected no longer
+                                                  // rotates the globe (that was a temporary
+                                                  // fallback) — the right button is squad orders (#24)
+  if(drag.button===1 && e.altKey && camAlt<=TILT_ALT_MAX){   // Alt + MIDDLE = TILT (#28), close-up only
+    // vertical drag → pitch, horizontal drag → yaw (orbit). Drag up tilts toward the horizon
+    // (0° … ~70°, clamped short of it); yaw stays inverted, so drag right orbits the other way.
     camPitch=Math.max(0, Math.min(PITCH_MAX, camPitch - dy*TILT_PITCH_PER_PX));
-    camYaw  += dx*TILT_YAW_PER_PX;
+    camYaw  -= dx*TILT_YAW_PER_PX;
     if(camYaw>Math.PI) camYaw-=2*Math.PI; else if(camYaw<-Math.PI) camYaw+=2*Math.PI;
     spin.vel=0; flyQ=null;
     return;
   }
+  // LEFT-drag, or a plain (no-Alt / zoomed-out) MIDDLE-drag → rotate the trackball globe.
+  // A stationary middle press stays under the moved<6 threshold → still pins on release.
   const len=Math.hypot(dx,dy);
   if(len<0.01) return;
   const k=dragScale();
-  tmpV.set(dy,dx,0).normalize();
+  // trackball axis in the camera's SCREEN frame — dy about camera-right, dx about camera-up
+  // (both horizontal thanks to the yaw-locked up), NOT fixed world XY, so the drag stays
+  // aligned with the cursor even when the view is tilted (camPitch/camYaw ≠ 0).
+  const _cp=Math.cos(camPitch), _sy=Math.sin(camYaw), _cy=Math.cos(camYaw);
+  tmpV.set(dy*_cy*_cp - dx*_sy, dy*_sy*_cp + dx*_cy, 0).normalize();
   const ang=len*k;
   tmpQ.setFromAxisAngle(tmpV, ang);
   root.quaternion.premultiply(tmpQ).normalize();
@@ -3948,7 +3963,11 @@ function touchRotate(dx,dy){
   const len=Math.hypot(dx,dy);
   if(len<0.01) return;
   const k=dragScale();
-  tmpV.set(dy,dx,0).normalize();
+  // trackball axis in the camera's SCREEN frame — dy about camera-right, dx about camera-up
+  // (both horizontal thanks to the yaw-locked up), NOT fixed world XY, so the drag stays
+  // aligned with the cursor even when the view is tilted (camPitch/camYaw ≠ 0).
+  const _cp=Math.cos(camPitch), _sy=Math.sin(camYaw), _cy=Math.cos(camYaw);
+  tmpV.set(dy*_cy*_cp - dx*_sy, dy*_sy*_cp + dx*_cy, 0).normalize();
   const ang=len*k;
   tmpQ.setFromAxisAngle(tmpV, ang);
   root.quaternion.premultiply(tmpQ).normalize();
@@ -4036,12 +4055,11 @@ canvas.addEventListener('touchcancel',()=>{ clearLP(); touchG=null; lpFired=fals
 function stepCamera(){
   camAlt += (camAltTarget-camAlt)*0.16;
   camDist = 1 + camAlt;
-  // Auto-flatten (#28): as the camera nears the full zoom-out planet view, ease the tilt
-  // back toward top-down — an oblique angle reads poorly against the globe's curvature.
-  const flatStart=ALT_MAX*0.72;
-  if(camAlt>flatStart && (camPitch!==0 || camYaw!==0)){
-    const k=Math.min(1,(camAlt-flatStart)/(ALT_MAX-flatStart));
-    const e=0.04+0.16*k;
+  // Auto-flatten (#28): tilt is a close-up-only affordance. The moment the camera climbs
+  // past TILT_ALT_MAX, snap firmly back toward a strict top-down — an oblique angle reads
+  // poorly against the globe's curvature, and tilt is only offered near the ground.
+  if(camAlt>TILT_ALT_MAX && (camPitch!==0 || camYaw!==0)){
+    const e=0.5;                                  // firm, decisive levelling — settles in a few frames
     camPitch+=(0-camPitch)*e; camYaw+=(0-camYaw)*e;
     if(Math.abs(camPitch)<1e-3) camPitch=0;
     if(Math.abs(camYaw)<1e-3) camYaw=0;
