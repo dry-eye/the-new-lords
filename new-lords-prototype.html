@@ -103,6 +103,7 @@
     border:1px solid var(--rule);padding:6px 9px;border-radius:3px;line-height:1.6;text-align:right}
   #graphBar{position:absolute;top:10px;left:12px;display:flex;gap:8px;align-items:center;
     background:rgba(16,22,36,.9);border:1px solid var(--rule);padding:6px 9px;border-radius:3px}
+  #gKinds{display:inline-flex;gap:6px;flex-wrap:wrap}
   #legend{position:absolute;bottom:12px;left:12px;background:rgba(16,22,36,.9);
     border:1px solid var(--rule);padding:8px 10px;border-radius:3px;color:var(--dim);line-height:1.7}
   #legend s{display:inline-block;width:26px;height:0;vertical-align:middle;margin-right:6px;
@@ -263,6 +264,8 @@
     <button id="gProp" class="on">Показувати власність</button>
     <button id="gFocus">Фокус на вибраному</button>
     <button id="gBig" class="on">Лише значимі</button>
+    <span class="stat">види</span>
+    <span id="gKinds"></span>
     <span class="stat">точка зору</span>
     <select id="gView"><option value="spectator">Spectator (всевидець)</option></select>
     <button id="gClose">Закрити</button>
@@ -3724,11 +3727,12 @@ const gWrap=document.getElementById('graph');
 const gCanvas=document.getElementById('graphCanvas');
 const gctx=gCanvas.getContext('2d');
 const gTip=document.getElementById('gTip');
-let gNodes=new Map(), gShowProp=true, gFocus=false, gBigOnly=true, gViewpoint='spectator';
+let gNodes=new Map(), gShowProp=true, gFocus=false, gBigOnly=true, gViewpoint='spectator', gHideKinds=new Set();
 let gCam={x:0,y:0,z:1}, gDrag=null, gHover=null, gW=0, gH=0, gLastOrgCount=-99;
 
 /* which orgs are worth drawing: a 400-node hairball helps nobody */
 function orgVisible(o){
+  if(gHideKinds.has(o.kind)) return false;               // view-only filter by org kind
   if(!gBigOnly) return true;
   if(o.parentId===null) return true;                    // independent
   if(o.kind==='political' || o.trade) return true;      // realms & trade houses
@@ -4016,6 +4020,21 @@ function rebuildViewpointOptions(){
   gViewpoint=sel.value;
 }
 
+/* view-only filter: one toggle per org kind actually present, canonical order.
+   Hiding a kind drops its org nodes (and, via graphEdges, their edges) from the
+   drawn graph only — it never touches simulation state. */
+const GRAPH_KINDS=['political','business','squad','military','intelligence','network','secret_police','religious'];
+function rebuildKindFilter(){
+  const box=document.getElementById('gKinds');
+  const present=[...new Set(S.orgs.map(o=>o.kind))].sort((a,b)=>{
+    const ia=GRAPH_KINDS.indexOf(a), ib=GRAPH_KINDS.indexOf(b);
+    return (ia<0?99:ia)-(ib<0?99:ib);
+  });
+  box.innerHTML=present.map(k=>
+    '<button class="gKind'+(gHideKinds.has(k)?'':' on')+'" data-kind="'+k+'">'+(KIND_LABEL[k]||k)+'</button>'
+  ).join('');
+}
+
 /* =====================================================================
    HUD wiring
    ===================================================================== */
@@ -4063,7 +4082,7 @@ document.getElementById('btnGraph').onclick=()=>{
   document.getElementById('btnGraph').classList.toggle('on',graphOpen);
   if(graphOpen){
     gSize(); gNodes.clear(); gCam={x:0,y:0,z:1};
-    rebuildViewpointOptions(); drawGraph();
+    rebuildViewpointOptions(); rebuildKindFilter(); drawGraph();
   } else { gTip.style.display='none'; }
 };
 document.getElementById('gClose').onclick=()=>document.getElementById('btnGraph').click();
@@ -4071,6 +4090,13 @@ document.getElementById('gProp').onclick=e=>{ gShowProp=!gShowProp; e.target.cla
 document.getElementById('gBig').onclick=e=>{ gBigOnly=!gBigOnly; e.target.classList.toggle('on',gBigOnly); gNodes.clear(); drawGraph(); };
 document.getElementById('gFocus').onclick=e=>{ gFocus=!gFocus; e.target.classList.toggle('on',gFocus); drawGraph(); };
 document.getElementById('gView').onchange=e=>{ gViewpoint=e.target.value; drawGraph(); };
+document.getElementById('gKinds').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-kind]'); if(!b) return;
+  const k=b.dataset.kind;
+  if(gHideKinds.has(k)) gHideKinds.delete(k); else gHideKinds.add(k);   // view-only, no sim state
+  b.classList.toggle('on', !gHideKinds.has(k));
+  gNodes.clear(); drawGraph();
+});
 
 function buildStartScreen(){
   const card=document.getElementById('startCard');
