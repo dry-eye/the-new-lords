@@ -153,6 +153,30 @@
   #pinTip .pinClose{position:absolute;top:3px;right:5px;cursor:pointer;color:var(--dim);
     font-size:16px;line-height:1;padding:3px 6px;border-radius:3px;user-select:none;-webkit-user-select:none}
   #pinTip .pinClose:hover{color:#fff;background:rgba(255,255,255,.08)}
+  /* Squad options window — the hold-RMB context menu (#24). ONE widget for every
+     controllable actor; its rows are a pure function of (selected actor, target).
+     Same skin as the tooltips: panel bg, brass left-accent, serif heading. */
+  #optMenu{position:fixed;display:none;z-index:16;pointer-events:auto;min-width:158px;
+    background:rgba(11,17,32,.98);border:1px solid var(--rule);border-left:2px solid var(--brass);
+    border-radius:2px;box-shadow:0 12px 30px rgba(0,0,0,.6);padding:0 0 0;overflow:hidden;
+    user-select:none;-webkit-user-select:none}
+  #optMenu .omHead{font-family:var(--serif);font-size:13px;color:#EFE6D2;padding:6px 11px 5px;
+    border-bottom:1px solid var(--rule);letter-spacing:.02em}
+  #optMenu .omTarget{color:var(--dim);font-size:10px;font-family:var(--mono)}
+  #optMenu .omRow{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:7px 11px;cursor:pointer;font-size:12px;color:var(--text);line-height:1.2}
+  #optMenu .omRow:hover{background:rgba(200,155,60,.15);color:#fff}
+  #optMenu .omRow.disabled{color:#46536E;cursor:default}
+  #optMenu .omRow.disabled:hover{background:none;color:#46536E}
+  #optMenu .omRow .omWhy{font-size:9px;color:#46536E;font-style:italic;text-align:right}
+  #optMenu .omFoot{border-top:1px solid var(--rule);padding:6px 11px;display:flex;align-items:center;
+    gap:7px;cursor:pointer;color:var(--dim);font-size:10px}
+  #optMenu .omFoot:hover{color:var(--text)}
+  #optMenu .omQC{width:12px;height:12px;border:1px solid var(--rule);border-radius:2px;
+    display:inline-block;flex:0 0 auto;position:relative}
+  #optMenu .omFoot.on .omQC{background:var(--brass);border-color:var(--brass)}
+  #optMenu .omFoot.on .omQC::after{content:'';position:absolute;left:3px;top:0;width:3px;height:7px;
+    border:solid #12161F;border-width:0 2px 2px 0;transform:rotate(45deg)}
   /* term links get a dashed underline to read differently from entity links (dotted) */
   .termlink{border-bottom-style:dashed;cursor:help}
   #keymap{position:fixed;right:10px;bottom:170px;z-index:9;background:rgba(16,22,36,.9);
@@ -245,12 +269,14 @@
 <div id="tip"></div>
 <div id="termTip"></div>
 <div id="pinTip"></div>
+<div id="optMenu"></div>
 <div id="inspector"></div>
 <div id="log"></div>
 
 <div id="keymap"></div>
 <div class="hint">
   клік — вибрати · тягни — обертати · колесо — зум (Ctrl+колесо — точний)<br>
+  свій загін вибрано: ПКМ — рух · Shift+ПКМ — черга · утримай ПКМ — меню дій<br>
   стрілки — точне довертання · +/− — зум · пробіл — пауза<br>
   наведи на іконку — підказка · наблизь впритул — вулиці, будинки й мешканці
 </div>
@@ -1295,6 +1321,7 @@ function spawnSquad(ownerOrg, st, opts={}){
     mode:'auto', order: opts.garrison?'garrison':'idle',
     garrisonId: opts.garrison? st.id : null,
     homeId: st.id, pinned:false, cooldown:rint(1,8),
+    queue:[],                         // manual order queue (Shift+RMB appends here, #24)
   };
   S.squads.push(sq);
   so.squadId=sq.id;
@@ -1872,7 +1899,11 @@ function squadStep(){
 function moveToward(sq){
   const d=sq.dir.dot(sq.target);
   if(d>0.99995){ sq.dir=sq.target.clone(); sq.target=null;
-    if(sq.order!=='capture') sq.order='idle';
+    // Arrived. Advance a queued manual order if one is waiting (Shift+RMB queue, #24).
+    if(sq.queue && sq.queue.length){ applyOrder(sq, sq.queue.shift()); return; }
+    // A garrison order holds the role on arrival (keeps the defence bonus); anything
+    // but an in-progress capture falls back to idle.
+    if(sq.order!=='capture' && sq.order!=='garrison') sq.order='idle';
     return; }
   const speed=0.048;
   sq.dir=slerp(sq.dir, sq.target, Math.min(1, speed/Math.max(0.02, Math.acos(Math.min(1,d)))));
@@ -2954,6 +2985,21 @@ function dragScale(){
 }
 canvas.addEventListener('pointerdown',e=>{
   if(e.pointerType==='touch') return;             // touch handled by touch* listeners below
+  // With the options window up, a press on the globe just closes it (#24): a left-click
+  // outside picks nothing, a right-click only closes — neither issues an order.
+  if(optMenuOpen){ if(e.button===2) e.preventDefault(); closeOptMenu(); return; }
+  // RMB with your own squad selected is a game control, not a camera drag: start the
+  // hold-to-open timer and DON'T set `drag`, so the globe never rotates under it. (#24)
+  const psq = e.button===2 ? selectedPlayerSquad() : null;
+  if(psq){
+    e.preventDefault();
+    rmb={sx:e.clientX, sy:e.clientY, x:e.clientX, y:e.clientY, moved:0,
+         shift:e.shiftKey, target:nearest(e.clientX,e.clientY), opened:false, timer:null};
+    rmb.timer=setTimeout(openOptMenu, HOLD_RMB_MS);
+    spin.vel=0;
+    try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+    return;
+  }
   if(e.button===1) e.preventDefault();            // middle: suppress autoscroll; we pin on release
   drag={x:e.clientX, y:e.clientY, moved:0, button:e.button};
   spin.vel=0;
@@ -2961,6 +3007,14 @@ canvas.addEventListener('pointerdown',e=>{
 });
 addEventListener('pointermove',e=>{
   if(e.pointerType==='touch') return;             // touch handled by touch* listeners below
+  if(rmb){                                        // RMB order gesture in progress (#24)
+    rmb.moved+=Math.abs(e.clientX-rmb.x)+Math.abs(e.clientY-rmb.y);
+    rmb.x=e.clientX; rmb.y=e.clientY;
+    // moving before the menu opens means it's a drag, not a hold — cancel the timer so
+    // the gesture stays a plain MOVE (to wherever it's released).
+    if(rmb.moved>6 && !rmb.opened && rmb.timer){ clearTimeout(rmb.timer); rmb.timer=null; }
+    return;
+  }
   if(!drag){ hoverAt(e.clientX,e.clientY); return; }
   const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
   drag.x=e.clientX; drag.y=e.clientY;
@@ -2977,6 +3031,27 @@ addEventListener('pointermove',e=>{
 });
 addEventListener('pointerup',e=>{
   if(e.pointerType==='touch') return;             // touch handled by touch* listeners below
+  if(rmb){                                        // resolve the RMB order gesture (#24)
+    if(rmb.timer){ clearTimeout(rmb.timer); rmb.timer=null; }
+    const sq=selectedPlayerSquad();
+    if(rmb.opened){
+      // menu already open: with quick-cast ON, releasing over an enabled row applies it;
+      // otherwise the release does nothing and the menu waits for a left-click.
+      if(quickCastOrders){
+        const el=document.elementFromPoint(e.clientX,e.clientY);
+        const row=el&&el.closest? el.closest('#optMenu .omRow') : null;
+        if(row && !row.classList.contains('disabled')){ runOpt(row.dataset.optkey); closeOptMenu(); }
+      }
+    } else if(sq){
+      // released before the hold threshold → a plain MOVE, or QUEUE when Shift was held.
+      const t=nearest(e.clientX,e.clientY);
+      const dir=t? t.dir : screenToDir(e.clientX,e.clientY);
+      if(dir){ if(rmb.shift) queueMove(sq,dir,pickLabel(t)); else issueMove(sq,dir,pickLabel(t)); }
+    }
+    try{ canvas.releasePointerCapture(e.pointerId); }catch(_){}
+    rmb=null;
+    return;
+  }
   if(drag && drag.moved<6){
     if(drag.button===1){                          // middle-click on an entity → pin its tooltip (desktop)
       const p=nearest(e.clientX,e.clientY);
@@ -2984,6 +3059,9 @@ addEventListener('pointerup',e=>{
     } else { spin.vel=0; pickAt(e.clientX,e.clientY); }   // left-click → select (unchanged)
   }
   drag=null;
+});
+addEventListener('pointercancel',e=>{                // don't leave a half-finished RMB gesture (#24)
+  if(rmb){ if(rmb.timer) clearTimeout(rmb.timer); rmb=null; }
 });
 /* zoom is geometric in altitude, so the last metre takes as many notches as the first
    thousand — and it eases in instead of snapping */
@@ -2997,6 +3075,218 @@ canvas.addEventListener('wheel',e=>{
 /* the right button is a game control (squad RMB, #24), so keep the browser's
    native context menu from intercepting it over the canvas */
 canvas.addEventListener('contextmenu',e=>e.preventDefault());
+
+/* =====================================================================
+   MANUAL SQUAD CONTROL — RMB orders + hold→options window (#24)
+   Source of truth: DESIGN.md → "Squad context menu and order options" and
+   "Context-sensitive option menu — one mechanism for every controllable actor".
+
+     • plain RMB              → MOVE to the point or object under the cursor
+     • Shift+RMB              → QUEUE (append to the squad's order queue)
+     • hold RMB (~280ms)      → OPTIONS window on the target
+                                 left-click picks · right-click / outside closes
+                                 a quick RMB released before the threshold stays MOVE
+     • quick-cast toggle      → release exactly over an option applies it (default off)
+
+   The options window is deliberately generic: its rows are a pure function of
+   (selected actor, target under cursor), gated by centrally-defined enable
+   logic. Only the SQUAD actor is wired today; org/character actors slot into the
+   same widget later at the EXTENSION POINT in optionsFor().
+   ===================================================================== */
+// Hold-to-open threshold for the RMB options window. DESIGN says ~250–300ms; the
+// touch long-press (LONG_PRESS_MS = 500, for tooltip-pin / squad re-auto) is a
+// deliberately slower, separate gesture and is left untouched.
+const HOLD_RMB_MS = 280;
+let rmb=null;                     // active right-button gesture, or null
+let optMenuOpen=false;            // is the options window showing?
+let quickCastOrders=false;        // "quick-cast" toggle (default off)
+let curOpts=[];                   // options currently rendered (for click/quick-cast dispatch)
+const optMenuEl=document.getElementById('optMenu');
+
+// The selected actor is controllable here only if it's YOUR OWN squad. (Org /
+// character contexts are a later task — see optionsFor's extension point.)
+function selectedPlayerSquad(){
+  const s=S.selection;
+  if(!s || s.type!=='squad') return null;
+  const sq=sqd(s.id); if(!sq) return null;
+  const o=org(sq.orgId);
+  return (o && isPlayerOrg(o)) ? sq : null;
+}
+
+// Screen pixel → a direction on the planet's surface (unit sphere), in the planet's
+// own frame — the inverse of screenPos(). Used to MOVE to empty ground. null off-limb.
+const _rc=new THREE.Raycaster();
+const _sph=new THREE.Sphere(new THREE.Vector3(0,0,0),1);
+const _hitV=new THREE.Vector3();
+const _invQ=new THREE.Quaternion();
+function screenToDir(cx,cy){
+  _rc.setFromCamera(new THREE.Vector2((cx/innerWidth)*2-1, -((cy/innerHeight)*2-1)), camera);
+  const hit=_rc.ray.intersectSphere(_sph, _hitV);
+  if(!hit) return null;
+  _invQ.copy(root.quaternion).invert();
+  return hit.clone().applyQuaternion(_invQ).normalize();
+}
+
+// --- target introspection (a "pick" from nearest(), or null for open ground) ---
+function pickLabel(t){
+  if(!t) return null;
+  if(t.type==='settlement') return stl(t.id)?.name || null;
+  if(t.type==='squad')      return 'загін #'+t.id;
+  if(t.type==='caravan')    return 'караван #'+t.id;
+  if(t.type==='enterprise'){ const e=ent(t.id); return e? ENT[e.kind].label : null; }
+  if(t.type==='char')       return chr(t.id)?.name || null;
+  return null;
+}
+function targetFaction(t){
+  if(!t) return null;
+  if(t.type==='squad')      return sqd(t.id)?.factionId ?? null;
+  if(t.type==='settlement'){ const o=org(stl(t.id)?.ownerOrgId); return o? o.factionId : null; }
+  if(t.type==='caravan'){    const o=org(byId(S.caravans,t.id)?.orgId); return o? o.factionId : null; }
+  if(t.type==='enterprise'){ const o=org(ent(t.id)?.ownerOrgId); return o? o.factionId : null; }
+  if(t.type==='char'){       const c=chr(t.id); const o=org(c?.ledOrgId||c?.orgId); return o? o.factionId : null; }
+  return null;
+}
+
+// --- order execution (a single "go to a point" engine underlies move / attack /
+//     garrison — DESIGN: "Move and Attack are the model dual-mode abilities") ---
+function applyOrder(sq, ord){
+  sq.mode='manual';
+  sq.target = ord.target ? ord.target.clone() : null;
+  sq.order  = ord.order;
+  sq.targetName = ord.targetName || null;
+  sq.garrisonId = ord.order==='garrison' ? ord.garrisonId : null;
+}
+function issueMove(sq, dir, name){
+  if(!dir) return;
+  sq.mode='manual'; sq.queue=[]; sq.target=dir.clone(); sq.order='move';
+  sq.targetName=name||null; sq.garrisonId=null;
+  logEvent('Наказ: загін #'+sq.id+' → рух'+(name?' до <b>'+name+'</b>':' до точки')+'.');
+  renderInspector();
+}
+function queueMove(sq, dir, name){
+  if(!dir) return;
+  if(!sq.queue) sq.queue=[];
+  const ord={order:'move', target:dir.clone(), targetName:name||null};
+  // Nothing active → the appended order just becomes the current one. Otherwise it
+  // waits behind the active order and runs when that one completes (moveToward).
+  if(!sq.target && (sq.order==='idle'||sq.order==='hold')){
+    applyOrder(sq, ord);
+    logEvent('Наказ: загін #'+sq.id+' → рух'+(name?' до <b>'+name+'</b>':' до точки')+'.');
+  } else {
+    sq.queue.push(ord);
+    logEvent('Черга: загін #'+sq.id+' +рух'+(name?' до <b>'+name+'</b>':'')+' ('+sq.queue.length+' у черзі).');
+  }
+  renderInspector();
+}
+function issueAttack(sq, target){
+  if(!target || !target.dir) return;
+  sq.mode='manual'; sq.queue=[]; sq.target=target.dir.clone(); sq.order='attack';
+  sq.targetName=pickLabel(target); sq.garrisonId=null;
+  logEvent('Наказ: загін #'+sq.id+' → <b>атака</b> '+pickLabel(target)+'.');
+  renderInspector();
+}
+function issueGarrison(sq, st){
+  if(!st) return;
+  sq.mode='manual'; sq.queue=[]; sq.target=st.dir.clone(); sq.order='garrison';
+  sq.garrisonId=st.id; sq.targetName=st.name;
+  logEvent('Наказ: загін #'+sq.id+' → <b>гарнізон</b> '+st.name+'.');
+  renderInspector();
+}
+function standDown(sq){
+  sq.garrisonId=null; sq.order='idle'; sq.target=null; sq.queue=[];
+  logEvent('Загін #'+sq.id+' знято з гарнізону.');
+  renderInspector();
+}
+
+// --- the option list: a pure function of (selected actor, target) ---
+// Each row is {key,label,enabled,why,run}; the widget just renders whatever this
+// returns. Enable/disable lives here, centrally — not in the widget.
+function squadOptions(sq, target, pointDir){
+  const tn=pickLabel(target);
+  const tDir = target ? target.dir : pointDir;
+  const opts=[];
+  // MOVE — to the object or the open point under the cursor. Always available.
+  opts.push({key:'move', label:'Рух'+(tn?' → '+tn:''), enabled:!!tDir,
+    run:()=>issueMove(sq, tDir, tn)});
+  // ATTACK — needs a hostile-faction target.
+  const tf = target ? targetFaction(target) : null;
+  const canAttack = tf!=null && hostile(sq.factionId, tf);
+  opts.push({key:'attack', label:'Атака'+(tn?' → '+tn:''), enabled:!!canAttack,
+    why:'потрібна ворожа ціль', run:()=>issueAttack(sq, target)});
+  // GARRISON — needs one of YOUR OWN settlements; toggles to stand-down if already
+  // garrisoning that very settlement.
+  const st  = target && target.type==='settlement' ? stl(target.id) : null;
+  const own = st && org(st.ownerOrgId) && isPlayerOrg(org(st.ownerOrgId));
+  const here= st && sq.garrisonId===st.id;
+  opts.push({key:'garrison',
+    label: here ? 'Зняти гарнізон' : ('Гарнізон'+(st?' → '+st.name:'')),
+    enabled: !!own, why:'потрібне твоє поселення',
+    run: ()=> here ? standDown(sq) : issueGarrison(sq, st)});
+  return opts;
+}
+function optionsFor(sel, target, pointDir){
+  if(!sel) return null;
+  if(sel.type==='squad'){
+    const sq=sqd(sel.id);
+    if(!sq || !(org(sq.orgId) && isPlayerOrg(org(sq.orgId)))) return null;
+    return { title:'Загін #'+sq.id, targetLabel: pickLabel(target)||'точка',
+             opts: squadOptions(sq, target, pointDir) };
+  }
+  /* EXTENSION POINT — org / character actors resolve to their OWN target-driven
+     action lists here (org: create/break a control slot, propose alliance, assign a
+     post, …; a played character reaches its led org's actions transitively). Same
+     widget, same central enable/disable rule — DESIGN: "one mechanism for every
+     controllable actor". Not wired in this task (squad scope only). */
+  return null;
+}
+
+// --- the widget ---
+function runOpt(key){
+  const o=curOpts.find(x=>x.key===key);
+  if(o && o.enabled) o.run();
+}
+function renderOptMenu(spec, cx, cy){
+  curOpts=spec.opts;
+  const rows=spec.opts.map(o=>
+    '<div class="omRow'+(o.enabled?'':' disabled')+'" data-optkey="'+o.key+'">'+
+      '<span>'+o.label+'</span>'+
+      (o.enabled? '' : '<span class="omWhy">'+(o.why||'')+'</span>')+
+    '</div>').join('');
+  optMenuEl.innerHTML=
+    '<div class="omHead">'+spec.title+
+      (spec.targetLabel? '<span class="omTarget"> · '+spec.targetLabel+'</span>' : '')+'</div>'+
+    rows+
+    '<div class="omFoot'+(quickCastOrders?' on':'')+'" data-qc="1" title="Застосувати дію відпусканням ПКМ над нею">'+
+      '<span class="omQC"></span>Швидкий каст</div>';
+  optMenuEl.style.display='block';
+  const w=optMenuEl.offsetWidth, h=optMenuEl.offsetHeight;   // clamp inside the viewport
+  let x=cx+2, y=cy+2;
+  if(x+w>innerWidth-6)  x=Math.max(6, cx-w-2);
+  if(y+h>innerHeight-6) y=Math.max(6, innerHeight-h-6);
+  optMenuEl.style.left=x+'px'; optMenuEl.style.top=y+'px';
+}
+function openOptMenu(){
+  if(!rmb) return;
+  rmb.timer=null;
+  const spec=optionsFor(S.selection, rmb.target, rmb.target? null : screenToDir(rmb.x, rmb.y));
+  if(!spec) return;
+  renderOptMenu(spec, rmb.x, rmb.y);
+  rmb.opened=true; optMenuOpen=true;
+  if(navigator.vibrate) navigator.vibrate(10);
+}
+function closeOptMenu(){ optMenuEl.style.display='none'; optMenuOpen=false; }
+
+// Left-click a row → pick it (and close). The quick-cast footer toggles in place.
+optMenuEl.addEventListener('click', e=>{
+  const qc=e.target.closest('[data-qc]');
+  if(qc){ quickCastOrders=!quickCastOrders; qc.classList.toggle('on', quickCastOrders); return; }
+  const row=e.target.closest('[data-optkey]');
+  if(!row || row.classList.contains('disabled')) return;
+  runOpt(row.dataset.optkey);
+  closeOptMenu();
+});
+// A right-click on the menu itself only closes it — no order, no browser menu.
+optMenuEl.addEventListener('contextmenu', e=>{ e.preventDefault(); closeOptMenu(); });
 
 /* =====================================================================
    TOUCH — one finger rotates/pans the globe; a second finger switches into
@@ -3549,7 +3839,8 @@ function inspSquad(id){
   h+='<div class="isec">'+
     row('Організація', o? L('org',o.id,o.name):'—')+
     row('Лідер', leader? L('char',leader.id,leader.name):'—')+
-    row('Наказ', '<span class="chip">'+sq.order+(sq.targetName?' → '+sq.targetName:'')+'</span>')+
+    row('Наказ', '<span class="chip">'+sq.order+(sq.targetName?' → '+sq.targetName:'')+'</span>'+
+      (sq.queue&&sq.queue.length? ' <span class="chip">+'+sq.queue.length+' у черзі</span>':''))+
     row(T('supply','Постачання'), sq.supplied===false?'<span class="neg">розрив</span>':'<span class="pos">є</span>')+
     row('База', stl(sq.homeId)? L('settlement',sq.homeId, stl(sq.homeId).name):'—')+
     row('Керування', '<span class="chip">'+(sq.mode==='auto'?'AI (auto)':'ручне')+'</span>')+
