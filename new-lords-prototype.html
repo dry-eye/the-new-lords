@@ -2026,7 +2026,9 @@ function iconTexture(draw, size=96){
   const c=document.createElement('canvas'); c.width=c.height=size;
   const x=c.getContext('2d');
   x.lineCap='round'; x.lineJoin='round';
-  x.strokeStyle='#fff'; x.fillStyle='#fff';
+  // A2 "printed" style: fill light-grey so the faction sprite-tint reads as a muted
+  // colour, then a thin dark contour on top — cartographic, not a heavy solid block.
+  x.strokeStyle='#D8D8D8'; x.fillStyle='#D8D8D8';
   x.translate(size/2,size/2);
   draw(x, size/2);
   const t=new THREE.CanvasTexture(c);
@@ -2034,8 +2036,8 @@ function iconTexture(draw, size=96){
   t._url=c.toDataURL();
   return t;
 }
-function outline(x,fn,w){          // dark halo so icons read over any terrain
-  x.save(); x.strokeStyle='rgba(6,9,15,.9)'; x.lineWidth=w||9; fn(x); x.restore();
+function outline(x,fn,w){          // thin dark contour (A2 printed look), not a wide halo
+  x.save(); x.strokeStyle='rgba(14,18,26,.92)'; x.lineWidth=(w?Math.min(w,5):5); fn(x); x.restore();
 }
 function buildIcons(){
   // ---- settlements, by tier: silhouette says how big the place is ----
