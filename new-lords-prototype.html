@@ -2935,15 +2935,24 @@ function makeCatHead(fur, weapon){
   const head=fur.clone().offsetHSL(0,0,0.05);
   const matH=new THREE.MeshLambertMaterial({color:head});
   const matM=new THREE.MeshLambertMaterial({color:head.clone().offsetHSL(0,-0.05,0.10)});
+  const matW=new THREE.MeshLambertMaterial({color:0xE8E2D6});     // pale whiskers, so they read against the fur
   const g=new THREE.Group();
-  const part=(geo,mat,px,py,pz,sx,sy,sz,rx)=>{
+  const part=(geo,mat,px,py,pz,sx,sy,sz,rx,ry)=>{
     const m=new THREE.Mesh(geo,mat); m.position.set(px,py,pz); m.scale.set(sx,sy,sz);
-    if(rx) m.rotation.x=rx; g.add(m);
+    if(rx) m.rotation.x=rx; if(ry) m.rotation.y=ry; g.add(m);
   };
   part(SPH, matH,  0,      0,      0,      H*0.24,H*0.22,H*0.24);   // head — +Y up, +Z forward
-  part(CONE,matH, -H*0.12, H*0.16, 0,      H*0.08,H*0.16,H*0.08);  // left ear
-  part(CONE,matH,  H*0.12, H*0.16, 0,      H*0.08,H*0.16,H*0.08);  // right ear
+  part(CONE,matH, -H*0.12, H*0.16, 0,      H*0.10,H*0.24,H*0.10);  // left ear  (enlarged, #54)
+  part(CONE,matH,  H*0.12, H*0.16, 0,      H*0.10,H*0.24,H*0.10);  // right ear (enlarged, #54)
   part(SPH, matM,  0,     -H*0.02, H*0.18, H*0.08,H*0.06,H*0.08);  // muzzle
+  // #54: whiskers — three thin bars per side, rooted at the muzzle cheeks and fanning outward in
+  // the head's tangent plane (the plane the top-down camera sees). Symmetric: the right side uses
+  // side=+1 / angle −θ, the left mirrors it with side=−1 / angle +θ.
+  const WL=H*0.20, WT=H*0.012, bx=H*0.05, by=-H*0.02, bz=H*0.16;   // length, thickness, muzzle-cheek root
+  for(const s of [1,-1]) for(const th of [0.30, 0, -0.30]){
+    const cx=s*(bx + WL/2*Math.cos(th)), cz=bz + WL/2*Math.sin(th);
+    part(BOX, matW, cx, by, cz, WL, WT, WT, 0, -s*th);            // elongated along its own axis, fanned by ry
+  }
   // exactly one weapon per head — rifle for shooters, sword for meleers (skill rule at the call
   // site). The head is bodiless and, on the sphere, floats ears-up toward the top-down camera,
   // so the weapon lies in the tangent plane beside the head (offset +X) pointing +Z (the facing
