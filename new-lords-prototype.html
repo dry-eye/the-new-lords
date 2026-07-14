@@ -2312,6 +2312,130 @@ function makeFootprintMat(){
 /* ---------- pick registry: screen-space picking, exact and cheap ---------- */
 let picks=[];   // {type,id,dir,px,ring} — px is the icon radius, ring the footprint
 
+/* =====================================================================
+   VECTOR GLOBE — analytic ray-cast planet (replaces texture-on-mesh).
+   Everything is computed per-pixel in a GLSL3 fragment shader, so the
+   coastline is a math curve (crisp/vector at any zoom) and the ocean is
+   flat — no texel steps, no mesh facets. The elevation/climate field is
+   an exact GLSL port of the JS functions, so shader land matches the JS
+   world (settlements sit on real coastlines). Full-screen triangle in
+   clip space; the JS world rotation is fed in as uInvRot so continents
+   spin with the existing camera controls. =========================== */
+const VGLOBE_VS = `in vec3 position; out vec2 vNdc;
+void main(){ vNdc=position.xy; gl_Position=vec4(position.xy, 1.0, 1.0); }`;
+const VGLOBE_FS = `precision highp float; precision highp int;
+uniform mat4 uInvVP; uniform vec3 uCamPos; uniform mat3 uInvRot;
+uniform float uSEA; uniform vec3 uWARP; uniform int uNSEED;
+in vec2 vNdc; out vec4 outColor;
+uint hash3u(int i,int j,int k){
+  uint n=uint(i)*374761393u+uint(j)*668265263u+uint(k)*1274126177u+uint(uNSEED)*2654435761u;
+  n=(n^(n>>13u))*1274126177u; return (n^(n>>16u)); }
+float h3(int i,int j,int k){ return float(hash3u(i,j,k))/4294967296.0; }
+float fade(float t){ return t*t*(3.0-2.0*t); }
+float vnoise(vec3 p){
+  int xi=int(floor(p.x)),yi=int(floor(p.y)),zi=int(floor(p.z));
+  float xf=p.x-float(xi),yf=p.y-float(yi),zf=p.z-float(zi);
+  float u=fade(xf),v=fade(yf),w=fade(zf);
+  float c000=h3(xi,yi,zi),c100=h3(xi+1,yi,zi),c010=h3(xi,yi+1,zi),c110=h3(xi+1,yi+1,zi);
+  float c001=h3(xi,yi,zi+1),c101=h3(xi+1,yi,zi+1),c011=h3(xi,yi+1,zi+1),c111=h3(xi+1,yi+1,zi+1);
+  float x00=c000+(c100-c000)*u,x10=c010+(c110-c010)*u,x01=c001+(c101-c001)*u,x11=c011+(c111-c011)*u;
+  float y0=x00+(x10-x00)*v,y1=x01+(x11-x01)*v; return (y0+(y1-y0)*w)*2.0-1.0; }
+float fbm(vec3 p,int oct,float lac,float gain){
+  float a=1.0,f=1.0,s=0.0,nm=0.0;
+  for(int i=0;i<8;i++){ if(i>=oct)break;
+    s+=a*vnoise(vec3(p.x*f+float(i)*17.3,p.y*f-float(i)*29.1,p.z*f+float(i)*41.7)); nm+=a; a*=gain; f*=lac; }
+  return s/nm; }
+float ridge(vec3 p,int oct){
+  float a=0.6,f=1.0,s=0.0;
+  for(int i=0;i<8;i++){ if(i>=oct)break;
+    float n=1.0-abs(vnoise(vec3(p.x*f+float(i)*7.7,p.y*f+float(i)*13.3,p.z*f-float(i)*5.1))); s+=a*n*n; a*=0.5; f*=2.05; }
+  return s; }
+float sm01(float v,float a,float b){ float t=clamp((v-a)/(b-a),0.0,1.0); return t*t*(3.0-2.0*t); }
+float elevation(vec3 p){
+  vec3 W=uWARP;
+  float wx=fbm(vec3(p.x*1.7+W.x,p.y*1.7+W.y,p.z*1.7+W.z),3,2.0,0.5);
+  float wy=fbm(vec3(p.x*1.7+W.y,p.y*1.7+W.z,p.z*1.7+W.x),3,2.0,0.5);
+  float q=0.42; vec3 c=vec3(p.x*1.25+wx*q,p.y*1.25+wy*q,p.z*1.25+(wx-wy)*q*0.5);
+  float base=fbm(c,6,2.1,0.52); base=base*0.85+0.14*fbm(c*3.1,3,2.2,0.5);
+  float land=base-uSEA; if(land<=0.0) return land*0.85;
+  float belt=max(0.0,ridge(c*2.3,4)-0.42); float mtn=belt*sm01(land,0.02,0.30)*1.35;
+  return land*0.9+mtn; }
+float moistureAt(vec3 p){ return fbm(vec3(p.x*2.4+11.3,p.y*2.4-7.9,p.z*2.4+3.1),4,2.1,0.55)*0.5+0.5; }
+float tempAt(vec3 p,float e){ float lat=abs(p.y);
+  return clamp(1.06-lat*1.28-max(0.0,e)*0.85+fbm(vec3(p.x*1.6-21.7,p.y*1.6+5.5,p.z*1.6-9.9),2,2.0,0.5)*0.10,0.0,1.0); }
+int zoneId(vec3 p,float e){ if(e<=0.0)return 0; if(e>0.34)return 3;
+  float t=tempAt(p,e),m=moistureAt(p); if(t>0.52&&m<0.40)return 4; if(m>0.48&&t>0.20)return 2; return 1; }
+float hash21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+float sdSeg(vec2 p,vec2 a,vec2 b){ vec2 pa=p-a,ba=b-a; float h=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0); return length(pa-ba*h); }
+float forestInk(vec2 f,vec2 cell){ if(hash21(cell)>0.80)return 0.0;
+  float cx=0.5+(hash21(cell+3.1)-0.5)*0.4,cy=0.66,hgt=0.42+0.12*hash21(cell+7.7),w=0.05;
+  float d=sdSeg(f,vec2(cx,cy),vec2(cx,cy-hgt*0.35));
+  for(int k=0;k<3;k++){ float t=float(k); float yy=cy-hgt*(0.30+0.22*t),ww=0.17-0.035*t;
+    d=min(d,sdSeg(f,vec2(cx-ww,yy),vec2(cx,yy-0.11))); d=min(d,sdSeg(f,vec2(cx+ww,yy),vec2(cx,yy-0.11))); }
+  return smoothstep(w,w*0.35,d); }
+float desertDot(vec2 uv){ vec2 dom=vec2(uv.x*2.0,uv.y)*120.0; vec2 cell=floor(dom),f=fract(dom)-0.5;
+  if(hash21(cell+1.7)>0.72)return 0.0; vec2 j=(vec2(hash21(cell+2.3),hash21(cell+5.9))-0.5)*0.5;
+  return smoothstep(0.17,0.08,length(f-j)); }
+float plainFurrow(vec2 uv){ float dr=fbm(vec3(uv*7.0,3.0),3,2.0,0.5);
+  float y=uv.y*150.0+sin(uv.x*70.0)*0.6+dr*2.6; float fr=fract(y),ld=min(fr,1.0-fr); return smoothstep(0.12,0.0,ld)*0.7; }
+void main(){
+  vec4 far=uInvVP*vec4(vNdc,1.0,1.0); far/=far.w;
+  vec3 rd=normalize(far.xyz-uCamPos), ro=uCamPos;
+  float b=dot(ro,rd), c=dot(ro,ro)-1.0, disc=b*b-c;
+  if(disc<0.0) discard;
+  float t=-b-sqrt(disc); if(t<0.0) discard;
+  vec3 wHit=ro+rd*t; vec3 d=normalize(uInvRot*wHit);
+  float e=elevation(d);
+  float aa=max(fwidth(e),1e-4);
+  float land=smoothstep(-aa,aa,e), coast=smoothstep(2.5*aa,0.0,abs(e));
+  vec3 ocean=vec3(0.55,0.62,0.66), landC=vec3(0.86,0.81,0.66), lineC=vec3(0.24,0.19,0.13);
+  float bk=e*26.0; float bm=min(fract(bk),1.0-fract(bk)); float bw=fwidth(bk);
+  float bathy=smoothstep(bw*1.3,0.0,bm)*step(e,0.0);
+  float hk=e*20.0; float hm=min(fract(hk),1.0-fract(hk)); float hw=fwidth(hk);
+  float isoh=smoothstep(hw*1.3,0.0,hm)*step(0.0,e);
+  int z=zoneId(d,e);
+  vec2 suv=vec2(atan(d.z,d.x)/6.2831853+0.5, asin(clamp(d.y,-1.0,1.0))/3.14159265+0.5);
+  vec2 dom=vec2(suv.x*2.0,suv.y)*82.0; vec2 cell=floor(dom),fcell=fract(dom);
+  vec3 tint=landC;
+  if(z==2) tint=mix(landC,vec3(0.60,0.66,0.40),0.55);
+  else if(z==4) tint=mix(landC,vec3(0.86,0.78,0.50),0.60);
+  else if(z==3) tint=mix(landC,vec3(0.74,0.71,0.65),0.35);
+  float motif=0.0;
+  if(z==2) motif=forestInk(fcell,cell);
+  else if(z==4) motif=desertDot(suv);
+  else if(z==1) motif=plainFurrow(suv);
+  vec3 col=mix(ocean,tint,land);
+  col=mix(col,mix(ocean,lineC,0.5),bathy*0.45*(1.0-land));
+  col=mix(col,lineC,isoh*0.42*land);
+  vec3 motifCol=(z==2)?vec3(0.14,0.28,0.13):lineC;
+  col=mix(col,motifCol,motif*0.85*land);
+  col=mix(col,lineC,coast);
+  outColor=vec4(col,1.0); }`;
+let vGlobe=null;
+function buildVectorGlobe(){
+  if(vGlobe){ scene.remove(vGlobe); vGlobe.geometry.dispose(); vGlobe.material.dispose(); vGlobe=null; }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute([-1,-1,0, 3,-1,0, -1,3,0],3));
+  const mat=new THREE.RawShaderMaterial({
+    glslVersion:THREE.GLSL3, depthTest:false, depthWrite:false,
+    uniforms:{ uInvVP:{value:new THREE.Matrix4()}, uCamPos:{value:new THREE.Vector3()},
+      uInvRot:{value:new THREE.Matrix3()}, uSEA:{value:SEA},
+      uWARP:{value:new THREE.Vector3(WARP.x,WARP.y,WARP.z)}, uNSEED:{value:NSEED} },
+    vertexShader:VGLOBE_VS, fragmentShader:VGLOBE_FS });
+  vGlobe=new THREE.Mesh(g,mat); vGlobe.frustumCulled=false; vGlobe.renderOrder=-10;
+  scene.add(vGlobe);
+}
+function updateGlobeUniforms(){
+  if(!vGlobe) return;
+  camera.updateMatrixWorld(); root.updateMatrixWorld();
+  const u=vGlobe.material.uniforms;
+  const vp=new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  u.uInvVP.value.copy(vp).invert();
+  u.uCamPos.value.copy(camera.position);
+  u.uInvRot.value.setFromMatrix4(root.matrixWorld).transpose();
+  u.uSEA.value=SEA; u.uWARP.value.set(WARP.x,WARP.y,WARP.z); u.uNSEED.value=NSEED;
+}
+
 function buildScene(){
   root.clear(); picks=[]; footMats=[]; pawnBuiltFor=null; pawnSprites=[]; pawnPositions=[];
   cityCache=new Map(); cityLive=new Set(); squadPawnCache=new Map();
@@ -2544,6 +2668,8 @@ function buildScene(){
   planet=new THREE.Mesh(geo, planetMat);
   planet._terrainTex=terrainTexAll;                 // {antique,holo} — applyTheme swaps between them
   root.add(planet);
+  planet.visible=false;                             // hidden: replaced by the analytic vector globe
+  buildVectorGlobe();
   atmoMesh=new THREE.Mesh(new THREE.SphereGeometry(1.055,64,40),
     new THREE.MeshBasicMaterial({color:THEME.atmo, transparent:true, opacity:0.09, side:THREE.BackSide}));
   root.add(atmoMesh);
@@ -4677,6 +4803,7 @@ function frame(now){
   updateCamera();
   stepFly();
   animateMarkers();
+  updateGlobeUniforms();
   renderer.render(scene,camera);
   if(graphOpen) drawGraph();
   requestAnimationFrame(frame);
