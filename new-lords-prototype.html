@@ -3272,7 +3272,7 @@ function updateSquadPawns(){
    ===================================================================== */
 let camPitch=0, camYaw=0;                  // radians — off-top-down tilt (#28)
 const PITCH_MAX=70*Math.PI/180;            // clamp: toward the horizon, never past it
-const TILT_ALT_MAX=0.6;                     // tilt is a close-up-only affordance: above this altitude the view is forced strictly top-down
+const TILT_ALT_MAX=0.2;                     // tilt only at very low altitude — street level, well below city geometry (camAlt 0.45); above it the view snaps to strict top-down
 const TILT_PITCH_PER_PX=0.006, TILT_YAW_PER_PX=0.006;
 const _camNrm=new THREE.Vector3(0,0,1);    // unit camera direction from the planet centre
 function updateCamera(){
