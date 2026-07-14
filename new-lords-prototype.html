@@ -2379,6 +2379,7 @@ function buildScene(){
     uniforms:{
       map:{value:terrainTex},
       zoneMap:{value:zoneTex},
+      uMute:{value:0.0},                                // 0 natural relief .. 1 monochrome staff-map
       texel:{value:new THREE.Vector2(1/TEX_W, 1/TEX_H)},
       lightDir:{value:new THREE.Vector3(0.45,0.55,1.0).normalize()},
       uHolo:{value: THEME.holo},
@@ -2396,6 +2397,7 @@ function buildScene(){
       precision highp float;
       uniform sampler2D map;
       uniform sampler2D zoneMap;
+      uniform float uMute;
       uniform vec2 texel;
       uniform vec3 lightDir;
       uniform float uHolo;
@@ -2444,8 +2446,9 @@ function buildScene(){
         float fr=fract(e*30.0), ld=min(fr,1.0-fr);
         return smoothstep(0.09,0.0, ld);
       }
-      float plainInk(vec2 uv){                            // fine furrow lines
-        float y=uv.y*150.0 + sin(uv.x*90.0)*0.35;
+      float plainInk(vec2 uv){                            // fine furrow lines, drifting so they don't read as a mechanical grid
+        float drift=fbm3(vec3(uv*7.0, 3.0));              // low-freq waver by region
+        float y=uv.y*150.0 + sin(uv.x*70.0)*0.6 + drift*2.6;
         float fr=fract(y), ld=min(fr,1.0-fr);
         return smoothstep(0.12,0.0, ld)*0.7;
       }
@@ -2512,6 +2515,10 @@ function buildScene(){
           else if(zid>2.5 && zid<3.5)  ink = mountInk(eR);
           else if(zid>0.5 && zid<1.5)  ink = plainInk(uv);
           else if(zid>3.5)             ink = desertInk(uv);
+          // mute the naturalistic base toward a warm parchment tone (staff-map look)
+          float baseL = dot(lit, vec3(0.299,0.587,0.114));
+          vec3 parch = vec3(baseL) * vec3(1.15,1.04,0.80);
+          if(zid>0.5) lit = mix(lit, parch, uMute);       // land only; keep the ocean as-is
           vec3 inkCol = vec3(0.90,0.72,0.34);             // brass ink
           if(zid>3.5) inkCol = vec3(0.40,0.28,0.16);      // dark ink reads on pale desert sand
           lit = mix(lit, inkCol, clamp(ink,0.0,1.0)*0.85);
