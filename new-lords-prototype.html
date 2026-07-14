@@ -2839,19 +2839,43 @@ const DISK=new THREE.CircleGeometry(1, 44);
 
 /* one flying cat head (sphere + ears + muzzle), sized in surface units; the group is
    placed and oriented per frame by stepWalkers. Shared primitives, per-head material. */
-function makeCatHead(fur){
+function makeCatHead(fur, weapon){
   const H=0.00100;
   const head=fur.clone().offsetHSL(0,0,0.05);
   const matH=new THREE.MeshLambertMaterial({color:head});
   const matM=new THREE.MeshLambertMaterial({color:head.clone().offsetHSL(0,-0.05,0.10)});
   const g=new THREE.Group();
-  const part=(geo,mat,px,py,pz,sx,sy,sz)=>{
-    const m=new THREE.Mesh(geo,mat); m.position.set(px,py,pz); m.scale.set(sx,sy,sz); g.add(m);
+  const part=(geo,mat,px,py,pz,sx,sy,sz,rx)=>{
+    const m=new THREE.Mesh(geo,mat); m.position.set(px,py,pz); m.scale.set(sx,sy,sz);
+    if(rx) m.rotation.x=rx; g.add(m);
   };
   part(SPH, matH,  0,      0,      0,      H*0.24,H*0.22,H*0.24);   // head — +Y up, +Z forward
   part(CONE,matH, -H*0.12, H*0.16, 0,      H*0.08,H*0.16,H*0.08);  // left ear
   part(CONE,matH,  H*0.12, H*0.16, 0,      H*0.08,H*0.16,H*0.08);  // right ear
   part(SPH, matM,  0,     -H*0.02, H*0.18, H*0.08,H*0.06,H*0.08);  // muzzle
+  // exactly one weapon per head — rifle for shooters, sword for meleers (skill rule at the call
+  // site). The head is bodiless and, on the sphere, floats ears-up toward the top-down camera,
+  // so the weapon lies in the tangent plane beside the head (offset +X) pointing +Z (the facing
+  // / movement dir) — where it stays visible and inherits the head group's orientation. Sized
+  // in H so it scales with the (enlarged) head.
+  const AX=H*0.28;                                                 // floats just beside the head, to the right
+  if(weapon==='rifle'){                                            // barrel runs along +Z (facing dir)
+    const gun =new THREE.MeshLambertMaterial({color:0x2B2B30});
+    const wood=new THREE.MeshLambertMaterial({color:0x6B4A2A});
+    part(BOX, gun,  AX,  0,       H*0.06, H*0.05, H*0.06, H*0.30);  // receiver/body
+    part(BOX, gun,  AX,  H*0.005, H*0.30, H*0.02, H*0.02, H*0.24);  // barrel
+    part(BOX, wood, AX, -H*0.01, -H*0.18, H*0.05, H*0.07, H*0.12);  // stock
+    part(BOX, gun,  AX, -H*0.09,  H*0.02, H*0.03, H*0.10, H*0.05);  // magazine (hangs down)
+  }else{                                                           // sword: blade along +Z, guard across X
+    const steel=new THREE.MeshLambertMaterial({color:0xC2C8D2});
+    const gold =new THREE.MeshLambertMaterial({color:0x9A7B33});
+    const wood =new THREE.MeshLambertMaterial({color:0x6B4A2A});
+    part(BOX,  steel, AX, 0,  H*0.14, H*0.04, H*0.015,H*0.34);            // blade (flat faces camera)
+    part(CONE, steel, AX, 0,  H*0.34, H*0.02, H*0.06, H*0.02, Math.PI/2); // tip — apex rotated to +Z
+    part(BOX,  gold,  AX, 0, -H*0.05, H*0.14, H*0.03, H*0.04);            // cross-guard (spans X)
+    part(BOX,  wood,  AX, 0, -H*0.14, H*0.03, H*0.03, H*0.12);            // grip
+    part(SPH,  gold,  AX, 0, -H*0.22, H*0.035,H*0.035,H*0.035);           // pommel
+  }
   return g;
 }
 
@@ -2964,7 +2988,8 @@ function buildCity(st, maxResidents=48){
     const fur = isPlayer? new THREE.Color(0xC89B3C)
               : isLeader? new THREE.Color(0xEADCB6)
               : new THREE.Color().setHSL(0.07+((c.id%9)/9)*0.06, 0.18+((c.id%3)*0.10), 0.42+((c.id%5)/5)*0.28);
-    const head=makeCatHead(fur);
+    const weapon = c.skills.shooting > c.skills.melee ? 'rifle' : 'sword';   // ranged vs melee
+    const head=makeCatHead(fur, weapon);
     head.matrixAutoUpdate=false;
     group.add(head);
     walkers.push({ id:c.id, mesh:head, x:start.x, y:start.y, tgt:nextWaypoint(),
