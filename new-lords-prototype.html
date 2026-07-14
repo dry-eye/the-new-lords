@@ -2239,7 +2239,7 @@ let picks=[];   // {type,id,dir,px,ring} — px is the icon radius, ring the foo
 
 function buildScene(){
   root.clear(); picks=[]; footMats=[]; pawnBuiltFor=null; pawnSprites=[]; pawnPositions=[];
-  cityCache=new Map(); cityLive=new Set();
+  cityCache=new Map(); cityLive=new Set(); squadPawnCache=new Map();
 
   /* --- planet: relief mesh + baked climate texture + per-pixel shader --- */
   const TEX_W=1536, TEX_H=768;
@@ -2573,6 +2573,16 @@ function animateMarkers(){
   updateCityLOD();
   updatePawns();
   for(const pp of pawnPositions) put(pp.spr, pp.dir, 1.030);
+  for(const rec of squadPawnCache.values())
+    for(const p of rec.sprites) if(p.dir) put(p.spr, p.dir, 1.036);
+  // A tile stays hot (built, walkers ticking) wherever an own squad sits, but only
+  // DRAW its 3-D city while it's on the near hemisphere — a far-side city behind the
+  // globe is never visible, so skip its render cost. Pure visibility cull; the hot-set
+  // logic (cityLive) is untouched.
+  for(const c of cityCache.values()){
+    const z=c.st.dir.clone().applyQuaternion(q).z;
+    c.group.visible = z > horizon - 0.03;
+  }
 }
 
 /* =====================================================================
@@ -2733,7 +2743,7 @@ function makeCatHead(fur){
 
 /* --- assemble one town on the sphere --- */
 let cityCache=new Map(), cityLive=new Set(), frameDtMs=16;
-function buildCity(st){
+function buildCity(st, maxResidents=48){
   const town=subdivideCity(st);
   const cfg=town.cfg, rr=town.rr;
   const lots=developBlocks(town);
@@ -2831,7 +2841,7 @@ function buildCity(st){
     }
     return {x:0,y:0};
   };
-  const residents=S.chars.filter(c=>c.homeId===st.id && c.alive).slice(0,48);
+  const residents=S.chars.filter(c=>c.homeId===st.id && c.alive).slice(0, maxResidents);
   residents.forEach((c,i)=>{
     const b=blocks[(c.id*5+i)%blocks.length];
     const start=streetPoint(b, c.id%4, ((c.id%7)/7-0.5)*1.2);
@@ -2871,36 +2881,103 @@ function stepWalkers(c, dtMs){
     w.dir=c.dirOf(w.x, w.y);
   }
 }
+/* =====================================================================
+   HOT-REGION RENDER TRIGGER (#26) — detailed loading around the camera AND
+   around the player's own squads. ONE rule materialises a settlement's
+   residents and a squad's pawns alike (DESIGN §236 "Identified vs anonymous").
+   A tile/point is a hot RENDER tile when EITHER holds — any number may be hot
+   at once, there is no cap of one (DESIGN §257 "Hot-region trigger"):
+     • it lies inside the camera's zoom cone (cosmetic, camera-driven detail —
+       render/loading only; camera proximity deliberately does NOT drive the
+       authoritative simulation LOD — that camera-independent-determinism
+       question is issue #27 / DESIGN §259,§261), OR
+     • a squad of the player's own side is present within a fixed world radius
+       of it (an own squad's mere presence is its own qualifying signal,
+       regardless of camera or whether it has an active order).
+   Hot settlements load city geometry + resident pawns; hot squads load pawns.
+   ===================================================================== */
+const HOT_GEOM_DIST = 1.45;   // altitude under which the camera cone builds full city geometry
+const HOT_GEOM_COS  = 0.90;   // EVERY settlement within ~26° of the camera axis loads — replaces slice(0,2)
+                              // (a real cluster is 3–5 tiles here, so "several" load, not one or two)
+const HOT_PAWN_DIST = 1.90;   // resident sprites fade in a little higher than full geometry
+const HOT_PAWN_COS  = 0.85;   // ...across a WIDER ~32° cone, so full-geometry tiles are ringed by dot tiles
+const HOT_SQUAD_COS = 0.997;  // an own squad within ~4.4° of a tile counts as "present" → tile is hot
+const HOT_SQUAD_PAWN_DIST = 2.6; // own-side squads surface their pawns out to this altitude, wherever they sit
+const CITY_BUILD_PER_FRAME = 2;  // amortise: cap new cities built per frame so a big reveal never spikes one frame
+
+function cameraDir(){ return new THREE.Vector3(0,0,1).applyQuaternion(root.quaternion.clone().invert()); }
+function playerFactionId(){
+  const pc = S.playerCharId!=null ? chr(S.playerCharId) : null;
+  const o  = pc ? org(pc.ledOrgId) : null;
+  return o ? (o.factionId||o.id) : null;
+}
+/* the player's own squads — the mobile bodies whose presence makes a region hot.
+   Before an avatar is chosen there is no "own side", so nothing qualifies here and
+   only camera proximity drives detail. */
+function ownSideSquads(){
+  const f = playerFactionId();
+  return f==null ? [] : S.squads.filter(s=>s.factionId===f);
+}
+/* a right-handed tangent frame on the sphere at `dir`, with a pole guard */
+function tangentBasis(dir){
+  const up=dir.clone();
+  let tan=new THREE.Vector3(0,1,0).cross(up);
+  if(tan.lengthSq()<1e-8) tan=new THREE.Vector3(1,0,0).cross(up);
+  tan.normalize();
+  const bit=up.clone().cross(tan).normalize();
+  return {up, tan, bit};
+}
+function offsetDir(basis, ox, oy){
+  return basis.up.clone()
+    .add(basis.tan.clone().multiplyScalar(ox))
+    .add(basis.bit.clone().multiplyScalar(oy)).normalize();
+}
+
 function updateCityLOD(){
-  const show = camDist < 1.30;
-  const camDir=new THREE.Vector3(0,0,1).applyQuaternion(root.quaternion.clone().invert());
-  const near = show
-    ? S.settlements.filter(s=>s.dir.dot(camDir)>0.9955)
-        .sort((a,b)=>b.dir.dot(camDir)-a.dir.dot(camDir)).slice(0,2)
-    : [];
-  for(const [id,c] of cityCache){
-    if(!near.some(s=>s.id===id)){ root.remove(c.group); cityCache.delete(id); }
+  const camDir=cameraDir(), camHot=camDist<HOT_GEOM_DIST;
+  const own=ownSideSquads();
+  // every settlement in the camera cone (NO slice cap) OR carrying an own-side squad,
+  // so several tiles around the camera — and any tile a player squad stands on, even
+  // off-camera — all load full detail at once.
+  const hot=S.settlements.filter(st=>
+       (camHot && st.dir.dot(camDir)>HOT_GEOM_COS)
+    || own.some(sq=>(sq.rdir||sq.dir).dot(st.dir)>HOT_SQUAD_COS));
+  const hotIds=new Set(hot.map(s=>s.id));
+  for(const [id,c] of cityCache) if(!hotIds.has(id)){ root.remove(c.group); cityCache.delete(id); }
+  // share one resident-head budget across however many cities are live, so "several"
+  // hot tiles don't multiply the walker draw calls without bound.
+  const cap=Math.max(12, Math.round(96/Math.max(1,hot.length)));
+  let built=0;
+  for(const st of hot){
+    if(cityCache.has(st.id)) continue;
+    if(built++ >= CITY_BUILD_PER_FRAME) break;          // rest materialise over the next frames
+    cityCache.set(st.id, buildCity(st, cap));
   }
-  for(const st of near) if(!cityCache.has(st.id)) cityCache.set(st.id, buildCity(st));
-  cityLive = new Set(near.map(s=>s.id));
+  cityLive = new Set(cityCache.keys());                 // everything currently built is hot
   for(const c of cityCache.values()){
     stepWalkers(c, frameDtMs);
     for(const w of c.walkers) picks.push({type:'char', id:w.id, dir:w.dir, px:0.022});
   }
 }
 
-/* --- residents: shown only when you're actually standing over a town --- */
-let pawnBuiltFor=null, pawnPositions=[], pawnSprites=[];
 function updatePawns(){
-  const show = camDist < 1.75;
+  updateResidentPawns();
+  updateSquadPawns();
+}
+
+/* --- residents: floating pawn dots over hot tiles that don't (yet) have full
+       city geometry — the mid-detail tier just above street level --- */
+let pawnBuiltFor=null, pawnPositions=[], pawnSprites=[];
+function updateResidentPawns(){
+  const show = camDist < HOT_PAWN_DIST;
   if(!show){
     if(pawnBuiltFor!==null){ for(const s of pawnSprites) markerGroup.remove(s);
       pawnSprites=[]; pawnPositions=[]; pawnBuiltFor=null; }
     return;
   }
-  // only the settlements the camera is genuinely over — not every town on the hemisphere
-  const camDir=new THREE.Vector3(0,0,1).applyQuaternion(root.quaternion.clone().invert());
-  const near=S.settlements.filter(s=>s.dir.dot(camDir)>0.975 && !cityLive.has(s.id));
+  // the settlements the camera is over (several, no cap) that aren't already a full city
+  const camDir=cameraDir();
+  const near=S.settlements.filter(s=>s.dir.dot(camDir)>HOT_PAWN_COS && !cityLive.has(s.id));
   const key=near.map(s=>s.id).join(',');
   if(key!==pawnBuiltFor){
     pawnBuiltFor=key;
@@ -2908,15 +2985,11 @@ function updatePawns(){
     pawnSprites=[]; pawnPositions=[];
     for(const st of near){
       const residents=S.chars.filter(c=>c.homeId===st.id && c.alive).slice(0,18);
-      const up=st.dir.clone();
-      const tan=new THREE.Vector3(0,1,0).cross(up).normalize();
-      const bit=up.clone().cross(tan).normalize();
+      const basis=tangentBasis(st.dir);
       residents.forEach((c,i)=>{
         const ang=i/Math.max(1,residents.length)*Math.PI*2 + (c.id%7)*0.31;
         const rad=0.006+(c.id%5)*0.0018;
-        const d=up.clone()
-          .add(tan.clone().multiplyScalar(Math.cos(ang)*rad))
-          .add(bit.clone().multiplyScalar(Math.sin(ang)*rad)).normalize();
+        const d=offsetDir(basis, Math.cos(ang)*rad, Math.sin(ang)*rad);
         const col = c.id===S.playerCharId? 0xC89B3C : c.ledOrgId? 0xEFE0BC : 0xA8B7CE;
         const spr=makeSprite(ICONS.person, c.ledOrgId? 0.020 : 0.016, col);
         spr.userData.dir=d;
@@ -2928,6 +3001,54 @@ function updatePawns(){
   }
   for(const pp of pawnPositions){
     picks.push({type:'char', id:pp.id, dir:pp.dir, px:0.018});
+  }
+}
+
+/* --- squad pawns: the SAME materialise rule as residents, applied to a squad's
+       soldiers. The sim tracks a squad only as an aggregate `strength`, so these
+       individual pawns are a purely cosmetic render-time materialisation (no sim
+       entities created) that lets a squad show pawns exactly as a town does.
+       A squad is hot when the player owns it and it's visible (its presence is
+       its own signal, shown wherever it sits, not only dead-centre), or when the
+       camera is zoomed onto it — mirroring how residents fade in. --- */
+let squadPawnCache=new Map();    // squadId -> {n, sprites:[{spr, ox, oy, dir}]}
+function squadPawnCount(sq){ return Math.max(4, Math.min(14, Math.round(sq.strength))); }
+function hotSquads(){
+  const f=playerFactionId(), camDir=cameraDir();
+  return S.squads.filter(sq=>{
+    const d=sq.rdir||sq.dir, front=d.dot(camDir);
+    if(f!=null && sq.factionId===f && camDist<HOT_SQUAD_PAWN_DIST && front>0.72) return true; // own side, on-screen
+    if(camDist<HOT_PAWN_DIST && front>HOT_PAWN_COS) return true;                               // zoomed onto any squad
+    return false;
+  });
+}
+function updateSquadPawns(){
+  const hot=hotSquads(), hotSet=new Set(hot.map(s=>s.id));
+  for(const [id,rec] of squadPawnCache){
+    if(!hotSet.has(id)){ for(const p of rec.sprites) markerGroup.remove(p.spr); squadPawnCache.delete(id); }
+  }
+  for(const sq of hot){
+    const n=squadPawnCount(sq);
+    let rec=squadPawnCache.get(sq.id);
+    if(!rec || rec.n!==n){                              // (re)build the fixed cluster when count changes
+      if(rec) for(const p of rec.sprites) markerGroup.remove(p.spr);
+      rec={n, sprites:[]};
+      for(let i=0;i<n;i++){
+        const ang=i/n*Math.PI*2 + (sq.id%7)*0.31;
+        const rad=0.004+((i*3+sq.id)%5)*0.0015;
+        const leader=(i===0);
+        const col=leader? factionColor(sq.factionId) : 0xC3CAD8;
+        const spr=makeSprite(ICONS.person, leader?0.019:0.014, col);
+        markerGroup.add(spr);
+        rec.sprites.push({spr, ox:Math.cos(ang)*rad, oy:Math.sin(ang)*rad, dir:null});
+      }
+      squadPawnCache.set(sq.id, rec);
+    }
+    const basis=tangentBasis(sq.rdir||sq.dir);          // squad moves — recompute the cluster each frame
+    for(const p of rec.sprites){
+      p.dir=offsetDir(basis, p.ox, p.oy);
+      picks.push({type:'squad', id:sq.id, dir:p.dir, px:0.014});   // clicking a soldier selects the squad
+    }
   }
 }
 
