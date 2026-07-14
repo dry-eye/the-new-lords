@@ -2994,6 +2994,10 @@ canvas.addEventListener('wheel',e=>{
   camAltTarget = Math.max(ALT_MIN, Math.min(ALT_MAX, camAltTarget*f));
 },{passive:false});
 
+/* the right button is a game control (squad RMB, #24), so keep the browser's
+   native context menu from intercepting it over the canvas */
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+
 /* =====================================================================
    TOUCH — one finger rotates/pans the globe; a second finger switches into
    pinch-zoom-and-pan around the midpoint; a ~500ms long-press with a squad
