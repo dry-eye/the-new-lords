@@ -2018,6 +2018,7 @@ scene.add(new THREE.AmbientLight(0x8CA4CC, 0.62));
 const sun=new THREE.DirectionalLight(0xFFF3DA, 0.95); sun.position.set(0.4,0.5,1); scene.add(sun);
 
 let planet, roadLines, roadMat, markerGroup, atmoMesh, vGlobe=null;
+let globeScene=null, globeRT=null, bgMesh=null, globeDirty=true, _gKey='';
 
 /* ---------- icon atlas: every object type gets a drawn glyph ---------- */
 const ICONS={};
@@ -2194,7 +2195,7 @@ function applyTheme(name){
     // (technical scan vs relief map), not just re-tinted (Visual themes, DESIGN.md)
     if(planet._terrainTex) planet.material.uniforms.map.value = planet._terrainTex[name] || planet._terrainTex.antique;
   }
-  if(vGlobe && vGlobe.material.uniforms.uPal) vGlobe.material.uniforms.uPal.value = THEME.globePal||0;
+  if(vGlobe && vGlobe.material.uniforms.uPal){ vGlobe.material.uniforms.uPal.value = THEME.globePal||0; globeDirty=true; }
   if(atmoMesh) atmoMesh.material.color.set(THEME.atmo);
   if(roadMat) roadMat.uniforms.tint.value.set(THEME.road);
   for(const st of (S.settlements||[])){
@@ -2436,19 +2437,33 @@ void main(){
   col=mix(col,lineC,zborder*0.6*land);                        // zone boundary ink
   col=mix(col,lineC,coast);
   outColor=vec4(col,1.0); }`;
-/* vGlobe is declared up with planet/atmoMesh so applyTheme() can touch it before buildScene runs */
+/* Planet cache — the heavy globe shader renders to an offscreen target ONLY when
+   the camera or world rotation actually change; every frame just blits that cached
+   texture (a couple of instructions). A static view costs ~nothing, so the planet
+   can no longer pin/overheat the GPU. vGlobe & cache globals are hoisted above so
+   applyTheme() can touch them before buildScene runs. */
+function _tri(){ const g=new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute([-1,-1,0, 3,-1,0, -1,3,0],3)); return g; }
 function buildVectorGlobe(){
-  if(vGlobe){ scene.remove(vGlobe); vGlobe.geometry.dispose(); vGlobe.material.dispose(); vGlobe=null; }
-  const g=new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute([-1,-1,0, 3,-1,0, -1,3,0],3));
+  if(vGlobe){ globeScene.remove(vGlobe); vGlobe.geometry.dispose(); vGlobe.material.dispose(); vGlobe=null; }
   const mat=new THREE.RawShaderMaterial({
     glslVersion:THREE.GLSL3, depthTest:false, depthWrite:false,
     uniforms:{ uInvVP:{value:new THREE.Matrix4()}, uCamPos:{value:new THREE.Vector3()},
       uInvRot:{value:new THREE.Matrix3()}, uSEA:{value:SEA},
       uWARP:{value:new THREE.Vector3(WARP.x,WARP.y,WARP.z)}, uNSEED:{value:NSEED}, uForestStyle:{value:3}, uPal:{value:(THEME.globePal||0)} },
     vertexShader:VGLOBE_VS, fragmentShader:VGLOBE_FS });
-  vGlobe=new THREE.Mesh(g,mat); vGlobe.frustumCulled=false; vGlobe.renderOrder=-10;
-  scene.add(vGlobe);
+  vGlobe=new THREE.Mesh(_tri(),mat); vGlobe.frustumCulled=false;
+  if(!globeScene) globeScene=new THREE.Scene();
+  globeScene.add(vGlobe);
+  if(!globeRT) globeRT=new THREE.WebGLRenderTarget(2,2,{minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter, depthBuffer:false});
+  if(!bgMesh){
+    const bmat=new THREE.RawShaderMaterial({ glslVersion:THREE.GLSL3, depthTest:false, depthWrite:false,
+      uniforms:{ tex:{value:globeRT.texture}, res:{value:new THREE.Vector2(2,2)} },
+      vertexShader:'in vec3 position; void main(){ gl_Position=vec4(position.xy,1.0,1.0); }',
+      fragmentShader:'precision highp float; uniform sampler2D tex; uniform vec2 res; out vec4 o; void main(){ o=texture(tex, gl_FragCoord.xy/res); }' });
+    bgMesh=new THREE.Mesh(_tri(),bmat); bgMesh.frustumCulled=false; bgMesh.renderOrder=-10; scene.add(bgMesh);
+  }
+  bgMesh.material.uniforms.tex.value=globeRT.texture;
+  globeDirty=true;
 }
 function updateGlobeUniforms(){
   if(!vGlobe) return;
@@ -2459,6 +2474,21 @@ function updateGlobeUniforms(){
   u.uCamPos.value.copy(camera.position);
   u.uInvRot.value.setFromMatrix4(root.matrixWorld).transpose();
   u.uSEA.value=SEA; u.uWARP.value.set(WARP.x,WARP.y,WARP.z); u.uNSEED.value=NSEED;
+}
+function renderGlobeCache(){
+  if(!vGlobe||!globeRT) return;
+  const sz=renderer.getDrawingBufferSize(new THREE.Vector2());
+  if(globeRT.width!==sz.x || globeRT.height!==sz.y){ globeRT.setSize(sz.x,sz.y); bgMesh.material.uniforms.res.value.set(sz.x,sz.y); globeDirty=true; }
+  camera.updateMatrixWorld(); root.updateMatrixWorld();
+  const k=camera.matrixWorldInverse.elements.join(',')+'|'+root.matrixWorld.elements.slice(0,11).join(',')+'|'+vGlobe.material.uniforms.uPal.value;
+  if(k!==_gKey){ _gKey=k; globeDirty=true; }
+  if(!globeDirty) return;                                  // static view → reuse the cached texture, zero shader work
+  updateGlobeUniforms();
+  const prev=renderer.getRenderTarget();
+  renderer.setRenderTarget(globeRT);
+  renderer.render(globeScene, camera);
+  renderer.setRenderTarget(prev);
+  globeDirty=false;
 }
 
 function buildScene(){
@@ -4828,7 +4858,7 @@ function frame(now){
   updateCamera();
   stepFly();
   animateMarkers();
-  updateGlobeUniforms();
+  renderGlobeCache();
   renderer.render(scene,camera);
   if(graphOpen) drawGraph();
   requestAnimationFrame(frame);
