@@ -3148,7 +3148,7 @@ function buildCity(st, maxResidents=48){
   const hex = buildHexLayer(st, lots, {orient, dirOf, R, S1, group});
 
   root.add(group);
-  return {group, walkers, st, orient, dirOf, nextWaypoint, hex};
+  return {group, walkers, st, orient, dirOf, nextWaypoint, hex, R};   // #50: R = city surface radius, for head-aligned picks
 }
 /* advance one town's walking cat heads along the streets by one frame's worth of time */
 function stepWalkers(c, dtMs){
@@ -3165,9 +3165,11 @@ function stepWalkers(c, dtMs){
       w.phase+=dtMs*0.004*sp;
     }
     const bob=Math.sin(w.phase)*(H*0.28);
-    w.mesh.matrix.copy(c.orient(w.x, w.y, w.face, H*0.85 + bob));
+    const lift=H*0.85 + bob;
+    w.mesh.matrix.copy(c.orient(w.x, w.y, w.face, lift));
     w.mesh.matrixWorldNeedsUpdate=true;
     w.dir=c.dirOf(w.x, w.y);
+    w.r=(c.R!=null?c.R:1)+lift;   // #50: the head's exact shell radius (surface R + lift) for a head-aligned pick
   }
 }
 
@@ -3536,8 +3538,10 @@ function updateCityLOD(){
     // character from the settlement's latent demographic pool (DESIGN §236 «Identified
     // vs anonymous», §954 «Settlement population: demographic pool»).
     for(const w of c.walkers){
-      if(w.id!=null) picks.push({type:'char', id:w.id, dir:w.dir, px:0.026});
-      else           picks.push({type:'resident', walker:w, settlementId:c.st.id, dir:w.dir, px:0.026});
+      // r:w.r — project the pick at the head's OWN surface radius so the hit-test sits on the
+      // VISIBLE head at every screen position (not just centred); see screenPos()/#50 note.
+      if(w.id!=null) picks.push({type:'char', id:w.id, dir:w.dir, r:w.r, px:0.026});
+      else           picks.push({type:'resident', walker:w, settlementId:c.st.id, dir:w.dir, r:w.r, px:0.026});
     }
   }
   updateHexHud();                                       // #43: tactical-layer readout for the active hot city
@@ -4345,8 +4349,14 @@ addEventListener('keydown',e=>{
 
 /* ---- screen-space picking & hover ---- */
 const projV=new THREE.Vector3();
-function screenPos(dir){
-  projV.copy(dir).multiplyScalar(1.035).applyQuaternion(root.quaternion);
+function screenPos(dir, r){
+  // r = the shell radius to project at. Icon markers are drawn on the r≈1.035 shell (the
+  // default), so their pick sits exactly under the drawn icon. #50: cat heads are drawn on
+  // the city surface (r≈1.005), NOT the icon shell — so a walker pick must project at the
+  // head's OWN radius (p.r), or an off-centre head shows a growing pick↔head parallax gap
+  // (two points on one ray at different radii project apart under perspective). p.dir stays
+  // the unit head direction (moveToward reuses it as a squad target), only the radius varies.
+  projV.copy(dir).multiplyScalar(r||1.035).applyQuaternion(root.quaternion);
   // limb test against the actual camera axis (not just +z) so it stays correct when tilted
   const behind = projV.dot(_camNrm) < 1/camDist - 0.02;
   projV.project(camera);
@@ -4369,7 +4379,7 @@ function nearest(cx,cy){
   let best=null,bd=1e9;
   const order={char:0, resident:0, caravan:1, squad:2, enterprise:3, settlement:4};   // #50: an anonymous head ranks with an identified one
   for(const p of picks){
-    const s=screenPos(p.dir);
+    const s=screenPos(p.dir, p.r);   // #50: walker picks carry the head's own shell radius (p.r); others default 1.035
     if(s.behind) continue;
     const rpx=p.px*innerHeight*0.62;
     const d=Math.hypot(s.x-cx, s.y-cy);
@@ -4517,7 +4527,7 @@ window.__dbg = {
   walkers:(id)=>{ const c=cityCache.get(id); if(!c) return null;
     const v=new THREE.Vector3();
     return c.walkers.map((w,k)=>{
-      const pk=screenPos(w.dir);
+      const pk=screenPos(w.dir, w.r);   // #50: the pick projects at the head's own shell (p.r) → sits on the head
       v.setFromMatrixPosition(w.mesh.matrixWorld).project(camera);
       return { k, id:w.id, dir:{x:w.dir.x, y:w.dir.y, z:w.dir.z}, pick:{x:pk.x, y:pk.y, behind:pk.behind},
                head:{x:(v.x*0.5+0.5)*innerWidth, y:(-v.y*0.5+0.5)*innerHeight} }; }); },
