@@ -1,0 +1,188 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#000}canvas{display:block}</style></head>
+<body>
+<canvas id="c" width="820" height="820"></canvas>
+<script>
+const cv=document.getElementById('c');
+const gl=cv.getContext('webgl2',{antialias:false,preserveDrawingBuffer:true});
+if(!gl){ document.body.innerHTML='NO WEBGL2'; }
+
+const VS=`#version 300 es
+in vec2 aPos; void main(){ gl_Position=vec4(aPos,0.0,1.0); }`;
+
+const FS=`#version 300 es
+precision highp float; precision highp int;
+uniform vec2 uRes;
+uniform float uCamDist, uFov, uSEA;
+uniform mat3 uRot;
+uniform vec3 uWarp;
+uniform int uNSEED, uPal, uBiomeMode;
+out vec4 frag;
+
+uint hash3u(int i,int j,int k){
+  uint n = uint(i)*374761393u + uint(j)*668265263u + uint(k)*1274126177u + uint(uNSEED)*2654435761u;
+  n = (n ^ (n >> 13u)) * 1274126177u;
+  return (n ^ (n >> 16u));
+}
+float h3(int i,int j,int k){ return float(hash3u(i,j,k)) / 4294967296.0; }
+float fade(float t){ return t*t*(3.0-2.0*t); }
+float vnoise(vec3 p){
+  int xi=int(floor(p.x)), yi=int(floor(p.y)), zi=int(floor(p.z));
+  float xf=p.x-float(xi), yf=p.y-float(yi), zf=p.z-float(zi);
+  float u=fade(xf), v=fade(yf), w=fade(zf);
+  float c000=h3(xi,yi,zi),    c100=h3(xi+1,yi,zi);
+  float c010=h3(xi,yi+1,zi),  c110=h3(xi+1,yi+1,zi);
+  float c001=h3(xi,yi,zi+1),  c101=h3(xi+1,yi,zi+1);
+  float c011=h3(xi,yi+1,zi+1),c111=h3(xi+1,yi+1,zi+1);
+  float x00=c000+(c100-c000)*u, x10=c010+(c110-c010)*u;
+  float x01=c001+(c101-c001)*u, x11=c011+(c111-c011)*u;
+  float y0=x00+(x10-x00)*v, y1=x01+(x11-x01)*v;
+  return (y0+(y1-y0)*w)*2.0-1.0;
+}
+float fbm(vec3 p,int oct,float lac,float gain){
+  float a=1.0,f=1.0,sum=0.0,norm=0.0;
+  for(int i=0;i<8;i++){ if(i>=oct)break;
+    sum += a*vnoise(vec3(p.x*f+float(i)*17.3, p.y*f-float(i)*29.1, p.z*f+float(i)*41.7));
+    norm+=a; a*=gain; f*=lac;
+  }
+  return sum/norm;
+}
+float ridge(vec3 p,int oct){
+  float a=0.6,f=1.0,sum=0.0;
+  for(int i=0;i<8;i++){ if(i>=oct)break;
+    float n=1.0-abs(vnoise(vec3(p.x*f+float(i)*7.7, p.y*f+float(i)*13.3, p.z*f-float(i)*5.1)));
+    sum+=a*n*n; a*=0.5; f*=2.05;
+  }
+  return sum;
+}
+float sm01(float v,float a,float b){ float t=clamp((v-a)/(b-a),0.0,1.0); return t*t*(3.0-2.0*t); }
+float elevation(vec3 p){
+  vec3 W=uWarp;
+  float wx=fbm(vec3(p.x*1.7+W.x, p.y*1.7+W.y, p.z*1.7+W.z),3,2.0,0.5);
+  float wy=fbm(vec3(p.x*1.7+W.y, p.y*1.7+W.z, p.z*1.7+W.x),3,2.0,0.5);
+  float q=0.42;
+  vec3 c=vec3(p.x*1.25+wx*q, p.y*1.25+wy*q, p.z*1.25+(wx-wy)*q*0.5);
+  float base=fbm(c,6,2.1,0.52);
+  base=base*0.85+0.14*fbm(c*3.1,3,2.2,0.5);
+  float land=base-uSEA;
+  if(land<=0.0) return land*0.85;
+  float belt=max(0.0, ridge(c*2.3,4)-0.42);
+  float mtn=belt*sm01(land,0.02,0.30)*1.35;
+  return land*0.9+mtn;
+}
+// --- climate & biome zone (ported from JS zoneAt) ---
+float moistureAt(vec3 p){ return fbm(vec3(p.x*2.4+11.3, p.y*2.4-7.9, p.z*2.4+3.1),4,2.1,0.55)*0.5+0.5; }
+float tempAt(vec3 p,float e){ float lat=abs(p.y);
+  return clamp(1.06 - lat*1.28 - max(0.0,e)*0.85 + fbm(vec3(p.x*1.6-21.7,p.y*1.6+5.5,p.z*1.6-9.9),2,2.0,0.5)*0.10, 0.0,1.0); }
+int zoneId(vec3 p,float e){ if(e<=0.0) return 0; if(e>0.34) return 3;
+  float t=tempAt(p,e), m=moistureAt(p);
+  if(t>0.52 && m<0.40) return 4; if(m>0.48 && t>0.20) return 2; return 1; }
+// --- thin biome motifs (fir glyphs / dune dots / furrows) ---
+float hash21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+float sdSeg(vec2 p,vec2 a,vec2 b){ vec2 pa=p-a,ba=b-a; float h=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0); return length(pa-ba*h); }
+float forestInk(vec2 f,vec2 cell){ if(hash21(cell)>0.80) return 0.0;
+  float cx=0.5+(hash21(cell+3.1)-0.5)*0.4, cy=0.66, hgt=0.42+0.12*hash21(cell+7.7), w=0.05;
+  float d=sdSeg(f,vec2(cx,cy),vec2(cx,cy-hgt*0.35));
+  for(int k=0;k<3;k++){ float t=float(k); float yy=cy-hgt*(0.30+0.22*t), ww=0.17-0.035*t;
+    d=min(d,sdSeg(f,vec2(cx-ww,yy),vec2(cx,yy-0.11))); d=min(d,sdSeg(f,vec2(cx+ww,yy),vec2(cx,yy-0.11))); }
+  return smoothstep(w,w*0.35,d); }
+float desertDot(vec2 uv){ vec2 dom=vec2(uv.x*2.0,uv.y)*120.0; vec2 cell=floor(dom),f=fract(dom)-0.5;
+  if(hash21(cell+1.7)>0.72) return 0.0; vec2 j=(vec2(hash21(cell+2.3),hash21(cell+5.9))-0.5)*0.5;
+  return smoothstep(0.17,0.08,length(f-j)); }
+float plainFurrow(vec2 uv){ float drift=fbm(vec3(uv*7.0,3.0),3,2.0,0.5);
+  float y=uv.y*150.0+sin(uv.x*70.0)*0.6+drift*2.6; float fr=fract(y),ld=min(fr,1.0-fr);
+  return smoothstep(0.12,0.0,ld)*0.7; }
+void main(){
+  vec2 uv=(gl_FragCoord.xy - 0.5*uRes)/uRes.y;
+  vec3 ro=vec3(0.0,0.0,uCamDist);
+  float fs=tan(uFov*0.5);
+  vec3 rd=normalize(vec3(uv*fs, -1.0));
+  float b=dot(ro,rd), cc=dot(ro,ro)-1.0, disc=b*b-cc;
+  if(disc<0.0){ frag=vec4(0.02,0.025,0.035,1.0); return; }   // space
+  float t=-b-sqrt(disc);
+  vec3 pos=normalize(ro+rd*t);
+  vec3 d=uRot*pos;
+  float e=elevation(d);
+  float aa=max(fwidth(e), 1e-4);
+  float land=smoothstep(-aa, aa, e);                 // land mask, ~1px transition at any zoom
+  float coast=smoothstep(2.5*aa, 0.0, abs(e));       // coastline stroke, ~constant screen width
+
+  // palettes: 0 antique-earth, 1 cool-graphite, 2 light-parchment
+  vec3 ocean, landC, lineC;
+  if(uPal==0){ ocean=vec3(0.045,0.10,0.20); landC=vec3(0.52,0.47,0.36); lineC=vec3(0.94,0.79,0.42); }
+  else if(uPal==1){ ocean=vec3(0.055,0.075,0.105); landC=vec3(0.33,0.37,0.44); lineC=vec3(0.82,0.88,0.97); }
+  else { ocean=vec3(0.55,0.62,0.66); landC=vec3(0.86,0.81,0.66); lineC=vec3(0.24,0.19,0.13); }
+
+  // faint bathymetric depth rings in the ocean (nested isobaths)
+  float bk=e*26.0; float bm=min(fract(bk),1.0-fract(bk)); float bw=fwidth(bk);
+  float bathy=smoothstep(bw*1.3,0.0,bm)*step(e,0.0);
+  // land elevation contours (isohypses) — dense on steep mountains, sparse on plains
+  float hk=e*20.0; float hm=min(fract(hk),1.0-fract(hk)); float hw=fwidth(hk);
+  float isoh=smoothstep(hw*1.3,0.0,hm)*step(0.0,e);
+
+  // biome zone → tint + motif (uBiomeMode: 0 tint+motif, 1 motif only, 2 tint only)
+  int z=zoneId(d,e);
+  vec2 suv=vec2(atan(d.z,d.x)/6.2831853+0.5, asin(clamp(d.y,-1.0,1.0))/3.14159265+0.5);
+  vec2 dom=vec2(suv.x*2.0, suv.y)*82.0; vec2 cell=floor(dom), fcell=fract(dom);
+  vec3 tint=landC;
+  if(uBiomeMode!=1){
+    if(z==2) tint=mix(landC, vec3(0.60,0.66,0.40), 0.55);
+    else if(z==4) tint=mix(landC, vec3(0.86,0.78,0.50), 0.60);
+    else if(z==3) tint=mix(landC, vec3(0.74,0.71,0.65), 0.35);
+  }
+  float motif=0.0;
+  if(uBiomeMode!=2){
+    if(z==2) motif=forestInk(fcell,cell);
+    else if(z==4) motif=desertDot(suv);
+    else if(z==1) motif=plainFurrow(suv);
+  }
+
+  vec3 col=mix(ocean, tint, land);
+  col=mix(col, mix(ocean,lineC,0.5), bathy*0.45*(1.0-land));
+  col=mix(col, lineC, isoh*0.42*land);               // land height contours
+  vec3 motifCol=(z==2)? vec3(0.14,0.28,0.13) : lineC; // forest dark green, else ink
+  col=mix(col, motifCol, motif*0.85*land);
+  col=mix(col, lineC, coast);                        // ink the coastline on top
+  float shade=0.82+0.18*pos.z;
+  frag=vec4(col*shade, 1.0);
+}`;
+
+function mkShader(type,src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){ console.error('SHADER',gl.getShaderInfoLog(s)); throw new Error(gl.getShaderInfoLog(s)); } return s; }
+const prog=gl.createProgram();
+gl.attachShader(prog, mkShader(gl.VERTEX_SHADER,VS));
+gl.attachShader(prog, mkShader(gl.FRAGMENT_SHADER,FS));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){ console.error('LINK',gl.getProgramInfoLog(prog)); }
+gl.useProgram(prog);
+const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 3,-1, -1,3]),gl.STATIC_DRAW);
+const loc=gl.getAttribLocation(prog,'aPos'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+const U=n=>gl.getUniformLocation(prog,n);
+
+function rotY(a){ const c=Math.cos(a),s=Math.sin(a); return [c,0,-s, 0,1,0, s,0,c]; }
+function matMul(A,B){ const r=[0,0,0,0,0,0,0,0,0]; for(let i=0;i<3;i++)for(let j=0;j<3;j++){let v=0;for(let k=0;k<3;k++)v+=A[i*3+k]*B[k*3+j];r[i*3+j]=v;} return r; }
+function rotX(a){ const c=Math.cos(a),s=Math.sin(a); return [1,0,0, 0,c,-s, 0,s,c]; }
+
+window.G={ camDist:4.5, fov:40*Math.PI/180, sea:0.32, warp:[11.3,-7.4,3.9], nseed:1, ry:0.5, rx:0.05, pal:2, biomeMode:0 };
+window.renderGlobe=function(){
+  const G=window.G;
+  gl.viewport(0,0,cv.width,cv.height);
+  gl.uniform2f(U('uRes'),cv.width,cv.height);
+  gl.uniform1f(U('uCamDist'),G.camDist);
+  gl.uniform1f(U('uFov'),G.fov);
+  gl.uniform1f(U('uSEA'),G.sea);
+  gl.uniform3f(U('uWarp'),G.warp[0],G.warp[1],G.warp[2]);
+  gl.uniform1i(U('uNSEED'),G.nseed);
+  gl.uniform1i(U('uPal'),G.pal);
+  gl.uniform1i(U('uBiomeMode'),G.biomeMode);
+  // column-major for GLSL: transpose our row-major
+  const M=matMul(rotX(G.rx), rotY(G.ry));
+  const cm=[M[0],M[3],M[6], M[1],M[4],M[7], M[2],M[5],M[8]];
+  gl.uniformMatrix3fv(U('uRot'),false,cm);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  return 'rendered';
+};
+window.renderGlobe();
+</script>
+</body></html>
