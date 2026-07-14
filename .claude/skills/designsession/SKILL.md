@@ -31,5 +31,6 @@ Once the design is resolved and committed:
 - Comment the resolution summary on the issue (what was decided + the DESIGN.md section).
 - `gh issue edit <N> --remove-label "status:to-design" --add-label "status:to-do"`.
 - Spawned new work? File new issues — `status:to-do` if clear, `status:to-design` if it still needs its own decision.
+- **Wake the worker instantly.** The moment any issue lands in `status:to-do` (this one, or a freshly filed one), poke the worker so it starts in seconds instead of waiting for its poll: find the `nl-worker-heartbeat` trigger via `list_triggers` and `fire_trigger` it. No such trigger / worker not running → skip (the worker's own heartbeat still catches it).
 
 Still unresolved this session? Leave it in `status:to-design` with a comment on where it stands.

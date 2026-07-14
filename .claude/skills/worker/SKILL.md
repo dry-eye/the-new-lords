@@ -71,12 +71,13 @@ The prototype pulls **three.js r128** and a webfont from a CDN, which the sandbo
 
 ## Staying alive (persistence)
 
-The worker is a daemon kept alive by two recurring heartbeats plus event-driven wakeups. All are already armed — **a tick just does its work; it does not re-arm timers** (both heartbeats are recurring, so re-arming would create duplicates).
+The worker is a daemon kept alive by an **instant wake on new work**, event-driven wakeups, and two recurring heartbeats as a safety net. All are already armed — **a tick just does its work; it does not re-arm timers** (the heartbeats are recurring cron, so re-arming would duplicate them).
+- **Instant wake on new `to-do` (preferred)** — producers of `to-do` (the `designsession` skill) `fire_trigger` this session's `nl-worker-heartbeat` immediately after relabeling, so newly-ready work is picked up in **seconds**, only when there is real work. The heartbeats below only cover transitions that bypass the fire (e.g. a label edited directly in the GitHub UI).
 - **Durable backstop** — recurring trigger `nl-worker-heartbeat` (`create_trigger`, hourly) fires a worker tick into this session and **survives container reclaim**. Ensure exactly one exists (`list_triggers`); create if missing, never duplicate.
 - **Warm heartbeat** — a recurring `CronCreate` job (~every 15 min) gives sub-hour pickup of new `to-do` items while the session is warm. Session-only (lost on reclaim; the durable trigger revives things afterward) and auto-expires after 7 days — re-create it if it lapses.
 - **Event-driven top-ups** — background sub-agents re-invoke this session when they finish; handle the handoff/top-up immediately (§5) rather than waiting for a heartbeat.
 
-There is no push notification for issue **label** changes (only PR events), so a `to-do` added by a design session is picked up on the next heartbeat — within ~15 min while warm, ~1 h after a reclaim — not instantly.
+GitHub does not push issue **label** changes to the session (only PR events), so instant pickup relies on the producer firing `nl-worker-heartbeat` (above). A `to-do` set some other way (e.g. edited directly in the GitHub UI) is caught by the poll instead — within ~15 min while warm, ~1 h after a reclaim.
 
 > Survive-reclaim note: the durable trigger resumes this session, but a reclaimed container may re-clone the repo on `main`. This skill must therefore live on `main` for a cold resume to find it — keep the worker infrastructure merged.
 
