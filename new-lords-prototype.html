@@ -27,7 +27,9 @@
   html,body{margin:0;height:100%;background:var(--ink);color:var(--text);
     font-family:var(--mono);font-size:12px;overflow:hidden;-webkit-font-smoothing:antialiased}
   canvas{display:block}
-  #scene{position:fixed;inset:0}
+  /* the game view owns all touch gestures itself — stop the browser from
+     hijacking one/two-finger pan & pinch-zoom as native scroll/zoom */
+  #scene{position:fixed;inset:0;touch-action:none}
   a,.link{color:var(--brass);text-decoration:none;border-bottom:1px dotted var(--brass-dim);cursor:pointer}
   .link:hover{color:#EBC461;border-bottom-style:solid}
   button{font-family:var(--mono);font-size:11px;background:#182136;color:var(--text);
@@ -90,7 +92,7 @@
   #log .t{color:var(--brass-dim);margin-right:5px}
 
   #graph{position:fixed;inset:38px 0 0 0;background:rgba(8,11,18,.97);z-index:8;display:none}
-  #graphCanvas{position:absolute;top:0;left:0;width:100%;height:100%;display:block;cursor:grab}
+  #graphCanvas{position:absolute;top:0;left:0;width:100%;height:100%;display:block;cursor:grab;touch-action:none}
   #graphCanvas:active{cursor:grabbing}
   #gTip{position:absolute;display:none;z-index:3;pointer-events:none;background:rgba(11,17,32,.97);
     border:1px solid var(--rule);border-left:2px solid var(--brass);padding:6px 9px;border-radius:2px;
@@ -119,7 +121,7 @@
 
   #start{position:fixed;inset:0;background:rgba(5,7,12,.94);z-index:20;display:flex;
     align-items:center;justify-content:center}
-  #startCard{width:560px;max-height:80vh;overflow:auto;background:var(--panel);
+  #startCard{width:min(560px,calc(100vw - 24px));max-height:80vh;overflow:auto;background:var(--panel);
     border:1px solid var(--rule);padding:22px 24px;border-radius:3px}
   #startCard h1{font-family:var(--serif);font-size:30px;margin:0 0 2px;color:#EFE6D2;letter-spacing:.04em}
   #startCard h1 span{color:var(--brass)}
@@ -141,6 +143,51 @@
     background:rgba(5,7,12,.92);font-family:var(--serif);font-size:20px;color:#E7DCC0;letter-spacing:.06em}
   #keymap i{display:inline-block;width:14px;height:14px;vertical-align:-3px;margin-right:6px;
     background:currentColor;-webkit-mask-size:contain;mask-size:contain;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat}
+
+  /* =====================================================================
+     Mobile web (narrow phone, ~380px) — panels fit without overlap/overflow,
+     touch-target sizing pass for fingers. Desktop (>480px) is untouched.
+     ===================================================================== */
+  @media (max-width:480px){
+    /* --- finger-sized tap targets --- */
+    button{min-height:36px;padding:6px 11px;font-size:12px}
+    input,select{min-height:36px;padding:6px 8px;font-size:12px}
+    .row{padding:5px 0}
+    .tbl td{padding:6px 0}
+    .isec a,.tbl a,.breadcrumb a,.row .v a{display:inline-block;padding:3px 0}
+    .chip{padding:3px 7px;margin:2px 3px 2px 0}
+    .leader{padding:12px 12px;margin-bottom:7px}
+    .avatarcard{padding:11px 10px}
+
+    /* --- top HUD: keep one row, swipe horizontally to reach every control --- */
+    #topbar{height:auto;min-height:46px;padding:5px 8px;gap:8px;flex-wrap:nowrap;
+      overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;touch-action:pan-x}
+    #topbar::-webkit-scrollbar{height:0}
+    #topbar > *{flex:0 0 auto}
+    .brand{font-size:15px}
+
+    /* --- economy (left) + inspector (right): two non-overlapping columns --- */
+    #econ{left:6px;top:52px;width:142px;max-height:calc(100vh - 260px);overflow-y:auto}
+    #econBody .rline{grid-template-columns:42px 1fr 36px;gap:5px}
+    #inspector{right:6px;left:auto;top:52px;width:calc(100vw - 162px);max-width:none;
+      max-height:calc(100vh - 260px)}
+
+    /* --- log spans the bottom; keymap legend tucks just above it --- */
+    #log{left:6px;right:6px;width:auto;bottom:6px;height:92px}
+    #keymap{left:6px;right:auto;bottom:106px;max-width:calc(100vw - 12px)}
+    /* the corner hint is mouse-only copy (click / drag / wheel) — hide on touch */
+    .hint{display:none}
+
+    /* --- org graph overlay: let its toolbar wrap instead of overflowing --- */
+    #graph{inset:46px 0 0 0}
+    #graphBar{flex-wrap:wrap;max-width:calc(100vw - 24px)}
+    #legend{font-size:11px;max-width:calc(100vw - 24px)}
+    #gCount{font-size:11px}
+
+    /* --- start screen fits the narrow viewport --- */
+    #startCard{padding:18px 16px}
+    #startCard h1{font-size:26px}
+  }
 </style>
 </head>
 <body>
@@ -2816,11 +2863,13 @@ function dragScale(){
   return Math.max(2.0e-5, Math.min(0.004, visible/innerHeight * 1.05));
 }
 canvas.addEventListener('pointerdown',e=>{
+  if(e.pointerType==='touch') return;             // touch handled by touch* listeners below
   drag={x:e.clientX, y:e.clientY, moved:0};
   spin.vel=0;
   canvas.setPointerCapture(e.pointerId);
 });
 addEventListener('pointermove',e=>{
+  if(e.pointerType==='touch') return;             // touch handled by touch* listeners below
   if(!drag){ hoverAt(e.clientX,e.clientY); return; }
   const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
   drag.x=e.clientX; drag.y=e.clientY;
@@ -2836,6 +2885,7 @@ addEventListener('pointermove',e=>{
   flyQ=null;
 });
 addEventListener('pointerup',e=>{
+  if(e.pointerType==='touch') return;             // touch handled by touch* listeners below
   if(drag && drag.moved<6){ spin.vel=0; pickAt(e.clientX,e.clientY); }
   drag=null;
 });
@@ -2847,6 +2897,103 @@ canvas.addEventListener('wheel',e=>{
   const f = e.deltaY>0 ? (1+step) : 1/(1+step);
   camAltTarget = Math.max(ALT_MIN, Math.min(ALT_MAX, camAltTarget*f));
 },{passive:false});
+
+/* =====================================================================
+   TOUCH — one finger rotates/pans the globe; a second finger switches into
+   pinch-zoom-and-pan around the midpoint; a ~500ms long-press with a squad
+   selected re-autos it (the touch equivalent of the otherwise mouse-only
+   re-auto action). All native scroll/zoom is preventDefault'd so gestures
+   drive the game view directly. Runs alongside the mouse/wheel handlers
+   above, which ignore pointerType 'touch' — so desktop is unaffected.
+   ===================================================================== */
+const LONG_PRESS_MS = 500;                          // mirrors the hold-to-act timing
+let touchG=null;                                    // active gesture state
+let lpTimer=null, lpFired=false;                    // long-press timer + fired flag
+const clearLP=()=>{ if(lpTimer){ clearTimeout(lpTimer); lpTimer=null; } };
+const tDist=(a,b)=>Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
+const tMidX=(a,b)=>(a.clientX+b.clientX)/2;
+const tMidY=(a,b)=>(a.clientY+b.clientY)/2;
+
+/* rotate the globe by a screen-space drag delta — the same trackball math the
+   mouse drag uses, so touch and mouse feel identical */
+function touchRotate(dx,dy){
+  const len=Math.hypot(dx,dy);
+  if(len<0.01) return;
+  const k=dragScale();
+  tmpV.set(dy,dx,0).normalize();
+  const ang=len*k;
+  tmpQ.setFromAxisAngle(tmpV, ang);
+  root.quaternion.premultiply(tmpQ).normalize();
+  spin.axis.copy(tmpV); spin.vel=ang*0.55;          // carry momentum, like the mouse
+  flyQ=null;
+}
+
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  spin.vel=0;
+  const ts=e.touches;
+  if(ts.length===1){
+    const t=ts[0];
+    touchG={mode:'rotate', x:t.clientX, y:t.clientY, sx:t.clientX, sy:t.clientY, moved:0, t0:performance.now()};
+    lpFired=false; clearLP();
+    // long-press → re-auto the selected squad (only when it isn't already auto)
+    if(S.selection && S.selection.type==='squad'){
+      const sel=sqd(S.selection.id);
+      if(sel && sel.mode!=='auto'){
+        lpTimer=setTimeout(()=>{
+          lpFired=true; lpTimer=null;
+          const sq=S.selection && S.selection.type==='squad' ? sqd(S.selection.id) : null;
+          if(sq){ sq.mode='auto'; sq.target=null; sq.order='idle'; renderInspector(); }
+          if(navigator.vibrate) navigator.vibrate(18);
+        }, LONG_PRESS_MS);
+      }
+    }
+  } else if(ts.length>=2){
+    clearLP();                                       // second finger cancels a pending long-press
+    const a=ts[0], b=ts[1];
+    touchG={mode:'pinch', dist:tDist(a,b), mx:tMidX(a,b), my:tMidY(a,b)};
+  }
+},{passive:false});
+
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  if(!touchG) return;
+  const ts=e.touches;
+  if(touchG.mode==='rotate' && ts.length===1){
+    const t=ts[0];
+    const dx=t.clientX-touchG.x, dy=t.clientY-touchG.y;
+    touchG.x=t.clientX; touchG.y=t.clientY;
+    touchG.moved+=Math.abs(dx)+Math.abs(dy);
+    if(touchG.moved>10) clearLP();                   // a real drag isn't a long-press
+    touchRotate(dx,dy);
+  } else if(touchG.mode==='pinch' && ts.length>=2){
+    const a=ts[0], b=ts[1];
+    const dist=tDist(a,b), mx=tMidX(a,b), my=tMidY(a,b);
+    if(touchG.dist>0){                               // spread → zoom in, pinch → zoom out
+      camAltTarget=Math.max(ALT_MIN, Math.min(ALT_MAX, camAltTarget*(touchG.dist/dist)));
+    }
+    touchRotate(mx-touchG.mx, my-touchG.my);         // pan around the moving midpoint
+    touchG.dist=dist; touchG.mx=mx; touchG.my=my;
+  }
+},{passive:false});
+
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  // a short, still, single-finger touch that didn't long-press is a tap → select
+  if(touchG && touchG.mode==='rotate' && touchG.moved<10 && !lpFired
+     && performance.now()-touchG.t0 < LONG_PRESS_MS){
+    spin.vel=0; pickAt(touchG.sx, touchG.sy);
+  }
+  clearLP();
+  if(e.touches.length===1){                          // lifted one of two → resume single-finger rotate
+    const t=e.touches[0];
+    touchG={mode:'rotate', x:t.clientX, y:t.clientY, sx:t.clientX, sy:t.clientY, moved:999, t0:performance.now()};
+  } else if(e.touches.length===0){
+    touchG=null; lpFired=false;
+  }
+},{passive:false});
+
+canvas.addEventListener('touchcancel',()=>{ clearLP(); touchG=null; lpFired=false; },{passive:false});
 
 function stepCamera(){
   camAlt += (camAltTarget-camAlt)*0.16;
