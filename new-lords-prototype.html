@@ -2689,18 +2689,36 @@ function animateMarkers(){
    margin; the smaller tiers had the most room, megalopolis was already near its ring —
    and (b) adding buildings inside it: fuller street frontages (build ↑) plus courtyard
    infill on the urban tiers (court: fraction of inner-court lots built; 0 keeps camps a
-   sparse cluster). Road corridor widths (roadWidth) and block setbacks are deliberately
-   UNCHANGED — density comes from more buildings, not narrower streets (alley spacing is #18). */
+   sparse cluster). #17 left road corridors and setbacks untouched. */
+/* #18 — after #17's fill the passages read as cramped slivers and cats had nowhere to walk:
+   the deep lanes all sat on roadWidth's 0.018 floor, so the tightest walked lanes were only a
+   cat-width or two of clear pavement between the taller frontages. Widen the passages WITHOUT
+   undoing #17's density (per the #18 coordination) by reshaping the roadWidth curve to open the
+   NARROW lanes while leaving the already-generous avenues (and the sparse camp, whose one road is
+   the top-level split) exactly as they were — so no tier's streets get narrower: raise the floor
+   0.018→0.026 (the deep lanes cats actually thread grow ~44%) and slow the falloff a touch
+   0.72→0.73 (mid lanes widen a few %), with the base UNCHANGED at 0.075 so roadWidth(0) is
+   identical to main. Clear alley = roadWidth(d)+2·setback (setback unchanged at 0.012), so the
+   tightest lanes go 0.042→0.050 (+19%). To keep the footprint filled AND add buildings, minBlock
+   drops ~22% on the built tiers: the finer subdivision the raised floor now safely allows
+   recovers/adds blocks, and each block still lines full frontages + a courtyard (court/build
+   unchanged, near max) — measured (seed 1874): megalopolis buildings +5% AND median lane +14%
+   (both up together), city median lane +18%, village +17%, camp unchanged. Walkers only use these
+   perimeter corridors (streetPoint), so wider corridors = directly more walkable (cat pathfinding #20). */
 const CITY = {
   camp:        {radius:0.0085, depth:1, minBlock:0.42, floors:[1,1], build:0.36, court:0   },
-  village:     {radius:0.0200, depth:4, minBlock:0.150,floors:[1,2], build:0.66, court:0.45},
-  city:        {radius:0.0320, depth:7, minBlock:0.090,floors:[2,6], build:0.90, court:0.85},
-  megalopolis: {radius:0.0420, depth:9, minBlock:0.060,floors:[3,12],build:0.95, court:0.95},
+  village:     {radius:0.0200, depth:4, minBlock:0.117,floors:[1,2], build:0.66, court:0.45},
+  city:        {radius:0.0320, depth:7, minBlock:0.070,floors:[2,6], build:0.90, court:0.85},
+  megalopolis: {radius:0.0420, depth:9, minBlock:0.047,floors:[3,12],build:0.95, court:0.95},
 };
 function cityRng(st){ return mulberry32((st.id*2654435761 ^ S.seed*40503)>>>0); }
 
-/* road corridor width by how major the split is — avenues at the top, lanes at the bottom */
-function roadWidth(d){ return Math.max(0.018, 0.075 * Math.pow(0.72, d)); }   // floor nudged up so the deepest lanes stay walkable beside the taller buildings
+/* road corridor width by how major the split is — avenues at the top, lanes at the bottom.
+   #18: floor raised 0.018→0.026 (the deep lanes cats thread widen ~44%) and falloff slowed
+   0.72→0.73 (mid lanes widen a few %); base stays 0.075 so the top avenues — and the camp's single
+   top-level road — are untouched. The ubiquitous narrow lanes open into a readable, passable alley
+   beside the taller #17 buildings, and no tier's streets get narrower. */
+function roadWidth(d){ return Math.max(0.026, 0.075 * Math.pow(0.73, d)); }
 
 /* --- recursive block subdivision inside the city disk --- */
 function subdivideCity(st){
