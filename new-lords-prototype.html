@@ -3358,7 +3358,11 @@ addEventListener('pointermove',e=>{
   const len=Math.hypot(dx,dy);
   if(len<0.01) return;
   const k=dragScale();
-  tmpV.set(dy,dx,0).normalize();
+  // trackball axis in the camera's SCREEN frame — dy about camera-right, dx about camera-up
+  // (both horizontal thanks to the yaw-locked up), NOT fixed world XY, so the drag stays
+  // aligned with the cursor even when the view is tilted (camPitch/camYaw ≠ 0).
+  const _cp=Math.cos(camPitch), _sy=Math.sin(camYaw), _cy=Math.cos(camYaw);
+  tmpV.set(dy*_cy*_cp - dx*_sy, dy*_sy*_cp + dx*_cy, 0).normalize();
   const ang=len*k;
   tmpQ.setFromAxisAngle(tmpV, ang);
   root.quaternion.premultiply(tmpQ).normalize();
@@ -3646,7 +3650,11 @@ function touchRotate(dx,dy){
   const len=Math.hypot(dx,dy);
   if(len<0.01) return;
   const k=dragScale();
-  tmpV.set(dy,dx,0).normalize();
+  // trackball axis in the camera's SCREEN frame — dy about camera-right, dx about camera-up
+  // (both horizontal thanks to the yaw-locked up), NOT fixed world XY, so the drag stays
+  // aligned with the cursor even when the view is tilted (camPitch/camYaw ≠ 0).
+  const _cp=Math.cos(camPitch), _sy=Math.sin(camYaw), _cy=Math.cos(camYaw);
+  tmpV.set(dy*_cy*_cp - dx*_sy, dy*_sy*_cp + dx*_cy, 0).normalize();
   const ang=len*k;
   tmpQ.setFromAxisAngle(tmpV, ang);
   root.quaternion.premultiply(tmpQ).normalize();
