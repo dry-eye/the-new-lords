@@ -1415,6 +1415,13 @@ No settings/options menu is designed yet — there's no documented surface for a
 
 **Open question:** scope a minimal first version (at minimum: audio, save/load, keybinds if rebinding ships, quit-to-menu) and decide where it docks in the layout.
 
+### Visual themes
+The game ships more than one **visual theme**, and the player switches between them at will. A theme is a single named definition that restyles three layers at once — the **planet** (its terrain palette, water, atmosphere, and lighting, and the shading treatment itself, not only its colors), the **map icons and markers** (settlement, squad, caravan, and character glyphs, plus roads), and the **UI chrome** (panel colors, text, accent, and typeface) — so switching reads as one coherent restyle rather than a piecemeal recolor. Because a theme can change the planet's shading treatment and not merely its palette, two themes are free to differ in render style, not only in color.
+
+Two themes ship to start: an **antique cartographic** look (the default — warm brass-and-parchment on near-black, a serif codex feel) and a **modern sci-fi / holographic** look (cool neon on black, a technical planet treatment, a sans-serif face). The active theme is a settings choice (see "Settings and options menu," above) and is remembered across sessions. It is purely presentational — it changes nothing about the simulation, and two players on different themes see the same world state.
+
+**Open question:** whether the theme list stays a fixed shipped set or becomes user-extensible/skinnable, and whether a theme is ever tied to game state (e.g. a faction's own palette) rather than staying a global player preference, are left open.
+
 ---
 
 ## Tooling, telemetry & generation
