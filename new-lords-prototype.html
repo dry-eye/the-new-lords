@@ -905,6 +905,8 @@ function zoneAt(p){
   const e=elevation(p);
   if(e>0.34) return 'mountain';
   const t=tempAt(p,e), m=moistureAt(p);
+  if(t<0.13) return 'tundra';               // cold polar caps only
+  if(t>0.52 && m>0.60) return 'jungle';     // hot & wet — dense forest
   if(t>0.52 && m<0.40) return 'desert';
   if(m>0.48 && t>0.20) return 'forest';
   return 'plain';
@@ -2325,7 +2327,7 @@ const VGLOBE_VS = `in vec3 position; out vec2 vNdc;
 void main(){ vNdc=position.xy; gl_Position=vec4(position.xy, 1.0, 1.0); }`;
 const VGLOBE_FS = `precision highp float; precision highp int;
 uniform mat4 uInvVP; uniform vec3 uCamPos; uniform mat3 uInvRot;
-uniform float uSEA; uniform vec3 uWARP; uniform int uNSEED;
+uniform float uSEA; uniform vec3 uWARP; uniform int uNSEED; uniform int uForestStyle;
 in vec2 vNdc; out vec4 outColor;
 uint hash3u(int i,int j,int k){
   uint n=uint(i)*374761393u+uint(j)*668265263u+uint(k)*1274126177u+uint(uNSEED)*2654435761u;
@@ -2364,15 +2366,23 @@ float moistureAt(vec3 p){ return fbm(vec3(p.x*2.4+11.3,p.y*2.4-7.9,p.z*2.4+3.1),
 float tempAt(vec3 p,float e){ float lat=abs(p.y);
   return clamp(1.06-lat*1.28-max(0.0,e)*0.85+fbm(vec3(p.x*1.6-21.7,p.y*1.6+5.5,p.z*1.6-9.9),2,2.0,0.5)*0.10,0.0,1.0); }
 int zoneId(vec3 p,float e){ if(e<=0.0)return 0; if(e>0.34)return 3;
-  float t=tempAt(p,e),m=moistureAt(p); if(t>0.52&&m<0.40)return 4; if(m>0.48&&t>0.20)return 2; return 1; }
+  float t=tempAt(p,e),m=moistureAt(p);
+  if(t<0.13) return 5;                // tundra
+  if(t>0.52&&m>0.60) return 6;        // jungle (dense forest)
+  if(t>0.52&&m<0.40) return 4;        // desert
+  if(m>0.48&&t>0.20) return 2;        // forest
+  return 1; }                         // plain
 float hash21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
 float sdSeg(vec2 p,vec2 a,vec2 b){ vec2 pa=p-a,ba=b-a; float h=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0); return length(pa-ba*h); }
-float forestInk(vec2 f,vec2 cell){ if(hash21(cell)>0.80)return 0.0;
-  float cx=0.5+(hash21(cell+3.1)-0.5)*0.4,cy=0.66,hgt=0.42+0.12*hash21(cell+7.7),w=0.05;
-  float d=sdSeg(f,vec2(cx,cy),vec2(cx,cy-hgt*0.35));
-  for(int k=0;k<3;k++){ float t=float(k); float yy=cy-hgt*(0.30+0.22*t),ww=0.17-0.035*t;
-    d=min(d,sdSeg(f,vec2(cx-ww,yy),vec2(cx,yy-0.11))); d=min(d,sdSeg(f,vec2(cx+ww,yy),vec2(cx,yy-0.11))); }
-  return smoothstep(w,w*0.35,d); }
+float forestInk(vec2 f,vec2 cell,int style){
+  if(style==3) return 0.0;                                                                        // tint only — no glyphs
+  if(hash21(cell)>0.72) return 0.0;
+  float cx=0.5+(hash21(cell+3.1)-0.5)*0.42, cy=0.5+(hash21(cell+1.9)-0.5)*0.30;
+  vec2 c=vec2(cx,cy); float dd=length(f-c);
+  if(style==0){ float r=0.18+0.05*hash21(cell+7.7); return smoothstep(0.045,0.0,abs(dd-r)); }     // crown ring (circle)
+  if(style==1){ return smoothstep(0.10,0.045,dd); }                                               // small filled dot (stipple)
+  float r=0.19; return smoothstep(0.05,0.0,abs(dd-r))*smoothstep(-0.03,0.04,f.y-c.y);             // deciduous arc (upper ∩)
+}
 float desertDot(vec2 uv){ vec2 dom=vec2(uv.x*2.0,uv.y)*120.0; vec2 cell=floor(dom),f=fract(dom)-0.5;
   if(hash21(cell+1.7)>0.72)return 0.0; vec2 j=(vec2(hash21(cell+2.3),hash21(cell+5.9))-0.5)*0.5;
   return smoothstep(0.17,0.08,length(f-j)); }
@@ -2397,18 +2407,27 @@ void main(){
   vec2 suv=vec2(atan(d.z,d.x)/6.2831853+0.5, asin(clamp(d.y,-1.0,1.0))/3.14159265+0.5);
   vec2 dom=vec2(suv.x*2.0,suv.y)*82.0; vec2 cell=floor(dom),fcell=fract(dom);
   vec3 tint=landC;
-  if(z==2) tint=mix(landC,vec3(0.60,0.66,0.40),0.55);
-  else if(z==4) tint=mix(landC,vec3(0.86,0.78,0.50),0.60);
-  else if(z==3) tint=mix(landC,vec3(0.74,0.71,0.65),0.35);
+  if(z==2) tint=mix(landC,vec3(0.60,0.66,0.40),0.55);        // forest — soft green
+  else if(z==6) tint=mix(landC,vec3(0.34,0.50,0.26),0.72);   // jungle — deep saturated green
+  else if(z==5) tint=mix(landC,vec3(0.80,0.83,0.85),0.62);   // tundra — pale cold grey
+  else if(z==4) tint=mix(landC,vec3(0.86,0.78,0.50),0.60);   // desert — sand
+  else if(z==3) tint=mix(landC,vec3(0.74,0.71,0.65),0.35);   // mountain — grey
   float motif=0.0;
-  if(z==2) motif=forestInk(fcell,cell);
-  else if(z==4) motif=desertDot(suv);
-  else if(z==1) motif=plainFurrow(suv);
+  if(uForestStyle<=2){                                        // legacy glyph experiments
+    if(z==2) motif=forestInk(fcell,cell,uForestStyle);
+    else if(z==4) motif=desertDot(suv);
+    else if(z==1) motif=plainFurrow(suv);
+  }
+  // zone-as-shape borders (derivative of the zone mask → ~1px line, zoom-independent)
+  float zborder=0.0;
+  if(uForestStyle==4){ float fm=(z==2)?1.0:0.0; zborder=clamp(fwidth(fm)*1.3,0.0,1.0); }      // forest zone only
+  else if(uForestStyle==5){ zborder=clamp(fwidth(float(z))*1.3,0.0,1.0); }                    // every biome zone
   vec3 col=mix(ocean,tint,land);
-  col=mix(col,mix(ocean,lineC,0.5),bathy*0.45*(1.0-land));
-  col=mix(col,lineC,isoh*0.42*land);
-  vec3 motifCol=(z==2)?vec3(0.14,0.28,0.13):lineC;
-  col=mix(col,motifCol,motif*0.85*land);
+  col=mix(col,mix(ocean,lineC,0.5),bathy*0.30*(1.0-land));    // fainter isobaths
+  col=mix(col,lineC,isoh*0.26*land);                          // fainter land contours
+  vec3 motifCol=(z==2)?vec3(0.16,0.30,0.15):lineC;
+  col=mix(col,motifCol,motif*0.62*land);                      // softer, less attention-grabbing motifs
+  col=mix(col,lineC,zborder*0.6*land);                        // zone boundary ink
   col=mix(col,lineC,coast);
   outColor=vec4(col,1.0); }`;
 let vGlobe=null;
@@ -2420,7 +2439,7 @@ function buildVectorGlobe(){
     glslVersion:THREE.GLSL3, depthTest:false, depthWrite:false,
     uniforms:{ uInvVP:{value:new THREE.Matrix4()}, uCamPos:{value:new THREE.Vector3()},
       uInvRot:{value:new THREE.Matrix3()}, uSEA:{value:SEA},
-      uWARP:{value:new THREE.Vector3(WARP.x,WARP.y,WARP.z)}, uNSEED:{value:NSEED} },
+      uWARP:{value:new THREE.Vector3(WARP.x,WARP.y,WARP.z)}, uNSEED:{value:NSEED}, uForestStyle:{value:3} },
     vertexShader:VGLOBE_VS, fragmentShader:VGLOBE_FS });
   vGlobe=new THREE.Mesh(g,mat); vGlobe.frustumCulled=false; vGlobe.renderOrder=-10;
   scene.add(vGlobe);
