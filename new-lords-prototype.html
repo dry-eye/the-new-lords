@@ -980,6 +980,35 @@ function terrainColorTech(p, e, out){
   out[2]=Math.min(1, 0.14+0.20*lift + C2*(line*0.65+coast*0.9) + peak*0.6);
 }
 
+/* Legible biome patterns (terrain-zones stage 1, DESIGN.md "Map legibility"): each
+   biome carries a distinct texture signature so kinds read by pattern, not colour
+   alone — forest an unmistakable clumpy canopy (lumber camps need forest), desert a
+   fine dune speckle, mountain a faint hachure, plains kept open. Baked into the
+   antique terrain texture on top of terrainColor; zone is inlined off the shared e. */
+function biomePattern(p, e, rgb){
+  if(e<=0) return;                                   // ocean: no pattern
+  let z;
+  if(e>0.34) z='mountain';
+  else { const t=tempAt(p,e), m=moistureAt(p);
+    z = (t>0.52&&m<0.40)?'desert' : (m>0.48&&t>0.20)?'forest' : 'plain'; }
+  const clamp=v=>v<0?0:v>1?1:v;
+  if(z==='forest'){                                  // dense dark-green canopy stipple
+    const clump=fbm(p.x*70+3.7, p.y*70-1.1, p.z*70+8.3, 4, 2.1, 0.55);
+    const dots =fbm(p.x*185-5.0, p.y*185+2.0, p.z*185-3.0, 2, 2.2, 0.5);
+    const canopy=Math.min(0.78, Math.max(0,clump-0.40)*1.8 + Math.max(0,dots-0.56)*0.9);
+    rgb[0]+=(0.09-rgb[0])*canopy; rgb[1]+=(0.22-rgb[1])*canopy; rgb[2]+=(0.11-rgb[2])*canopy;
+  } else if(z==='desert'){                           // fine dune speckle
+    const s=(fbm(p.x*220+1.0, p.y*220+9.0, p.z*220-4.0, 2, 2.2, 0.5)-0.5)*0.18;
+    rgb[0]=clamp(rgb[0]+s); rgb[1]=clamp(rgb[1]+s*0.9); rgb[2]=clamp(rgb[2]+s*0.7);
+  } else if(z==='mountain'){                         // faint ridge hachure
+    const h=fbm(p.x*130+2.0, p.y*130-6.0, p.z*130+1.0, 3, 2.1, 0.5);
+    const f=1-Math.max(0,h-0.55)*0.5; rgb[0]*=f; rgb[1]*=f; rgb[2]*=f;
+  } else {                                           // plains: kept open, faint grain
+    const g=fbm(p.x*90-2.0, p.y*90+4.0, p.z*90-7.0, 2, 2.1, 0.5);
+    const f=1-Math.max(0,g-0.6)*0.16; rgb[0]*=f; rgb[1]*=f; rgb[2]*=f;
+  }
+}
+
 /* Sea level is solved for, not guessed — every world gets real continents. */
 function calibrateSea(targetLand){
   const probes=[];
@@ -2338,6 +2367,7 @@ function buildScene(){
       pv.set(cy*Math.cos(lon), sy, cy*Math.sin(lon));
       const e=elevation(pv);                          // once — shared by both themes
       terrainColor(pv, e, rgb);
+      biomePattern(pv, e, rgb);
       terrainColorTech(pv, e, rgbT);
       const i=(y*TEX_W+x)*4;
       const hgt=Math.max(0, Math.min(255, (e+0.45)/1.15*255));  // packed height, for bump
