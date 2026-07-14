@@ -2022,6 +2022,7 @@ scene.add(new THREE.AmbientLight(0x8CA4CC, 0.62));
 const sun=new THREE.DirectionalLight(0xFFF3DA, 0.95); sun.position.set(0.4,0.5,1); scene.add(sun);
 
 let planet, roadLines, roadMat, markerGroup, atmoMesh;
+let selFrame=null, bracketTex=null;   // #49 — one shared corner-bracket selection frame
 
 /* ---------- icon atlas: every object type gets a drawn glyph ---------- */
 const ICONS={};
@@ -2198,6 +2199,7 @@ function applyTheme(name){
   }
   if(atmoMesh) atmoMesh.material.color.set(THEME.atmo);
   if(roadMat) roadMat.uniforms.tint.value.set(THEME.road);
+  if(selFrame) selFrame.material.color.set(THEME.iconAccent);   // #49 — selection frame tracks the theme accent
   for(const st of (S.settlements||[])){
     if(st._label && st._label.material) st._label.material.color.set(THEME.lbl[st._label._big?'big':'small']);
   }
@@ -2260,6 +2262,22 @@ function makeSprite(tex, size, color){
   m.scale.set(size,size,1);
   m.renderOrder=10;
   return m;
+}
+/* #49 — universal selection frame: four corner brackets, drawn once in white on a
+   transparent field (reusing iconTexture, which centres the context and gives a dark
+   halo helper) so a single sprite can be recoloured per-theme via material.color and
+   scaled to hug whichever marker is selected. Selection = this frame, never icon scale. */
+function makeBracketTexture(){
+  return iconTexture((x,r)=>{
+    const e=r*0.82, a=r*0.42, lw=Math.max(3, r*0.11);
+    const seg=xx=>{ xx.beginPath();
+      xx.moveTo(-e+a,-e); xx.lineTo(-e,-e); xx.lineTo(-e,-e+a);   // top-left corner
+      xx.moveTo( e-a,-e); xx.lineTo( e,-e); xx.lineTo( e,-e+a);   // top-right corner
+      xx.moveTo( e-a, e); xx.lineTo( e, e); xx.lineTo( e, e-a);   // bottom-right corner
+      xx.moveTo(-e+a, e); xx.lineTo(-e, e); xx.lineTo(-e, e-a); };  // bottom-left corner
+    outline(x, xx=>{ seg(xx); xx.stroke(); }, lw+6);               // dark halo so brackets read over terrain
+    x.lineWidth=lw; seg(x); x.stroke();
+  }, 128);
 }
 
 /* ---------- settlement territory footprint ---------------------------------
@@ -2528,6 +2546,11 @@ function buildScene(){
   root.add(roadLines);
 
   markerGroup=new THREE.Group(); root.add(markerGroup);
+  // #49 — one shared selection frame overlay, follows the active selection each frame
+  if(!bracketTex) bracketTex=makeBracketTexture();
+  selFrame=makeSprite(bracketTex, 0.05, THEME.iconAccent);
+  selFrame.renderOrder=9; selFrame.visible=false;   // under icons (10); hidden until something is selected
+  markerGroup.add(selFrame);
   pawnSprites=[]; pawnPositions=[]; pawnBuiltFor=null;
 
   const TIER_PX={megalopolis:0.062, city:0.048, village:0.034, camp:0.026};
@@ -2588,7 +2611,7 @@ function updateMarkers(){
     st._spr.material.color.set(col);
     const sel=S.selection && S.selection.type==='settlement' && S.selection.id===st.id;
     const hov=hover && hover.type==='settlement' && hover.id===st.id;
-    st._spr.scale.setScalar(st._px*(sel?1.35:hov?1.18:1));
+    st._spr.scale.setScalar(st._px*(hov?1.18:1));   // #49 selection = frame, not scale; hover keeps its own lighter cue
     if(st._foot){
       st._foot.material.uniforms.tint.value.set(col);
       st._foot.material.uniforms.alpha.value = sel?0.9 : hov?0.6 : 0.38;
@@ -2602,9 +2625,9 @@ function updateMarkers(){
       markerGroup.add(e._spr);
     }
     if(!e._spr) continue;
-    const sel=S.selection && S.selection.type==='enterprise' && S.selection.id===e.id;
+    const hov=hover && hover.type==='enterprise' && hover.id===e.id;
     e._spr.material.color.set(e.stalled? 0x9A6A62 : THEME.iconAccent);
-    e._spr.scale.setScalar(0.026*(sel?1.35:1));
+    e._spr.scale.setScalar(0.026*(hov?1.15:1));   // #49 selection = frame; keep a subtle hover-only cue
     picks.push({type:'enterprise', id:e.id, dir:e._dir, px:0.026});
   }
   const live=new Set();
@@ -2614,8 +2637,8 @@ function updateMarkers(){
     let m=squadMeshes.get(sq.id);
     if(!m){ m=makeSprite(ICONS.squad, 0.034); markerGroup.add(m); squadMeshes.set(sq.id,m); }
     m.material.color.set(factionColor(sq.factionId));
-    const sel=S.selection && S.selection.type==='squad' && S.selection.id===sq.id;
-    m.scale.setScalar((0.026+Math.min(0.016, sq.strength/900))*(sel?1.4:1));
+    const hov=hover && hover.type==='squad' && hover.id===sq.id;
+    m.scale.setScalar((0.026+Math.min(0.016, sq.strength/900))*(hov?1.15:1));   // #49 selection = frame; keep a subtle hover-only cue
     picks.push({type:'squad', id:sq.id, dir:sq.rdir, px:0.034});
   }
   for(const [id,m] of squadMeshes) if(!live.has(id)){ markerGroup.remove(m); squadMeshes.delete(id); }
@@ -2682,6 +2705,27 @@ function animateMarkers(){
   for(const c of cityCache.values()){
     const z=c.st.dir.clone().applyQuaternion(q).dot(_camNrm);
     c.group.visible = z > horizon - 0.03;
+  }
+  // #49 — universal selection frame: hug the selected object's icon with corner brackets.
+  // One shared overlay; sized to the marker's on-screen radius, hidden when nothing is
+  // selected or when the selected marker is behind the globe.
+  if(selFrame){
+    const t=selectionFrameTarget();
+    if(!t){ selFrame.visible=false; }
+    else {
+      const K=1.7;                                   // frame a touch larger than the icon it wraps
+      selFrame.scale.set(t.px*K, t.px*K, 1);
+      if(t.spr){                                     // a real marker exists: inherit its exact position + limb culling
+        selFrame.position.copy(t.spr.position);
+        selFrame.visible=t.spr.visible;
+        selFrame.material.opacity=t.spr.material.opacity;
+      } else {                                        // char/org (no dedicated marker): place from the on-sphere direction
+        selFrame.position.copy(t.dir).multiplyScalar(1.045);
+        const z=t.dir.clone().applyQuaternion(q).dot(_camNrm);
+        selFrame.visible = z > horizon - 0.02;
+        selFrame.material.opacity=Math.min(1, Math.max(0,(z-horizon+0.02)/0.08));
+      }
+    }
   }
 }
 
@@ -4209,6 +4253,18 @@ function selectionDir(){
     const c=chr(o?.leaderId); return c? stl(c.homeId)?.dir : null;
   }
   return null;
+}
+/* #49 — resolve the current selection to the marker the shared frame should hug.
+   Returns {spr,px} when a real marker sprite exists (frame inherits its rendered
+   position + limb culling), or {dir,px} for char/org which have no dedicated marker
+   (frame is placed from the on-sphere direction, as selectionDir already resolves). */
+function selectionFrameTarget(){
+  const s=S.selection; if(!s) return null;
+  if(s.type==='settlement'){ const st=stl(s.id); if(st&&st._spr) return {spr:st._spr, px:st._spr.scale.x}; }
+  else if(s.type==='enterprise'){ const e=ent(s.id); if(e&&e._spr) return {spr:e._spr, px:e._spr.scale.x}; }
+  else if(s.type==='squad'){ const m=squadMeshes.get(s.id); if(m) return {spr:m, px:m.scale.x}; }
+  else if(s.type==='caravan'){ const m=caravanMeshes.get(s.id); if(m) return {spr:m, px:m.scale.x}; }
+  const d=selectionDir(); return d? {dir:d, px:0.03} : null;
 }
 
 /* Debug / test drive surface — mirrors the existing window.S / window.TELE console
