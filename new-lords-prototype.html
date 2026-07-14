@@ -2979,23 +2979,41 @@ function buildCity(st, maxResidents=48){
     }
     return {x:0,y:0};
   };
-  const residents=S.chars.filter(c=>c.homeId===st.id && c.alive).slice(0, maxResidents);
-  residents.forEach((c,i)=>{
-    const b=blocks[(c.id*5+i)%blocks.length];
-    const start=streetPoint(b, c.id%4, ((c.id%7)/7-0.5)*1.2);
+  //    Two kinds of walker share the streets. IDENTIFIED residents are the settlement's
+  //    real sim characters (leader, player, named folk): coloured by role and pickable.
+  //    A handful of them can't fill a city, so we top up with ANONYMOUS residents — purely
+  //    cosmetic cat heads that walk exactly like the rest but back NO sim entity and aren't
+  //    pickable (the same render-time materialisation the squad pawns use; DESIGN §236
+  //    "Identified vs anonymous"). The total scales with the town's built footprint — its
+  //    block count is ≈ how much street there is to fill — so a sprawling megalopolis reads
+  //    as busy and a camp stays sparse (issue #16: cities were looking empty).
+  const realResidents=S.chars.filter(c=>c.homeId===st.id && c.alive);
+  const footprint=town.blocks.length;
+  const wanted=Math.min(110, Math.round(footprint*1.7));   // ~1.7 residents per block, hard-capped for readability
+  const total=Math.min(maxResidents, Math.max(realResidents.length, wanted));
+  const spawnWalker=(seed, char)=>{
+    const b=blocks[(seed*5)%blocks.length];
+    const start=streetPoint(b, seed%4, ((seed%7)/7-0.5)*1.2);
     if(Math.hypot(start.x,start.y)>1.0){ start.x=0; start.y=0; }
-    const isLeader=!!c.ledOrgId, isPlayer=c.id===S.playerCharId;
+    const isLeader=char && !!char.ledOrgId, isPlayer=char && char.id===S.playerCharId;
     const fur = isPlayer? new THREE.Color(0xC89B3C)
               : isLeader? new THREE.Color(0xEADCB6)
-              : new THREE.Color().setHSL(0.07+((c.id%9)/9)*0.06, 0.18+((c.id%3)*0.10), 0.42+((c.id%5)/5)*0.28);
-    const weapon = c.skills.shooting > c.skills.melee ? 'rifle' : 'sword';   // ranged vs melee
+              : new THREE.Color().setHSL(0.07+((seed%9)/9)*0.06, 0.18+((seed%3)*0.10), 0.42+((seed%5)/5)*0.28);
+    // exactly one weapon per head (#33): an IDENTIFIED cat picks by skill; an ANONYMOUS cat
+    // (no sim entity, no skills) gets a stable cosmetic weapon from its per-slot seed.
+    const weapon = char ? (char.skills.shooting > char.skills.melee ? 'rifle' : 'sword')
+                        : ((seed%2) ? 'rifle' : 'sword');
     const head=makeCatHead(fur, weapon);
     head.matrixAutoUpdate=false;
     group.add(head);
-    walkers.push({ id:c.id, mesh:head, x:start.x, y:start.y, tgt:nextWaypoint(),
-                   face:(c.id%360)/360*Math.PI*2, spd:0.09+((c.id%5)/5)*0.07,
-                   phase:(c.id%12)/12*6.283, dir:dirOf(start.x,start.y) });
-  });
+    walkers.push({ id: char? char.id : null, mesh:head, x:start.x, y:start.y, tgt:nextWaypoint(),
+                   face:(seed%360)/360*Math.PI*2, spd:0.09+((seed%5)/5)*0.07,
+                   phase:(seed%12)/12*6.283, dir:dirOf(start.x,start.y) });
+  };
+  for(let k=0;k<total;k++){
+    if(k<realResidents.length) spawnWalker(realResidents[k].id, realResidents[k]);
+    else spawnWalker((st.id*131+k*9277+7)>>>0, null);   // stable per-slot cosmetic seed — no sim entity created
+  }
 
   root.add(group);
   return {group, walkers, st, orient, dirOf, nextWaypoint};
@@ -3042,7 +3060,7 @@ const HOT_PAWN_DIST = 1.90;   // resident sprites fade in a little higher than f
 const HOT_PAWN_COS  = 0.85;   // ...across a WIDER ~32° cone, so full-geometry tiles are ringed by dot tiles
 const HOT_SQUAD_COS = 0.997;  // an own squad within ~4.4° of a tile counts as "present" → tile is hot
 const HOT_SQUAD_PAWN_DIST = 2.6; // own-side squads surface their pawns out to this altitude, wherever they sit
-const CITY_BUILD_PER_FRAME = 2;  // amortise: cap new cities built per frame so a big reveal never spikes one frame
+const CITY_BUILD_PER_FRAME = 1;  // amortise: build ONE (now denser #16) city per frame so a big reveal never spikes one frame
 
 function cameraDir(){ return new THREE.Vector3(0,0,1).applyQuaternion(root.quaternion.clone().invert()); }
 function playerFactionId(){
@@ -3084,8 +3102,9 @@ function updateCityLOD(){
   const hotIds=new Set(hot.map(s=>s.id));
   for(const [id,c] of cityCache) if(!hotIds.has(id)){ root.remove(c.group); cityCache.delete(id); }
   // share one resident-head budget across however many cities are live, so "several"
-  // hot tiles don't multiply the walker draw calls without bound.
-  const cap=Math.max(12, Math.round(96/Math.max(1,hot.length)));
+  // hot tiles don't multiply the walker draw calls without bound. The budget is sized so a
+  // lone hot city reaches its full footprint-scaled crowd (#16) while a whole cluster splits it.
+  const cap=Math.max(16, Math.round(180/Math.max(1,hot.length)));
   let built=0;
   for(const st of hot){
     if(cityCache.has(st.id)) continue;
@@ -3095,7 +3114,7 @@ function updateCityLOD(){
   cityLive = new Set(cityCache.keys());                 // everything currently built is hot
   for(const c of cityCache.values()){
     stepWalkers(c, frameDtMs);
-    for(const w of c.walkers) picks.push({type:'char', id:w.id, dir:w.dir, px:0.022});
+    for(const w of c.walkers) if(w.id!=null) picks.push({type:'char', id:w.id, dir:w.dir, px:0.022}); // anonymous residents aren't pickable
   }
 }
 
