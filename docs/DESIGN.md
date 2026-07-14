@@ -1390,7 +1390,7 @@ Clicking an entity name anywhere in the UI pans the camera to it and selects it,
 ### Pinnable, nested tooltips
 Hovering an entity link (settlement, org, or character) anywhere in the UI shows a tooltip anchored near the cursor; it follows the pointer and disappears on mouse-out unless pinned. Middle-click pins a tooltip — it stops following the cursor and gains a close control. A pinned tooltip's body can itself contain links; clicking one opens a nested tooltip anchored off the parent's edge, and any tooltip in the chain can be pinned independently, stacking to unbounded depth. Clicking outside the entire stack dismisses it, pinned tooltips included. Tooltips clamp to the screen edge so they never overflow the viewport. This is an additive layer — it doesn't replace the click-to-open inspector panels for the same objects.
 
-**Open question:** this system is hover-triggered and pinned by middle-click, both mouse-only interactions with no touchscreen equivalent (no hover state, no middle button). See "Touch equivalent for hover-triggered tooltips" under Mobile web support, below.
+**Touch:** this system is hover-triggered and pinned by middle-click, both mouse-only — on a touch device a long-press on a link shows its tooltip already pinned, while a short tap keeps the link's normal action. See "Touch equivalent for hover-triggered tooltips" under Mobile web support, below.
 
 ### Search box for tuning params
 A text search over the tuning panel filters rows to those whose label or parameter key matches the query (case-insensitive), composing as an AND with the existing tag-filter chips. Groups that end up empty are hidden. The query persists across panel rebuilds.
@@ -1469,10 +1469,13 @@ Deferred:
 
 Quick-save/quick-load keyboard shortcuts are power-user shortcuts, not gameplay-blocking, and are deferred along with the rest.
 
-### Touch equivalent for hover-triggered tooltips (open question)
-Neither the mobile-input work above, nor the tooltip system itself, nor the term-tooltip convention (below) defines a touch equivalent for hover-to-show / mouse-out-to-hide / middle-click-to-pin — all three assume a mouse. On a touch device there's no hover state and no middle button, so without a defined touch interaction the entire tooltip layer (both entity tooltips and term tooltips) would be unreachable.
+### Touch equivalent for hover-triggered tooltips
+The tooltip layer — both entity tooltips and term tooltips, which share one pinnable/nested system (see "Pinnable, nested tooltips," above) — is hover-to-show / mouse-out-to-hide / middle-click-to-pin on desktop, all mouse-only. Its touch equivalent:
 
-**Open question:** pick a touch interaction. Candidates: tap-to-pin (replacing hover+middle-click with a single tap), or long-press-to-pin with a short tap passing through to the underlying element.
+- **Long-press pins.** A long-press on an entity or term link (its text in a panel, or its label on the map) shows that link's tooltip already **pinned** — there is no transient hover/peek state on touch. The pinned tooltip carries a close control and is dismissed by that control, or by tapping anywhere outside the whole stack (mirroring desktop's click-outside-to-dismiss).
+- **A short tap keeps its existing meaning**, so the tooltip path is added without stealing it: a short tap on an entity link teleports-and-selects (opens its inspector) exactly as it already does, and a short tap on a term link does whatever that link already does. Long-press is the only new gesture.
+- **Nested tooltips** work by tapping a link inside a pinned tooltip, which opens a nested pinned tooltip off its edge (stacking to unbounded depth), mirroring desktop's click-to-open-nested.
+- **Disambiguated from the squad re-auto long-press by target, not timing:** a long-press on an entity/term link pins that link's tooltip, while a long-press on the empty game view with a squad selected re-autos the squad (see the mobile V1 scope, above). The two never contend, because they land on different hit targets — so no separate duration threshold is needed.
 
 ---
 
@@ -1492,7 +1495,7 @@ What you can click and what each inspector panel shows. One entry per selectable
 | **My Character** (avatar) | persistent panel while playing as a character | Character detail view + org forest | same as Character, plus the avatar's own org tree context |
 | **Squad loadout** | opens alongside a selected squad, side by side with the squad detail panel (see the layout rule below) | Squad loadout view | per-pawn seat role, mounted vehicle (if any), remote-operator link (cycle-role click target) |
 | **Building interior** | select a building at close-zoom/street tier | Interior panel | building label, room layout (procedurally generated, fixture preview), building stock |
-| **Term (glossary)** | hover a mechanics term in any panel or tooltip (mouse-only — see the touch tooltip open question under Mobile web support) | Term tooltip | CK-style nested definition, sourced from the Glossary below, may drill into further terms/instances |
+| **Term (glossary)** | hover a mechanics term in any panel or tooltip, or long-press it on touch (see "Touch equivalent for hover-triggered tooltips," under Mobile web support) | Term tooltip | CK-style nested definition, sourced from the Glossary below, may drill into further terms/instances |
 
 
 **Layout rule:** the squad and loadout panels open together and lay out side by side, via a shared layout container rather than two independently-positioned fixed elements — they must never render stacked on top of one another.
