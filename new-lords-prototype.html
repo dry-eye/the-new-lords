@@ -2716,7 +2716,7 @@ const DISK=new THREE.CircleGeometry(1, 44);
 /* one flying cat head (sphere + ears + muzzle), sized in surface units; the group is
    placed and oriented per frame by stepWalkers. Shared primitives, per-head material. */
 function makeCatHead(fur){
-  const H=0.00045;
+  const H=0.00100;
   const head=fur.clone().offsetHSL(0,0,0.05);
   const matH=new THREE.MeshLambertMaterial({color:head});
   const matM=new THREE.MeshLambertMaterial({color:head.clone().offsetHSL(0,-0.05,0.10)});
@@ -2743,7 +2743,7 @@ function buildCity(st){
   const bit=up.clone().cross(tan).normalize();
   const R=1 + Math.max(0, elevation(st.dir))*0.028;
   const S1=cfg.radius;
-  const FLOOR=0.00160;   // storey height — scaled up so buildings tower over the cat heads (H=0.00045)
+  const FLOOR=0.00160;   // storey height — buildings still tower over the (enlarged) cat heads (H=0.00100)
 
   const dirOf=(x,y)=>up.clone().add(tan.clone().multiplyScalar(x*S1))
                                 .add(bit.clone().multiplyScalar(y*S1)).normalize();
@@ -2854,7 +2854,7 @@ function buildCity(st){
 /* advance one town's walking cat heads along the streets by one frame's worth of time */
 function stepWalkers(c, dtMs){
   if(!c.walkers || !c.walkers.length) return;
-  const H=0.00045, sp = S.paused? 0 : S.speed;
+  const H=0.00100, sp = S.paused? 0 : S.speed;
   for(const w of c.walkers){
     if(sp>0){
       const dx=w.tgt.x-w.x, dy=w.tgt.y-w.y, d=Math.hypot(dx,dy);
