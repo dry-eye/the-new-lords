@@ -209,6 +209,7 @@
   <div class="sep"></div>
   <button id="btnGraph">Граф організацій</button>
   <button id="btnTele" title="Експорт телеметрії балансу (JSON знімки + журнал + метадані)">Телеметрія ⬇</button>
+  <button id="btnTheme" title="Візуальна тема (Y)">Тема: Антик</button>
   <div class="sep"></div>
   <span class="stat">seed</span>
   <input id="seedInput" size="7" value="1874">
@@ -1927,7 +1928,7 @@ const root=new THREE.Group(); scene.add(root);   // the planet spins, the camera
 scene.add(new THREE.AmbientLight(0x8CA4CC, 0.62));
 const sun=new THREE.DirectionalLight(0xFFF3DA, 0.95); sun.position.set(0.4,0.5,1); scene.add(sun);
 
-let planet, roadLines, roadMat, markerGroup;
+let planet, roadLines, roadMat, markerGroup, atmoMesh;
 
 /* ---------- icon atlas: every object type gets a drawn glyph ---------- */
 const ICONS={};
@@ -2059,6 +2060,55 @@ function buildIcons(){
   });
 }
 buildIcons();
+
+/* ===== Visual themes — one switch restyles UI + icons + planet together (DESIGN.md) ===== */
+const THEMES = {
+  antique: {
+    label:'Антик',
+    ui:{ '--ink':'#080B12','--panel':'#101624','--panel-2':'#0B1120','--rule':'#243049',
+         '--text':'#CBD5E6','--dim':'#7B88A6','--brass':'#C89B3C','--brass-dim':'#8A6C2C',
+         '--good':'#5FB58A','--bad':'#C4574F','--covert':'#8B5FB5',
+         '--serif':"'Spectral',Iowan Old Style,Palatino,serif" },
+    bg:0x070A11, atmo:0x4E75A8, road:0x8A7550, iconAccent:0xE8CE96,
+    holo:0, tint:[0.20,0.33,0.52],
+  },
+  holo: {
+    label:'Sci-Fi',
+    ui:{ '--ink':'#04070C','--panel':'#071119','--panel-2':'#050C13','--rule':'#123A44',
+         '--text':'#BFE9F2','--dim':'#5E8792','--brass':'#35E0D0','--brass-dim':'#1C8C86',
+         '--good':'#46E0A0','--bad':'#F0616B','--covert':'#7E7BF0',
+         '--serif':"ui-sans-serif,system-ui,'Segoe UI',sans-serif" },
+    bg:0x03070C, atmo:0x1FA6B8, road:0x2FBFB0, iconAccent:0x35E0D0,
+    holo:1, tint:[0.20,0.85,0.85],
+  },
+};
+let THEME_NAME = 'antique';
+try { const s=localStorage.getItem('nl_theme'); if(s && THEMES[s]) THEME_NAME=s; } catch(e){}
+let THEME = THEMES[THEME_NAME];
+
+function applyTheme(name){
+  if(!THEMES[name]) name='antique';
+  THEME_NAME=name; THEME=THEMES[name];
+  const rs=document.documentElement.style;
+  for(const k in THEME.ui) rs.setProperty(k, THEME.ui[k]);
+  if(scene && scene.background) scene.background.set(THEME.bg);
+  if(planet && planet.material && planet.material.uniforms.uHolo){
+    planet.material.uniforms.uHolo.value = THEME.holo;
+    planet.material.uniforms.uTint.value.setRGB(THEME.tint[0],THEME.tint[1],THEME.tint[2]);
+  }
+  if(atmoMesh) atmoMesh.material.color.set(THEME.atmo);
+  if(roadMat) roadMat.uniforms.tint.value.set(THEME.road);
+  if(S.settlements.length) updateMarkers();
+  const b=document.getElementById('btnTheme'); if(b) b.textContent='Тема: '+THEME.label;
+  try{ localStorage.setItem('nl_theme', name); }catch(e){}
+}
+function toggleTheme(){ applyTheme(THEME_NAME==='antique'?'holo':'antique'); }
+document.getElementById('btnTheme').onclick=toggleTheme;
+addEventListener('keydown',e=>{
+  const tag=(e.target&&e.target.tagName)||'';
+  if((e.key==='y'||e.key==='Y') && tag!=='INPUT' && tag!=='TEXTAREA') toggleTheme();
+});
+applyTheme(THEME_NAME);
 
 /* on-map key: what each icon means */
 function buildIconLegend(){
@@ -2215,6 +2265,8 @@ function buildScene(){
       map:{value:terrainTex},
       texel:{value:new THREE.Vector2(1/TEX_W, 1/TEX_H)},
       lightDir:{value:new THREE.Vector3(0.45,0.55,1.0).normalize()},
+      uHolo:{value: THEME.holo},
+      uTint:{value: new THREE.Color(THEME.tint[0],THEME.tint[1],THEME.tint[2])},
     },
     vertexShader:`
       varying vec3 vObj;
@@ -2229,6 +2281,8 @@ function buildScene(){
       uniform sampler2D map;
       uniform vec2 texel;
       uniform vec3 lightDir;
+      uniform float uHolo;
+      uniform vec3 uTint;
       varying vec3 vObj;
       varying vec3 vWN;
 
@@ -2295,13 +2349,26 @@ function buildScene(){
         float rim = pow(1.0 - max(dot(normalize(vWN), V),0.0), 3.0);
         lit += vec3(0.20,0.33,0.52)*rim*0.35;
 
+        // theme treatment: holographic re-render (cool tint + lat/long grid + strong rim)
+        if(uHolo > 0.5){
+          float lum = dot(lit, vec3(0.299,0.587,0.114));
+          vec3 holo = uTint * (0.30 + lum*1.25);
+          vec2 gr = abs(fract(uv*vec2(48.0,24.0)) - 0.5);
+          float lines = smoothstep(0.45, 0.5, max(gr.x, gr.y));
+          holo += uTint * lines * 0.35 * sea;
+          float rim2 = pow(1.0 - max(dot(normalize(vWN), V),0.0), 2.0);
+          holo += uTint * rim2 * 0.7;
+          lit = holo;
+        }
+
         gl_FragColor = vec4(lit, 1.0);
       }`,
   });
   planet=new THREE.Mesh(geo, planetMat);
   root.add(planet);
-  root.add(new THREE.Mesh(new THREE.SphereGeometry(1.055,64,40),
-    new THREE.MeshBasicMaterial({color:0x4E75A8, transparent:true, opacity:0.09, side:THREE.BackSide})));
+  atmoMesh=new THREE.Mesh(new THREE.SphereGeometry(1.055,64,40),
+    new THREE.MeshBasicMaterial({color:THEME.atmo, transparent:true, opacity:0.09, side:THREE.BackSide}));
+  root.add(atmoMesh);
 
   /* --- roads --- */
   const rp=[];
@@ -2318,7 +2385,7 @@ function buildScene(){
   /* Roads are drawn on the sphere's surface, so depth alone can't be trusted at
      grazing angles — the far hemisphere is discarded outright in the shader. */
   roadMat=new THREE.ShaderMaterial({
-    uniforms:{ horizon:{value:0.3}, tint:{value:new THREE.Color(0x8A7550)} },
+    uniforms:{ horizon:{value:0.3}, tint:{value:new THREE.Color(THEME.road)} },
     transparent:true, depthWrite:false,
     vertexShader:`
       varying vec3 vW;
@@ -2410,12 +2477,12 @@ function updateMarkers(){
   for(const e of S.ents){
     if(!e._spr && !ENT[e.kind].inside && markerGroup){
       e._dir = e._dir || placeOutdoorEnterprise(stl(e.settlementId), e);
-      e._spr = makeSprite(ICONS[e.kind], 0.026, 0xE8CE96);
+      e._spr = makeSprite(ICONS[e.kind], 0.026, THEME.iconAccent);
       markerGroup.add(e._spr);
     }
     if(!e._spr) continue;
     const sel=S.selection && S.selection.type==='enterprise' && S.selection.id===e.id;
-    e._spr.material.color.set(e.stalled? 0x9A6A62 : 0xE8CE96);
+    e._spr.material.color.set(e.stalled? 0x9A6A62 : THEME.iconAccent);
     e._spr.scale.setScalar(0.026*(sel?1.35:1));
     picks.push({type:'enterprise', id:e.id, dir:e._dir, px:0.026});
   }
