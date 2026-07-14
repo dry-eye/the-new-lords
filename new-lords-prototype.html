@@ -137,6 +137,24 @@
     max-width:230px;line-height:1.5;box-shadow:0 6px 18px rgba(0,0,0,.45)}
   #tip b{color:#EFE6D2;font-weight:600;display:block;font-family:var(--serif);font-size:14px}
   #tip .tk{display:block;color:var(--dim);font-size:10px}
+  /* term-tooltip hover peek (desktop) — same skin as #tip, mouse-only */
+  #termTip{position:fixed;display:none;z-index:13;pointer-events:none;background:rgba(11,17,32,.97);
+    border:1px solid var(--rule);border-left:2px solid var(--brass);padding:6px 9px;border-radius:2px;
+    max-width:250px;line-height:1.5;box-shadow:0 6px 18px rgba(0,0,0,.45)}
+  #termTip b{color:#EFE6D2;font-weight:600;display:block;font-family:var(--serif);font-size:14px}
+  #termTip .tk{display:block;color:var(--dim);font-size:10px}
+  /* shared PINNED tooltip (entity + term) — middle-click on desktop, long-press on touch.
+     pointer-events:auto so its close control and inner links are interactive. */
+  #pinTip{position:fixed;display:none;z-index:14;pointer-events:auto;background:rgba(11,17,32,.98);
+    border:1px solid var(--rule);border-left:2px solid var(--brass);padding:8px 26px 9px 11px;border-radius:2px;
+    max-width:260px;line-height:1.5;box-shadow:0 10px 26px rgba(0,0,0,.55)}
+  #pinTip b{color:#EFE6D2;font-weight:600;display:block;font-family:var(--serif);font-size:14px}
+  #pinTip .tk{display:block;color:var(--dim);font-size:10px}
+  #pinTip .pinClose{position:absolute;top:3px;right:5px;cursor:pointer;color:var(--dim);
+    font-size:16px;line-height:1;padding:3px 6px;border-radius:3px;user-select:none;-webkit-user-select:none}
+  #pinTip .pinClose:hover{color:#fff;background:rgba(255,255,255,.08)}
+  /* term links get a dashed underline to read differently from entity links (dotted) */
+  .termlink{border-bottom-style:dashed;cursor:help}
   #keymap{position:fixed;right:10px;bottom:170px;z-index:9;background:rgba(16,22,36,.9);
     border:1px solid var(--rule);border-radius:3px;padding:8px 10px;color:var(--dim);line-height:1.75}
   #loading{position:fixed;inset:0;z-index:25;display:none;align-items:center;justify-content:center;
@@ -155,6 +173,9 @@
     .row{padding:5px 0}
     .tbl td{padding:6px 0}
     .isec a,.tbl a,.breadcrumb a,.row .v a{display:inline-block;padding:3px 0}
+    .termlink{display:inline-block;padding:4px 2px}          /* finger-sized long-press target */
+    #pinTip{max-width:calc(100vw - 24px)}
+    #pinTip .pinClose{top:2px;right:3px;padding:7px 10px;font-size:18px}
     .chip{padding:3px 7px;margin:2px 3px 2px 0}
     .leader{padding:12px 12px;margin-bottom:7px}
     .avatarcard{padding:11px 10px}
@@ -222,6 +243,8 @@
 </div>
 
 <div id="tip"></div>
+<div id="termTip"></div>
+<div id="pinTip"></div>
 <div id="inspector"></div>
 <div id="log"></div>
 
@@ -2931,7 +2954,8 @@ function dragScale(){
 }
 canvas.addEventListener('pointerdown',e=>{
   if(e.pointerType==='touch') return;             // touch handled by touch* listeners below
-  drag={x:e.clientX, y:e.clientY, moved:0};
+  if(e.button===1) e.preventDefault();            // middle: suppress autoscroll; we pin on release
+  drag={x:e.clientX, y:e.clientY, moved:0, button:e.button};
   spin.vel=0;
   canvas.setPointerCapture(e.pointerId);
 });
@@ -2953,7 +2977,12 @@ addEventListener('pointermove',e=>{
 });
 addEventListener('pointerup',e=>{
   if(e.pointerType==='touch') return;             // touch handled by touch* listeners below
-  if(drag && drag.moved<6){ spin.vel=0; pickAt(e.clientX,e.clientY); }
+  if(drag && drag.moved<6){
+    if(drag.button===1){                          // middle-click on an entity → pin its tooltip (desktop)
+      const p=nearest(e.clientX,e.clientY);
+      if(p) showPin(tipHTML(p), e.clientX, e.clientY);
+    } else { spin.vel=0; pickAt(e.clientX,e.clientY); }   // left-click → select (unchanged)
+  }
   drag=null;
 });
 /* zoom is geometric in altitude, so the last metre takes as many notches as the first
@@ -3003,8 +3032,18 @@ canvas.addEventListener('touchstart',e=>{
     const t=ts[0];
     touchG={mode:'rotate', x:t.clientX, y:t.clientY, sx:t.clientX, sy:t.clientY, moved:0, t0:performance.now()};
     lpFired=false; clearLP();
-    // long-press → re-auto the selected squad (only when it isn't already auto)
-    if(S.selection && S.selection.type==='squad'){
+    // Two long-press meanings on the game view, disambiguated BY TARGET (not timing),
+    // exactly as DESIGN.md → "Touch equivalent for hover-triggered tooltips" prescribes:
+    const hit = nearest(t.clientX, t.clientY);       // is an entity under the finger?
+    if(hit){
+      // (a) long-press on an entity → pin its tooltip (touch equivalent of hover+middle-click)
+      lpTimer=setTimeout(()=>{
+        lpFired=true; lpTimer=null;
+        showPin(tipHTML(hit), t.clientX, t.clientY);
+        if(navigator.vibrate) navigator.vibrate(18);
+      }, LONG_PRESS_MS);
+    } else if(S.selection && S.selection.type==='squad'){
+      // (b) long-press on the empty view with a squad selected → re-auto it (from #10)
       const sel=sqd(S.selection.id);
       if(sel && sel.mode!=='auto'){
         lpTimer=setTimeout(()=>{
@@ -3208,6 +3247,109 @@ function selectionDir(){
 }
 
 /* =====================================================================
+   PINNABLE TOOLTIPS — one system shared by entity- and term-tooltips.
+   Desktop: hover peeks, middle-click pins. Touch: long-press pins, short
+   tap passes through to the element's own action; a pinned tooltip is
+   dismissed by its ✕ or by tapping/clicking anywhere outside the stack.
+   (DESIGN.md → "Pinnable, nested tooltips" + "Touch equivalent…".)
+   ===================================================================== */
+// Small glossary of mechanics terms that appear in the UI (player-facing).
+const TERMS={
+  tier:{label:'Тір (рівень)', def:'Рівень поселення за розміром і населенням: від хутора до столиці. Задає рівень деталізації (LOD) та економічну вагу.'},
+  squad:{label:'Загін', def:'Мобільний військовий підрозділ організації. Має силу й наказ, керується AI або вручну, потребує <span class="link termlink" data-term="supply">постачання</span>.'},
+  enterprise:{label:'Підприємство', def:'Виробнича одиниця в поселенні: споживає вхідні ресурси й виробляє вихідні. Без входів — простоює.'},
+  caravan:{label:'Караван', def:'Транспорт торгового дому: везе ресурс звідти, де надлишок, туди, де дефіцит, і приносить прибуток.'},
+  treasury:{label:'Скарбниця', def:'Запас грошей організації. Наповнюється доходом (податок, торгівля), витрачається на утримання й будівництво.'},
+  leadership:{label:'Тип правління', def:'Правило, за яким організація обирає й передає лідера (спадкове, виборне тощо). Впливає на спадкоємця та кризи влади.'},
+  subordinate:{label:'Підпорядкована організація', def:'Організація нижче за іншу в дереві влади. Має <span class="link termlink" data-term="loyalty">лояльність</span> до батька; її падіння веде до відколу.'},
+  supply:{label:'Постачання', def:'Ресурси й гроші, щоб утримувати <span class="link termlink" data-term="squad">загін</span> у полі. Розрив постачання послаблює загін.'},
+  loyalty:{label:'Лояльність', def:'Наскільки <span class="link termlink" data-term="subordinate">підпорядкована</span> організація чи населення лишаються вірними. Нижче порогу — бунт або відкол.'}
+};
+// term-link renderer, used inside inspector panels
+const T=(key,label)=>'<span class="link termlink" data-term="'+key+'">'+(label||(TERMS[key]?TERMS[key].label:key))+'</span>';
+function termHTML(key){
+  const t=TERMS[key]; if(!t) return '';
+  return '<b>'+t.label+'</b><span class="tk">термін механіки</span>'+
+    '<div style="margin-top:4px;color:var(--dim);line-height:1.5">'+t.def+'</div>';
+}
+
+const pinTip=document.getElementById('pinTip');
+const termTip=document.getElementById('termTip');
+let pinnedShown=false, hadTouch=false;
+const CAN_HOVER = matchMedia('(hover:hover)').matches;   // desktop peek only where a pointer can hover
+
+function placeTip(el, cx, cy){                            // show + clamp inside the viewport
+  el.style.display='block';
+  const w=el.offsetWidth, h=el.offsetHeight;
+  let x=cx+14, y=cy+14;
+  if(x+w>innerWidth-6)  x=Math.max(6, Math.min(cx-w-14, innerWidth-w-6));
+  if(y+h>innerHeight-6) y=Math.max(6, innerHeight-h-6);
+  el.style.left=x+'px'; el.style.top=y+'px';
+}
+function showPin(html, cx, cy){                           // pin a tooltip (entity or term)
+  pinTip.innerHTML='<span class="pinClose" data-pinclose="1" title="Закрити">✕</span>'+html;
+  placeTip(pinTip, cx, cy);
+  pinnedShown=true;
+}
+function hidePin(){ pinTip.style.display='none'; pinnedShown=false; }
+function maybeDismissPin(target){                         // click/tap outside the pin closes it
+  if(pinnedShown && !(target && target.closest && target.closest('#pinTip'))) hidePin();
+}
+
+// interactions INSIDE a pinned tooltip: ✕ closes; a term link drills (nested, replace);
+// an entity link selects+teleports and closes — mirroring desktop click-to-open-nested.
+pinTip.addEventListener('click', e=>{
+  if(e.target.closest('[data-pinclose]')){ hidePin(); return; }
+  const tl=e.target.closest('[data-term]');
+  if(tl && TERMS[tl.dataset.term]){ const r=pinTip.getBoundingClientRect(); showPin(termHTML(tl.dataset.term), r.left+12, r.top+10); return; }
+  const el=e.target.closest('[data-sel]');
+  if(el){ const [t,id]=el.dataset.sel.split(':'); select(t,+id); const d=selectionDir(); if(d) flyTo(d); hidePin(); }
+});
+
+// desktop: hover a term link → peek (mouse-only; touch uses long-press instead)
+document.addEventListener('mouseover', e=>{
+  if(!CAN_HOVER || hadTouch) return;
+  const tl=e.target.closest && e.target.closest('[data-term]');
+  if(tl && TERMS[tl.dataset.term]){ termTip.innerHTML=termHTML(tl.dataset.term); placeTip(termTip, e.clientX, e.clientY); }
+});
+document.addEventListener('mousemove', e=>{
+  if(termTip.style.display!=='block') return;
+  const tl=e.target.closest && e.target.closest('[data-term]');
+  if(tl) placeTip(termTip, e.clientX, e.clientY); else termTip.style.display='none';
+});
+// desktop: middle-click a term link → pin it (matches entity middle-click-to-pin)
+document.addEventListener('auxclick', e=>{
+  if(e.button!==1) return;
+  const tl=e.target.closest && e.target.closest('[data-term]');
+  if(tl && TERMS[tl.dataset.term]){ e.preventDefault(); showPin(termHTML(tl.dataset.term), e.clientX, e.clientY); }
+});
+
+// touch: long-press a term link → pin it; a short tap passes through (a term link has
+// no click action of its own, so passthrough is a no-op — the link keeps its meaning).
+let termLPtimer=null;
+document.addEventListener('touchstart', e=>{
+  hadTouch=true;
+  const tl=e.target.closest && e.target.closest('[data-term]');
+  if(!tl || !TERMS[tl.dataset.term]) return;
+  const t=e.touches[0], sx=t.clientX, sy=t.clientY, key=tl.dataset.term;
+  if(termLPtimer) clearTimeout(termLPtimer);
+  termLPtimer=setTimeout(()=>{
+    termLPtimer=null;
+    showPin(termHTML(key), sx, sy);
+    if(navigator.vibrate) navigator.vibrate(18);
+  }, LONG_PRESS_MS);
+}, {passive:true});
+const cancelTermLP=()=>{ if(termLPtimer){ clearTimeout(termLPtimer); termLPtimer=null; } };
+document.addEventListener('touchmove', cancelTermLP, {passive:true});
+document.addEventListener('touchend', cancelTermLP, {passive:true});
+document.addEventListener('touchcancel', cancelTermLP, {passive:true});
+
+// tap / click anywhere outside a pinned tooltip dismisses it (capture, so it runs
+// before the game-view handlers that may open a fresh pin on the same gesture).
+document.addEventListener('pointerdown', e=>{ if(e.pointerType!=='touch') maybeDismissPin(e.target); }, true);
+document.addEventListener('touchstart', e=>{ maybeDismissPin(e.target); }, {capture:true, passive:true});
+
+/* =====================================================================
    INSPECTOR — content is a pure function of the selected object type
    ===================================================================== */
 const insp=document.getElementById('inspector');
@@ -3243,6 +3385,8 @@ function renderInspector(){
         '</div></div>';
     }
     h+='<div class="isec empty">Клікни поселення, загін, караван, підприємство або людину. Кожне ім\'я в панелі — посилання.</div>';
+    h+='<div class="isec"><h4>Терміни</h4><div class="stat" style="margin-bottom:4px">Наведи (миша) або довгий тап (тач), щоб закріпити пояснення.</div>'+
+      T('tier')+' · '+T('squad')+' · '+T('enterprise')+' · '+T('caravan')+' · '+T('treasury')+' · '+T('supply')+'</div>';
     insp.innerHTML=h;
     return; }
   const fn={settlement:inspSettlement, org:inspOrg, char:inspChar, squad:inspSquad,
@@ -3259,13 +3403,13 @@ function inspSettlement(id){
   const st=stl(id); if(!st) return '';
   const o=org(st.ownerOrgId);
   const parent=o&&o.parentId? org(o.parentId):null;
-  let h=head('Поселення · '+TIER[st.tier].label, st.name, ZONE[st.zone].label);
+  let h=head('Поселення · '+T('tier',TIER[st.tier].label), st.name, ZONE[st.zone].label);
   h+='<div class="isec">'+
     row('Власник', o? L('org',o.id,o.name) : '<span class="empty">нічий</span>')+
     (parent? row('Підпорядкований', L('org',parent.id,parent.name)) : '')+
     row('Населення', num(st.pop)+(st.starving?' <span class="neg">· голод</span>':''))+
     row('Територія', f1(st.area)+' зон')+
-    row('Лояльність', f1(st.loyalty)+'<div class="bar"><i style="width:'+st.loyalty+'%"></i></div>')+
+    row(T('loyalty','Лояльність'), f1(st.loyalty)+'<div class="bar"><i style="width:'+st.loyalty+'%"></i></div>')+
     '</div>';
   h+='<div class="isec"><h4>Ринок — запас / потреба · ціна</h4><table class="tbl">';
   for(const r of RKEYS){
@@ -3303,9 +3447,9 @@ function inspOrg(id){
   h+='<div class="isec">'+
     row('Лідер', leader? L('char',leader.id,leader.name) : '<span class="empty">вакансія</span>')+
     row('Спадкоємець', heir? L('char',heir.id,heir.name) : '<span class="empty">не призначено</span>')+
-    row('Тип правління', LT_LABEL[o.leadershipType])+
+    row(T('leadership','Тип правління'), LT_LABEL[o.leadershipType])+
     row('Учасників', o.members.filter(m=>chr(m)&&chr(m).alive).length)+
-    row('Скарбниця', num(o.treasury)+'💰')+
+    row(T('treasury','Скарбниця'), num(o.treasury)+'💰')+
     row('Дохід / витрати', '<span class="pos">+'+f1(o.income||0)+'</span> / <span class="neg">−'+f1(o.expenses||0)+'</span>')+
     row('Управління (derived)', orgManagement(o))+
     row('Амбіція (utility)', f1(orgUtility(o))+'<div class="bar"><i style="width:'+(orgUtility(o)/1.2*100)+'%"></i></div>')+
@@ -3402,7 +3546,7 @@ function inspSquad(id){
     row('Організація', o? L('org',o.id,o.name):'—')+
     row('Лідер', leader? L('char',leader.id,leader.name):'—')+
     row('Наказ', '<span class="chip">'+sq.order+(sq.targetName?' → '+sq.targetName:'')+'</span>')+
-    row('Постачання', sq.supplied===false?'<span class="neg">розрив</span>':'<span class="pos">є</span>')+
+    row(T('supply','Постачання'), sq.supplied===false?'<span class="neg">розрив</span>':'<span class="pos">є</span>')+
     row('База', stl(sq.homeId)? L('settlement',sq.homeId, stl(sq.homeId).name):'—')+
     row('Керування', '<span class="chip">'+(sq.mode==='auto'?'AI (auto)':'ручне')+'</span>')+
     '</div>';
