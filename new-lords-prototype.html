@@ -3322,7 +3322,7 @@ canvas.addEventListener('pointerdown',e=>{
     try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
     return;
   }
-  if(e.button===1) e.preventDefault();            // middle: suppress autoscroll; we pin on release
+  if(e.button===1) e.preventDefault();            // middle: suppress autoscroll (a drag rotates the globe / Alt-drag tilts; a stationary press pins on release)
   drag={x:e.clientX, y:e.clientY, moved:0, button:e.button};
   spin.vel=0;
   canvas.setPointerCapture(e.pointerId);
@@ -3341,21 +3341,20 @@ addEventListener('pointermove',e=>{
   const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
   drag.x=e.clientX; drag.y=e.clientY;
   drag.moved+=Math.abs(dx)+Math.abs(dy);
-  if(drag.button===1){                            // MIDDLE-DRAG
-    // TILT (#28) requires Alt AND a close-up altitude: an Alt+middle-drag while zoomed in
-    // (camAlt ≤ TILT_ALT_MAX) pitches/yaws the view; farther out the view is forced
-    // top-down, so the drag is ignored. A plain middle-drag never tilts (it pins on release).
+  if(drag.button===2) return;                     // right-drag without a squad selected no longer
+                                                  // rotates the globe (that was a temporary
+                                                  // fallback) — the right button is squad orders (#24)
+  if(drag.button===1 && e.altKey && camAlt<=TILT_ALT_MAX){   // Alt + MIDDLE = TILT (#28), close-up only
     // vertical drag → pitch (top-down 0° … ~70° toward the horizon, clamped short of it);
     // horizontal drag → yaw (orbit that oblique view around the focused surface point).
-    // A stationary middle press stays under the drag.moved<6 threshold → pins (pointerup).
-    if(e.altKey && camAlt<=TILT_ALT_MAX){
-      camPitch=Math.max(0, Math.min(PITCH_MAX, camPitch - dy*TILT_PITCH_PER_PX));
-      camYaw  += dx*TILT_YAW_PER_PX;
-      if(camYaw>Math.PI) camYaw-=2*Math.PI; else if(camYaw<-Math.PI) camYaw+=2*Math.PI;
-      spin.vel=0; flyQ=null;
-    }
+    camPitch=Math.max(0, Math.min(PITCH_MAX, camPitch - dy*TILT_PITCH_PER_PX));
+    camYaw  += dx*TILT_YAW_PER_PX;
+    if(camYaw>Math.PI) camYaw-=2*Math.PI; else if(camYaw<-Math.PI) camYaw+=2*Math.PI;
+    spin.vel=0; flyQ=null;
     return;
   }
+  // LEFT-drag, or a plain (no-Alt / zoomed-out) MIDDLE-drag → rotate the trackball globe.
+  // A stationary middle press stays under the moved<6 threshold → still pins on release.
   const len=Math.hypot(dx,dy);
   if(len<0.01) return;
   const k=dragScale();
