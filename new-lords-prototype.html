@@ -2325,10 +2325,10 @@ function buildScene(){
      without a rebake (see applyTheme / Visual themes, DESIGN.md). */
   const TEX_W=1536, TEX_H=768;
   const mkCanvas=()=>{ const c=document.createElement('canvas'); c.width=TEX_W; c.height=TEX_H; return c; };
-  const imgA=mkCanvas(), imgB=mkCanvas();
-  const ctxA=imgA.getContext('2d'), ctxB=imgB.getContext('2d');
-  const dA=ctxA.createImageData(TEX_W,TEX_H), dB=ctxB.createImageData(TEX_W,TEX_H);
-  const pxA=dA.data, pxB=dB.data;
+  const imgA=mkCanvas(), imgB=mkCanvas(), imgZ=mkCanvas();
+  const ctxA=imgA.getContext('2d'), ctxB=imgB.getContext('2d'), ctxZ=imgZ.getContext('2d');
+  const dA=ctxA.createImageData(TEX_W,TEX_H), dB=ctxB.createImageData(TEX_W,TEX_H), dZ=ctxZ.createImageData(TEX_W,TEX_H);
+  const pxA=dA.data, pxB=dB.data, pxZ=dZ.data;
   const pv=new THREE.Vector3(), rgb=[0,0,0], rgbT=[0,0,0];
   for(let y=0;y<TEX_H;y++){
     const lat=(y+0.5)/TEX_H*Math.PI - Math.PI/2;      // −π/2..π/2
@@ -2343,13 +2343,25 @@ function buildScene(){
       const hgt=Math.max(0, Math.min(255, (e+0.45)/1.15*255));  // packed height, for bump
       pxA[i]=rgb[0]*255;  pxA[i+1]=rgb[1]*255;  pxA[i+2]=rgb[2]*255;  pxA[i+3]=hgt;
       pxB[i]=rgbT[0]*255; pxB[i+1]=rgbT[1]*255; pxB[i+2]=rgbT[2]*255; pxB[i+3]=hgt;
+      // biome id for the antique stylized line-work shader (0 ocean,1 plain,2 forest,3 mountain,4 desert)
+      let zid=0;
+      if(e>0){
+        if(e>0.34) zid=3;
+        else { const tt=tempAt(pv,e), mm=moistureAt(pv);
+          zid = (tt>0.52&&mm<0.40)?4 : (mm>0.48&&tt>0.20)?2 : 1; }
+      }
+      pxZ[i]=zid; pxZ[i+1]=0; pxZ[i+2]=0; pxZ[i+3]=255;
     }
   }
-  ctxA.putImageData(dA,0,0); ctxB.putImageData(dB,0,0);
+  ctxA.putImageData(dA,0,0); ctxB.putImageData(dB,0,0); ctxZ.putImageData(dZ,0,0);
   const mkTex=cv=>{ const t=new THREE.CanvasTexture(cv);
     t.wrapS=THREE.RepeatWrapping; t.wrapT=THREE.ClampToEdgeWrapping;
     t.minFilter=THREE.LinearFilter; t.magFilter=THREE.LinearFilter; t.generateMipmaps=false; return t; };
+  const mkTexN=cv=>{ const t=new THREE.CanvasTexture(cv);
+    t.wrapS=THREE.RepeatWrapping; t.wrapT=THREE.ClampToEdgeWrapping;
+    t.minFilter=THREE.NearestFilter; t.magFilter=THREE.NearestFilter; t.generateMipmaps=false; return t; };
   const terrainTexAll={ antique:mkTex(imgA), holo:mkTex(imgB) };
+  const zoneTex=mkTexN(imgZ);
   const terrainTex=terrainTexAll[THEME_NAME]||terrainTexAll.antique;
 
   const geo=new THREE.IcosahedronGeometry(1, 72);
@@ -2366,6 +2378,7 @@ function buildScene(){
   const planetMat=new THREE.ShaderMaterial({
     uniforms:{
       map:{value:terrainTex},
+      zoneMap:{value:zoneTex},
       texel:{value:new THREE.Vector2(1/TEX_W, 1/TEX_H)},
       lightDir:{value:new THREE.Vector3(0.45,0.55,1.0).normalize()},
       uHolo:{value: THEME.holo},
@@ -2382,6 +2395,7 @@ function buildScene(){
     fragmentShader:`
       precision highp float;
       uniform sampler2D map;
+      uniform sampler2D zoneMap;
       uniform vec2 texel;
       uniform vec3 lightDir;
       uniform float uHolo;
@@ -2409,6 +2423,38 @@ function buildScene(){
       }
       vec2 sphUV(vec3 n){
         return vec2(atan(n.z,n.x)/6.2831853+0.5, asin(clamp(n.y,-1.0,1.0))/3.14159265+0.5);
+      }
+      // ---- antique stylized biome line-work (Theme A): fine cartographic ink motifs ----
+      float hash21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+      float sdSeg(vec2 p, vec2 a, vec2 b){ vec2 pa=p-a, ba=b-a; float h=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0); return length(pa-ba*h); }
+      float forestInk(vec2 f, vec2 cell){                 // thin fir-tree glyphs, dense enough to read as forest
+        if(hash21(cell)>0.80) return 0.0;
+        float cx=0.5+(hash21(cell+3.1)-0.5)*0.4, cy=0.66;
+        float hgt=0.42+0.12*hash21(cell+7.7), w=0.05;
+        float d=sdSeg(f, vec2(cx,cy), vec2(cx, cy-hgt*0.35));
+        for(int k=0;k<3;k++){
+          float t=float(k);
+          float yy=cy-hgt*(0.30+0.22*t), ww=0.17-0.035*t;
+          d=min(d, sdSeg(f, vec2(cx-ww,yy), vec2(cx, yy-0.11)));
+          d=min(d, sdSeg(f, vec2(cx+ww,yy), vec2(cx, yy-0.11)));
+        }
+        return smoothstep(w, w*0.35, d);
+      }
+      float mountInk(float e){                            // elevation isolines
+        float fr=fract(e*30.0), ld=min(fr,1.0-fr);
+        return smoothstep(0.09,0.0, ld);
+      }
+      float plainInk(vec2 uv){                            // fine furrow lines
+        float y=uv.y*150.0 + sin(uv.x*90.0)*0.35;
+        float fr=fract(y), ld=min(fr,1.0-fr);
+        return smoothstep(0.12,0.0, ld)*0.7;
+      }
+      float desertInk(vec2 uv){                           // fine dotting
+        vec2 dom=vec2(uv.x*2.0, uv.y)*120.0;
+        vec2 cell=floor(dom), f=fract(dom)-0.5;
+        if(hash21(cell+1.7)>0.72) return 0.0;
+        vec2 j=(vec2(hash21(cell+2.3),hash21(cell+5.9))-0.5)*0.5;
+        return smoothstep(0.17,0.08, length(f-j));
       }
       void main(){
         vec3 n = normalize(vObj);
@@ -2454,6 +2500,22 @@ function buildScene(){
         // atmospheric rim (antique: cool blue halo)
         float rim = pow(1.0 - max(dot(normalize(vWN), V),0.0), 3.0);
         lit += vec3(0.20,0.33,0.52)*rim*0.35;
+
+        // antique stylized biome line-work (Theme A): muted relief + fine brass ink motifs
+        if(uHolo < 0.5){
+          float zid = texture2D(zoneMap, uv).r * 255.0;
+          float eR  = h*1.15 - 0.45;
+          vec2 dom  = vec2(uv.x*2.0, uv.y)*82.0;          // fir-glyph grid
+          vec2 cell = floor(dom), f = fract(dom);
+          float ink = 0.0;
+          if(zid>1.5 && zid<2.5)       ink = forestInk(f, cell);
+          else if(zid>2.5 && zid<3.5)  ink = mountInk(eR);
+          else if(zid>0.5 && zid<1.5)  ink = plainInk(uv);
+          else if(zid>3.5)             ink = desertInk(uv);
+          vec3 inkCol = vec3(0.90,0.72,0.34);             // brass ink
+          if(zid>3.5) inkCol = vec3(0.40,0.28,0.16);      // dark ink reads on pale desert sand
+          lit = mix(lit, inkCol, clamp(ink,0.0,1.0)*0.85);
+        }
 
         // theme treatment B: holographic readout. Keep the technical texture's cyan
         // contour scan, light it gently so the whole disc self-glows, then overlay a
