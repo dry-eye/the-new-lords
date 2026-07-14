@@ -4229,40 +4229,167 @@ function graphEdges(){
   }
   return out;
 }
-/* layout: faction clusters, so politics is legible at a glance */
+/* a node's cluster id: its faction (realm/free-city/bandit), else its own id */
+function graphClusterId(o){ return o.factionId!=null ? o.factionId : o.id; }
+/* order faction clusters around the ring by political proximity (DESIGN §83):
+   a greedy walk over inter-cluster edge weights lands related factions adjacent,
+   so the few cross-faction chords cross the empty centre — not each other. */
+function orderClusters(facList, cw){
+  if(facList.length<=2) return facList.slice();
+  const w=(a,b)=> cw.get(a<b?a+'|'+b:b+'|'+a)||0;
+  let start=facList[0], bestDeg=-1;
+  for(const f of facList){ let d=0; for(const g of facList) if(g!==f) d+=w(f,g); if(d>bestDeg){bestDeg=d; start=f;} }
+  const remaining=new Set(facList); remaining.delete(start);
+  const seq=[start];
+  while(remaining.size){
+    const last=seq[seq.length-1]; let nxt=null, best=-1;
+    for(const f of remaining){ const ww=w(last,f); if(ww>best){best=ww; nxt=f;} }
+    seq.push(nxt); remaining.delete(nxt);
+  }
+  return seq;
+}
+/* radial tree layout of one cluster: root at its centre, children fanned by subtree
+   size so the hierarchy edges of a faction never cross each other. Fills `homes`. */
+function radialTreePlace(root, memberSet, childrenOf, cx, cy, homes){
+  const RING=44;
+  const kids=id=>(childrenOf.get(id)||[]).filter(c=>memberSet.has(c));
+  const leaves=id=>{ const ch=kids(id); if(!ch.length) return 1; let s=0; for(const c of ch) s+=leaves(c); return s; };
+  const place=(id, depth, a0, a1)=>{
+    const ang=(a0+a1)/2, r=depth*RING;
+    homes.set(id, {x:cx+Math.cos(ang)*r, y:cy+Math.sin(ang)*r, depth, ang});
+    const ch=kids(id); if(!ch.length) return;
+    const tot=ch.reduce((s,c)=>s+leaves(c),0)||1;
+    let a=a0;
+    for(const c of ch){ const na=a+(a1-a0)*(leaves(c)/tot); place(c, depth+1, a, na); a=na; }
+  };
+  place(root, 0, -Math.PI, Math.PI);
+}
+/* layout: connected orgs form faction clusters on a ring, each drawn as a radial
+   hierarchy tree (politics legible at a glance, DESIGN §83); zero-degree orgs get
+   their own tidy grid zone, kept out of the connected web (DESIGN §90). Every node
+   is anchored to a computed home, so the tree structure — not a tug-of-war of
+   springs — sets the shape, and edges cross far less than the old central hairball. */
 function layoutGraph(){
   gNodes.clear();
   const orgs=S.orgs.filter(orgVisible);
-  const fids=[...new Set(orgs.map(o=>o.factionId||o.id))];
+  const visIds=new Set(orgs.map(o=>o.id));
   const cx=gW/2, cy=gH/2;
-  const R=Math.min(gW,gH)*0.34;
-  const centers=new Map();
-  fids.forEach((f,i)=>{
-    const a=i/Math.max(1,fids.length)*Math.PI*2;
-    centers.set(f, {x:cx+Math.cos(a)*R, y:cy+Math.sin(a)*R});
-  });
-  orgs.forEach((o,i)=>{
-    const c=centers.get(o.factionId||o.id)||{x:cx,y:cy};
-    const a=(i*2.399);                       // golden-angle scatter inside the cluster
-    const r=18+Math.sqrt(i%40)*16;
-    gNodes.set('O'+o.id, {key:'O'+o.id, type:'org', o,
-      x:c.x+Math.cos(a)*r, y:c.y+Math.sin(a)*r, vx:0, vy:0});
-  });
-  if(gShowProp){
-    for(const st of S.settlements){
-      const on=gNodes.get('O'+st.ownerOrgId);
-      const b=on||{x:cx,y:cy};
-      gNodes.set('S'+st.id, {key:'S'+st.id, type:'settlement', s:st,
-        x:b.x+(Math.random()-0.5)*40, y:b.y+(Math.random()-0.5)*40, vx:0, vy:0});
-    }
-    for(const e of S.ents){
-      const on=gNodes.get('O'+e.ownerOrgId);
-      if(!on) continue;
-      gNodes.set('E'+e.id, {key:'E'+e.id, type:'enterprise', e,
-        x:on.x+(Math.random()-0.5)*30, y:on.y+(Math.random()-0.5)*30, vx:0, vy:0});
-    }
+
+  /* degree = org-to-org edges among visible orgs (hierarchy + slots; ownership excluded).
+     zero-degree orgs (most bandits, lone businesses) are the sparse periphery. */
+  const deg=new Map();
+  for(const e of S.edges){
+    if(e.kind==='ownership') continue;
+    if(!visIds.has(e.from)||!visIds.has(e.to)) continue;
+    deg.set(e.from,(deg.get(e.from)||0)+1);
+    deg.set(e.to,(deg.get(e.to)||0)+1);
   }
-  for(let i=0;i<220;i++) relax();
+  const connected=orgs.filter(o=>(deg.get(o.id)||0)>0);
+  const isolated =orgs.filter(o=>(deg.get(o.id)||0)===0);
+  const connSet=new Set(connected.map(o=>o.id));
+
+  /* faction clusters + their ring order */
+  const facList=[...new Set(connected.map(graphClusterId))];
+  const facOf=new Map(connected.map(o=>[o.id, graphClusterId(o)]));
+  const cw=new Map();
+  for(const e of S.edges){
+    if(e.kind==='ownership'||e.kind==='hierarchy') continue;
+    const fa=facOf.get(e.from), fb=facOf.get(e.to);
+    if(fa==null||fb==null||fa===fb) continue;
+    const key=fa<fb?fa+'|'+fb:fb+'|'+fa;
+    cw.set(key,(cw.get(key)||0)+1);
+  }
+  const order=orderClusters(facList, cw);
+  const n=order.length;
+  const ccx=cx, ccy=cy - gH*0.075;                      // connected ring centre, nudged up
+  const Rx=Math.min(gW*0.33, 540), Ry=Math.min(gH*0.25, 240);   // wide ellipse uses the landscape
+  const centers=new Map();
+  order.forEach((f,i)=>{
+    const a=-Math.PI/2 + i/Math.max(1,n)*Math.PI*2;     // first cluster at the top
+    centers.set(f, n<=1? {x:ccx,y:ccy} : {x:ccx+Math.cos(a)*Rx, y:ccy+Math.sin(a)*Ry});
+  });
+
+  /* in-cluster hierarchy tree (parent→children), same faction only */
+  const childrenOf=new Map();
+  const hasParent=new Set();
+  for(const e of S.edges){
+    if(e.kind!=='hierarchy') continue;
+    if(!connSet.has(e.from)||!connSet.has(e.to)) continue;
+    if(facOf.get(e.from)!==facOf.get(e.to)) continue;
+    if(!childrenOf.has(e.from)) childrenOf.set(e.from,[]);
+    childrenOf.get(e.from).push(e.to);
+    hasParent.add(e.to);
+  }
+
+  /* per cluster: pick a root, attach parentless members to it, lay out radially */
+  const homes=new Map();
+  for(const f of order){
+    const members=connected.filter(o=>graphClusterId(o)===f).map(o=>o.id);
+    const c=centers.get(f)||{x:ccx,y:ccy};
+    let root=members[0], bs=-1;
+    for(const id of members){ const o=org(id);
+      const s=(o.kind==='political'&&o.parentId==null?1000:0)+(deg.get(id)||0);
+      if(s>bs){bs=s; root=id;} }
+    for(const id of members){          // members with no in-cluster parent hang off the root
+      if(id===root||hasParent.has(id)) continue;
+      if(!childrenOf.has(root)) childrenOf.set(root,[]);
+      if(!childrenOf.get(root).includes(id)) childrenOf.get(root).push(id);
+    }
+    radialTreePlace(root, new Set(members), childrenOf, c.x, c.y, homes);
+  }
+
+  /* seed connected org nodes at their tree homes (any member the tree walk missed —
+     rare in odd live-play states — is nudged off the cluster centre so it can't stack) */
+  let miss=0;
+  for(const o of connected){
+    let h=homes.get(o.id);
+    if(!h){ const c=centers.get(graphClusterId(o))||{x:ccx,y:ccy}; const a=(miss++)*2.399;
+      h={x:c.x+Math.cos(a)*22, y:c.y+Math.sin(a)*22, depth:1}; }
+    gNodes.set('O'+o.id,{key:'O'+o.id,type:'org',o,
+      x:h.x, y:h.y, vx:0, vy:0, fac:graphClusterId(o),
+      hx:h.x, hy:h.y, pin:h.depth===0?0.05:0.03, iso:false});
+  }
+
+  /* isolated zone: a tidy grid, clearly below/apart from the connected ring (DESIGN §90) */
+  isolated.sort((a,b)=> (a.kind<b.kind?-1:a.kind>b.kind?1:0) || (a.name<b.name?-1:1));
+  const colStep=76, rowStep=42;
+  const maxCols=Math.max(1, Math.floor(Math.min(gW*0.62, 900)/colStep));
+  const cols=Math.max(1, Math.min(maxCols, Math.ceil(Math.sqrt(isolated.length*1.9))));
+  const zoneY0=(n<=1? ccy : ccy+Ry) + 120;              // just below the ring
+  const wide=Math.min(cols, isolated.length);
+  isolated.forEach((o,i)=>{
+    const col=i%cols, row=Math.floor(i/cols);
+    const hx=cx + (col-(wide-1)/2)*colStep, hy=zoneY0 + row*rowStep;
+    gNodes.set('O'+o.id,{key:'O'+o.id,type:'org',o,
+      x:hx, y:hy, vx:0, vy:0, fac:'iso'+o.id, hx, hy, pin:0.06, iso:true});
+  });
+
+  /* property nodes: fanned OUTWARD from the owner (away from cluster centre) so the
+     ownership edges are short and radial instead of tangling across the diagram. */
+  if(gShowProp){
+    const propIdx=new Map();
+    const placeProp=(key, node, ownerId)=>{
+      const on=gNodes.get('O'+ownerId);
+      if(!on){ gNodes.set(key, Object.assign(node,{x:cx,y:cy,vx:0,vy:0,fac:null,hx:cx,hy:cy,pin:0.004,iso:false})); return; }
+      const list=propIdx.get(ownerId)||(propIdx.set(ownerId,[]).get(ownerId));
+      const idx=list.length; list.push(key);
+      // outward direction: from cluster centre through the owner (down, for isolated/root)
+      let base;
+      if(on.iso){ base=Math.PI/2; }
+      else { const c=centers.get(on.fac)||{x:ccx,y:ccy};
+        const dx=on.hx-c.x, dy=on.hy-c.y;
+        base=(Math.abs(dx)+Math.abs(dy)<1)? Math.PI/2 : Math.atan2(dy,dx); }
+      const off=[0, 0.5, -0.5, 1.0, -1.0, 1.5, -1.5];    // alternating fan around the outward ray
+      const ang=base+(off[idx]!=null?off[idx]:0);
+      const rad=(on.iso?18:26)+Math.floor(idx/2)*8;
+      const hx=on.hx+Math.cos(ang)*rad, hy=on.hy+Math.sin(ang)*rad;
+      gNodes.set(key, Object.assign(node,{x:hx+(Math.random()-0.5)*6, y:hy+(Math.random()-0.5)*6,
+        vx:0, vy:0, fac:on.fac, hx, hy, pin:0.02, iso:on.iso}));
+    };
+    for(const st of S.settlements) placeProp('S'+st.id, {key:'S'+st.id,type:'settlement',s:st}, st.ownerOrgId);
+    for(const e of S.ents){ if(gNodes.has('O'+e.ownerOrgId)) placeProp('E'+e.id, {key:'E'+e.id,type:'enterprise',e}, e.ownerOrgId); }
+  }
+  for(let i=0;i<240;i++) relax();
 }
 function relax(){
   const arr=[...gNodes.values()];
@@ -4284,7 +4411,7 @@ function relax(){
         let dx=m.x-n.x, dy=m.y-n.y;
         let d2=dx*dx+dy*dy;
         if(d2>CELL*CELL*4 || d2<0.01){ if(d2<0.01){n.vx+=Math.random()-0.5;n.vy+=Math.random()-0.5;} continue; }
-        const d=Math.sqrt(d2), f=900/d2;
+        const d=Math.sqrt(d2), f=780/d2;
         n.vx-=dx/d*f; n.vy-=dy/d*f;
       }
     }
@@ -4294,13 +4421,23 @@ function relax(){
     if(!a||!b) continue;
     const dx=b.x-a.x, dy=b.y-a.y;
     const d=Math.max(1,Math.hypot(dx,dy));
-    const rest = e.kind==='ownership'? 42 : e.kind==='hierarchy'? 70 : 120;
-    const f=(d-rest)*0.02;
+    // homes carry the structure, so springs are gentle: ownership snugs property to its
+    // owner; intra-cluster springs firm up the tree; cross-cluster edges stay long & weak
+    // so a chord never drags two faction blobs into each other.
+    const sameFac = a.fac!=null && a.fac===b.fac;
+    let rest, k;
+    if(e.kind==='ownership'){ rest=22; k=0.02; }
+    else if(e.kind==='hierarchy'){ rest=44; k=0.012; }
+    else if(sameFac){ rest=90; k=0.012; }
+    else { rest=230; k=0.003; }
+    const f=(d-rest)*k;
     a.vx+=dx/d*f; a.vy+=dy/d*f; b.vx-=dx/d*f; b.vy-=dy/d*f;
   }
-  const cx=gW/2, cy=gH/2;
   for(const n of arr){
-    n.vx += (cx-n.x)*0.0016; n.vy += (cy-n.y)*0.0016;   // gentle gravity
+    // home anchor (cluster centre for connected, grid slot for isolated) replaces the
+    // old global gravity — it is what keeps factions in distinct regions of the canvas.
+    n.vx += (n.hx-n.x)*(n.pin||0.004);
+    n.vy += (n.hy-n.y)*(n.pin||0.004);
     n.x += Math.max(-8,Math.min(8,n.vx));
     n.y += Math.max(-8,Math.min(8,n.vy));
     n.vx*=0.62; n.vy*=0.62;
