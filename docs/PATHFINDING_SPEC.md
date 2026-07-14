@@ -13,7 +13,7 @@ Movement splits into two connected layers, chosen by scale:
 
 A unit traveling on the graph that enters a hot/tactical region hands off to the hex grid, and back to the graph when it leaves.
 
-**Open question:** the exact hand-off — where along a graph edge a unit "enters" a hex region, and how a graph position maps onto a hex — is not yet specified.
+**Hand-off, resolved.** A unit travels the graph until it enters a hot/tactical region; the hex grid materializes with that region at the very boundary the LOD system already uses to go hot (see DESIGN.md, hot-region trigger — no new boundary is introduced). On crossing **in**, the unit's continuous position **snaps to the nearest free hex**; on crossing **out**, its hex is projected back onto the nearest graph node/edge and it resumes graph travel. The hex layer thus rides the existing materialize/collapse boundary rather than defining its own.
 
 ---
 
@@ -44,7 +44,7 @@ When units stand densely in a hex-grid **formation**:
 - **Closed to other teams.** Those same edges are **closed to other teams**: an enemy cannot slip along the gaps through a friendly formation. A packed allied formation is a wall to enemies but porous to friends.
 - General movement stays perpendicular-to-edge (hex-to-hex); allied edge-threading is the tight exception.
 
-**Open question:** what exactly constitutes a "formation" (any cluster of same-team units, or an explicit formation order?), and how a shared edge resolves when the two hexes it divides belong to different teams.
+**Formation & shared edges, resolved.** A "formation" is not an explicit order — it is simply **any contiguous cluster of same-team units on adjacent hexes**. The edge rule is per-edge: an edge is friendly-threadable (and closed to other teams) only when **both hexes it divides are held by the same team** — an edge internal to one team's own cluster. When the two hexes flanking an edge belong to different teams (or one is empty), the edge is an ordinary contested boundary — the front line — not a threading shortcut for anyone.
 
 ---
 
@@ -61,7 +61,7 @@ Movement is resolved **for a whole mass at once**, not only per-unit:
 - Selecting a **crowd** and issuing a step moves **every selected unit one hex forward simultaneously** — one coordinated group move, not N independent path solves.
 - The system is therefore *movement together with pathfinding*: a whole mass advances as a body, keeping formation, rather than each unit independently re-pathing.
 
-**Open question:** how a group step resolves when the mass's target hexes are partly blocked (buildings, enemies, map edge) — the whole move cancels, the mass deforms around the obstacle, or blocked units hold while the rest advance.
+**Blocked group step, resolved — blocked units hold, the rest advance.** When part of a mass's target hexes are blocked (buildings, enemies, the map edge, or a stationary unit), only the blocked units stay put this step; every unit with a free target advances. The move is never cancelled wholesale (one obstacle must not freeze the whole body), and the mass is not re-pathed as a single unit (kept simple and predictable) — over successive steps a formation naturally flows around an obstacle as its blocked edge catches up.
 
 ---
 
@@ -70,7 +70,7 @@ Movement is resolved **for a whole mass at once**, not only per-unit:
 - The **graph** layer is cheap: precomputed graphs, node-to-node walks, no per-frame search.
 - The **hex grid** is bounded because it's local — only the handful of active/hot regions carry one at a time.
 
-**Open question:** hex-grid **determinism** and its fit with the LOD hot-region materialize/collapse model and Scale-B combat (see DESIGN.md) — whether the hex grid is part of the authoritative deterministic simulation, and how it materializes and collapses as a region goes hot or cold.
+**Determinism & LOD, resolved.** The hex grid **is part of the authoritative deterministic simulation** — it carries tactical/combat movement, which must be as deterministic as the rest of the authoritative path. It **materializes and collapses with its hot region**, on the same machinery pawns and orgs use (see DESIGN.md, "Identified vs. anonymous" and the hot-region trigger): going hot instantiates the grid deterministically from the region's authoritative state at a fixed tick point (seeded RNG plus recorded inputs, camera focus included — see "Determinism across transitions — relative to recorded inputs"); going cold collapses unit positions back onto the cohort/graph representation. The grid needs no separate persistence — it is derived from the region's state whenever the region is hot.
 
 ---
 
