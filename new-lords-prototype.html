@@ -3345,10 +3345,10 @@ addEventListener('pointermove',e=>{
                                                   // rotates the globe (that was a temporary
                                                   // fallback) — the right button is squad orders (#24)
   if(drag.button===1 && e.altKey && camAlt<=TILT_ALT_MAX){   // Alt + MIDDLE = TILT (#28), close-up only
-    // vertical drag → pitch (top-down 0° … ~70° toward the horizon, clamped short of it);
-    // horizontal drag → yaw (orbit that oblique view around the focused surface point).
-    camPitch=Math.max(0, Math.min(PITCH_MAX, camPitch - dy*TILT_PITCH_PER_PX));
-    camYaw  += dx*TILT_YAW_PER_PX;
+    // vertical drag → pitch, horizontal drag → yaw (orbit). Both axes inverted: drag down
+    // tilts toward the horizon (0° … ~70°, clamped short of it), drag right orbits the other way.
+    camPitch=Math.max(0, Math.min(PITCH_MAX, camPitch + dy*TILT_PITCH_PER_PX));
+    camYaw  -= dx*TILT_YAW_PER_PX;
     if(camYaw>Math.PI) camYaw-=2*Math.PI; else if(camYaw<-Math.PI) camYaw+=2*Math.PI;
     spin.vel=0; flyQ=null;
     return;
