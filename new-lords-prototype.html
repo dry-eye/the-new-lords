@@ -3667,10 +3667,10 @@ canvas.addEventListener('pointerdown',e=>{
   // With the options window up, a press on the globe just closes it (#24): a left-click
   // outside picks nothing, a right-click only closes — neither issues an order.
   if(optMenuOpen){ if(e.button===2) e.preventDefault(); closeOptMenu(); return; }
-  // RMB with your own squad selected is a game control, not a camera drag: start the
-  // hold-to-open timer and DON'T set `drag`, so the globe never rotates under it. (#24)
-  const psq = e.button===2 ? selectedPlayerSquad() : null;
-  if(psq){
+  // RMB with a controllable actor selected (squad / org / led-org character) is a game
+  // control, not a camera drag: start the hold-to-open timer and DON'T set `drag`, so the
+  // globe never rotates under it. (#24 squad → #52 every controllable actor)
+  if(e.button===2 && selectedControllable()){
     e.preventDefault();
     rmb={sx:e.clientX, sy:e.clientY, x:e.clientX, y:e.clientY, moved:0,
          shift:e.shiftKey, target:nearest(e.clientX,e.clientY), opened:false, timer:null};
@@ -3800,14 +3800,23 @@ let quickCastOrders=false;        // "quick-cast" toggle (default off)
 let curOpts=[];                   // options currently rendered (for click/quick-cast dispatch)
 const optMenuEl=document.getElementById('optMenu');
 
-// The selected actor is controllable here only if it's YOUR OWN squad. (Org /
-// character contexts are a later task — see optionsFor's extension point.)
+// The selected actor is a controllable SQUAD only if it's YOUR OWN squad.
 function selectedPlayerSquad(){
   const s=S.selection;
   if(!s || s.type!=='squad') return null;
   const sq=sqd(s.id); if(!sq) return null;
   const o=org(sq.orgId);
   return (o && isPlayerOrg(o)) ? sq : null;
+}
+// Is the current selection a controllable actor that CAN own an options window? — a
+// player squad, a player-controlled org, or (Player Mode) a character leading such an
+// org. Mirrors optionsFor's branching; the RMB gesture only arms for these. (#52)
+function selectedControllable(){
+  const s=S.selection; if(!s) return false;
+  if(s.type==='squad') return !!selectedPlayerSquad();
+  if(s.type==='org'){ const o=org(s.id); return !!(o && isPlayerOrg(o)); }
+  if(s.type==='char'){ const c=chr(s.id); const led=c&&c.alive?org(c.ledOrgId):null; return !!(led && isPlayerOrg(led)); }
+  return false;
 }
 
 // Screen pixel → a direction on the planet's surface (unit sphere), in the planet's
@@ -3921,6 +3930,179 @@ function squadOptions(sq, target, pointDir){
     run: ()=> here ? standDown(sq) : issueGarrison(sq, st)});
   return opts;
 }
+/* --- ORGANIZATION actor: target-driven actions (DESIGN: "Context-sensitive option
+   menu — one mechanism for every controllable actor" → the Organization bullet). These
+   introduce NO new actions — each is a second path to something the org already does
+   (slots/alliances/agent edges from the graph model, posts, the reassignment right).
+   Self-directed decisions (BecomePolitical / ChangeLeadershipType / Expand / TakePerk /
+   founding a subordinate) have no cursor target and deliberately stay OUT of this menu —
+   they remain in the inspector's Decisions/Perks tabs. --- */
+
+// The organization associated with whatever is under the cursor — a settlement's owner,
+// a squad/enterprise/caravan's org, a character's led-or-member org — or null on open ground.
+function targetOrg(t){
+  if(!t) return null;
+  if(t.type==='settlement') return org(stl(t.id)?.ownerOrgId) || null;
+  if(t.type==='squad')      return org(sqd(t.id)?.orgId) || null;
+  if(t.type==='caravan')    return org(byId(S.caravans,t.id)?.orgId) || null;
+  if(t.type==='enterprise') return org(ent(t.id)?.ownerOrgId) || null;
+  if(t.type==='char'){ const c=chr(t.id); return c? (org(c.ledOrgId)||org(c.orgId)||null) : null; }
+  return null;
+}
+// first slot-relationship edge from a→b of one of the given kinds (or null)
+function slotEdge(fromId, toId, kinds){
+  return S.edges.find(e=>e.from===fromId && e.to===toId && kinds.includes(e.kind)) || null;
+}
+function allianceEdge(aId, bId){
+  return S.edges.find(e=>e.kind==='alliance' &&
+    ((e.from===aId&&e.to===bId)||(e.from===bId&&e.to===aId))) || null;
+}
+// Capacity gates. The prototype stores no capacity fields (DESIGN's capacity table isn't
+// implemented here), so these are computed from what it DOES have — kind + derived
+// management — keeping the gate central and honest, if coarse.
+function controlSlotCap(o){ return 2 + Math.floor(orgManagement(o)/5) + (o.kind==='squad'?2:0); }
+function allianceCap(o){ return 3; }
+function heldSlots(o, kind){ return S.edges.filter(e=>e.from===o.id && e.kind===kind).length; }
+function heldAlliances(o){ return S.edges.filter(e=>e.kind==='alliance' && (e.from===o.id||e.to===o.id)).length; }
+// A controlled org's leader/posts can be reassigned only for these kinds (never network /
+// secret_police) — DESIGN: "Who can reassign a controlled org's leader or posts."
+const REASSIGNABLE_KINDS = ['squad','business','political','military','intelligence'];
+
+// --- executors: mutate state exactly like decide()'s slot/alliance paths + the inspector ---
+function makeSlot(o, t, kind, salary, covert){
+  o.treasury -= (kind==='control'?180:120);
+  makeEdge(kind, o.id, t.id, {salary, visibility: covert?'covert':'public'});
+  logEvent('<span class="link" data-sel="org:'+o.id+'">'+o.name+'</span> відкрив '+
+    (kind==='control'?'слот контролю':'слот впливу')+(covert?' (covert)':'')+
+    ' над <span class="link" data-sel="org:'+t.id+'">'+t.name+'</span>.');
+  renderInspector();
+}
+function breakSlot(o, e){
+  S.edges=S.edges.filter(x=>x.id!==e.id);
+  teleEvent('SlotBroken',{edgeId:e.id, kind:e.kind, from:e.from, to:e.to, cause:'player'});
+  logEvent('<b>'+o.name+'</b> розірвав слот <b>'+e.kind+'</b>.'); renderInspector();
+}
+function proposeAlliance(o, t){
+  makeEdge('alliance', o.id, t.id);
+  logEvent('⚑ <span class="link" data-sel="org:'+o.id+'">'+o.name+'</span> уклав союз з <span class="link" data-sel="org:'+t.id+'">'+t.name+'</span>.');
+  renderInspector();
+}
+function breakAlliance(o, e){
+  S.edges=S.edges.filter(x=>x.id!==e.id);
+  logEvent('<b>'+o.name+'</b> розірвав союз.'); renderInspector();
+}
+function intelReport(o, t){
+  const links=S.edges.filter(x=>x.from===t.id||x.to===t.id).length;
+  logEvent('🔍 Розвідка про <b>'+t.name+'</b>: скарбниця ~'+num(t.treasury)+'💰, зв\'язків '+links+
+    ', лідер '+(chr(t.leaderId)?chr(t.leaderId).name:'—')+'.');
+}
+function sabotage(o, t){
+  o.treasury-=150;
+  const hit=Math.min(t.treasury, Math.round(40+rnd()*80));
+  t.treasury-=hit; t.loyalty=Math.max(0,t.loyalty-6);
+  teleEvent('Sabotage',{fromOrgId:o.id, toOrgId:t.id, damage:hit});
+  logEvent('💥 <b>'+o.name+'</b> оплатив саботаж проти <b>'+t.name+'</b> (−'+hit+'💰).');
+  renderInspector();
+}
+function reassignLeader(o, t){
+  // promote t's heir or next living member — a leader change with the usual consequences
+  const cand = (chr(t.heirId)&&chr(t.heirId).alive? chr(t.heirId) : null) ||
+    t.members.map(chr).find(c=>c&&c.alive&&c.id!==t.leaderId);
+  if(!cand){ logEvent('Немає кандидата на лідера у <b>'+t.name+'</b>.'); return; }
+  const old=chr(t.leaderId); if(old && old.ledOrgId===t.id) old.ledOrgId=null;
+  setLeader(t, cand);
+  t.loyalty=Math.max(0, t.loyalty-8);                 // loyalty shock, per succession consequences
+  teleEvent('LeaderReassigned',{orgId:t.id, byOrgId:o.id, charId:cand.id});
+  logEvent('<b>'+o.name+'</b> перепризначив лідера <b>'+t.name+'</b> → <span class="link" data-sel="char:'+cand.id+'">'+cand.name+'</span>.');
+  renderInspector();
+}
+function assignPost(o, c){
+  const empty=['Advisor','Negotiator','Bodyguard'].find(p=>!o.posts[p]);
+  if(!empty) return;
+  o.posts[empty]=c.id; c.post=empty;
+  logEvent('<b>'+c.name+'</b> призначений на посаду '+empty+' у <b>'+o.name+'</b>.'); renderInspector();
+}
+function removePost(o, c){
+  for(const p in o.posts) if(o.posts[p]===c.id && p!=='Leader') o.posts[p]=null;
+  if(c.post && c.post!=='Leader') c.post=null;
+  logEvent('<b>'+c.name+'</b> знятий з посади у <b>'+o.name+'</b>.'); renderInspector();
+}
+
+// The org's applicable target-driven actions — a pure function of (o, target). Enable/
+// disable lives here, centrally; the widget just renders the list.
+function orgOptions(o, target){
+  const opts=[];
+  const t=targetOrg(target);                          // the OTHER org under the cursor (may be self / null)
+  const tChar = target && target.type==='char' ? chr(target.id) : null;
+  const other = t && t.id!==o.id ? t : null;          // a genuinely different org
+
+  // --- POST — natural target: a character; enabled only for o's OWN member ---
+  if(tChar){
+    const own = o.members.includes(tChar.id) || tChar.orgId===o.id;
+    const heldPost = own ? Object.keys(o.posts).find(p=>o.posts[p]===tChar.id && p!=='Leader') : null;
+    if(heldPost){
+      opts.push({key:'post', label:'Зняти з посади ('+heldPost+')', enabled:true,
+        run:()=>removePost(o, tChar)});
+    } else {
+      const emptyPost=['Advisor','Negotiator','Bodyguard'].find(p=>!o.posts[p]);
+      opts.push({key:'post', label:'Призначити на посаду', enabled: !!(own && emptyPost),
+        why: own? 'немає вільної посади' : 'потрібен свій учасник', run:()=>assignPost(o, tChar)});
+    }
+  }
+
+  // --- everything else has an ORGANIZATION as its natural target ---
+  if(other){
+    const tn=other.name;
+    // SLOT — create/break a control or influence slot (target: another org)
+    const slot = slotEdge(o.id, other.id, ['control','influence','investment']);
+    if(slot){
+      opts.push({key:'breakslot', label:'Розірвати слот → '+tn, enabled:true, run:()=>breakSlot(o, slot)});
+    } else {
+      opts.push({key:'control', label:'Слот контролю → '+tn,
+        enabled: o.treasury>=180 && heldSlots(o,'control')<controlSlotCap(o),
+        why:'потрібні кошти / ємність', run:()=>makeSlot(o, other, 'control', rint(4,10), false)});
+      opts.push({key:'influence', label:'Слот впливу → '+tn,
+        enabled: o.treasury>=120 && heldSlots(o,'influence')<controlSlotCap(o)+2,
+        why:'потрібні кошти', run:()=>makeSlot(o, other, 'influence', rint(3,9), true)});
+    }
+    // ALLIANCE — propose/break, only between INDEPENDENT orgs (target: another independent org)
+    const ally = allianceEdge(o.id, other.id);
+    if(ally){
+      opts.push({key:'breakally', label:'Розірвати союз → '+tn, enabled:true, run:()=>breakAlliance(o, ally)});
+    } else {
+      const canAlly = o.parentId==null && other.parentId==null && heldAlliances(o)<allianceCap(o);
+      opts.push({key:'ally', label:'Запропонувати союз → '+tn, enabled:canAlly,
+        why: (o.parentId!=null||other.parentId!=null)?'лише між незалежними':'межа союзів',
+        run:()=>proposeAlliance(o, other)});
+    }
+    // INTEL / SABOTAGE — only THROUGH an existing covert agent edge o→other
+    const agent = S.edges.find(e=>e.from===o.id && e.to===other.id && e.visibility==='covert'
+      && ['control','influence'].includes(e.kind));
+    if(agent){
+      opts.push({key:'intel', label:'Розвідка → '+tn, enabled:true, run:()=>intelReport(o, other)});
+      opts.push({key:'sabotage', label:'Саботаж → '+tn, enabled:o.treasury>=150,
+        why:'потрібні кошти', run:()=>sabotage(o, other)});
+    }
+    // REASSIGN — a controlled org's leader/posts: via a control slot OR direct parenthood,
+    // and only for reassignable kinds (DESIGN: never a network / secret_police target).
+    const controls = other.parentId===o.id || !!slotEdge(o.id, other.id, ['control']);
+    if(controls){
+      opts.push({key:'reassign', label:'Перепризначити лідера → '+tn,
+        enabled: REASSIGNABLE_KINDS.includes(other.kind),
+        why:'вид організації не дозволяє', run:()=>reassignLeader(o, other)});
+    }
+  }
+  return opts;
+}
+// Shared spec builder so a played character reaches its led org's menu transitively.
+function orgSpec(o, target){
+  const t=targetOrg(target);
+  return { title:'Організація · '+o.name, targetLabel: pickLabel(target) || (t? t.name : 'ціль'),
+           opts: orgOptions(o, target) };
+}
+
+// CENTRAL RESOLVER — (selected actor, target under cursor) → applicable actions. Branches
+// by S.selection.type; every branch reuses the SAME widget + enable/disable discipline.
 function optionsFor(sel, target, pointDir){
   if(!sel) return null;
   if(sel.type==='squad'){
@@ -3929,11 +4111,20 @@ function optionsFor(sel, target, pointDir){
     return { title:'Загін #'+sq.id, targetLabel: pickLabel(target)||'точка',
              opts: squadOptions(sq, target, pointDir) };
   }
-  /* EXTENSION POINT — org / character actors resolve to their OWN target-driven
-     action lists here (org: create/break a control slot, propose alliance, assign a
-     post, …; a played character reaches its led org's actions transitively). Same
-     widget, same central enable/disable rule — DESIGN: "one mechanism for every
-     controllable actor". Not wired in this task (squad scope only). */
+  if(sel.type==='org'){
+    const o=org(sel.id);
+    if(!o || !isPlayerOrg(o)) return null;             // only an org YOU control
+    return orgSpec(o, target);
+  }
+  if(sel.type==='char'){
+    // Player Mode: a character has no own target-driven action — the menu is the menu of
+    // the org it LEADS, reached transitively (DESIGN: "an org is reached transitively
+    // through the character's leadership"). Self-directed char/org decisions stay off it.
+    const c=chr(sel.id);
+    const led = c && c.alive ? org(c.ledOrgId) : null;
+    if(!led || !isPlayerOrg(led)) return null;
+    return orgSpec(led, target);
+  }
   return null;
 }
 
@@ -3966,7 +4157,7 @@ function openOptMenu(){
   if(!rmb) return;
   rmb.timer=null;
   const spec=optionsFor(S.selection, rmb.target, rmb.target? null : screenToDir(rmb.x, rmb.y));
-  if(!spec) return;
+  if(!spec || !spec.opts.length) return;   // no applicable action (e.g. an org actor over open ground)
   renderOptMenu(spec, rmb.x, rmb.y);
   rmb.opened=true; optMenuOpen=true;
   if(navigator.vibrate) navigator.vibrate(10);
