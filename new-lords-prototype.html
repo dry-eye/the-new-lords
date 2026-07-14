@@ -921,6 +921,36 @@ function terrainColor(p, e, out){
   out[2]=Math.max(0,Math.min(1,c[2]));
 }
 
+/* Technical / holographic terrain — the sci-fi theme renders the planet as a
+   topographic scan rather than a naturalistic map: a dark teal body carrying cyan
+   elevation contour lines, glowing coastlines and bathymetric depth rings. It is
+   structurally different from terrainColor (it bakes contour banding, not biome
+   colour), so a theme switch genuinely re-renders the planet instead of merely
+   re-tinting it — the "deeper, per-theme textures" decision in Visual themes,
+   DESIGN.md. Reads the same elevation field, so continents line up across themes. */
+function terrainColorTech(p, e, out){
+  const fr=v=>v-Math.floor(v);
+  const C0=0.19, C1=0.85, C2=0.86;                     // cyan contour ink
+  if(e<=0){
+    const depth=-e;                                    // 0..~0.4
+    const b=fr(depth*24.0), ld=Math.min(b,1-b);        // 0 on a bathymetric ring
+    const line=smooth01(0.09-ld,0,0.09);
+    const shelf=smooth01(0.05-depth,0,0.05);           // faint glow on the shallow shelf
+    out[0]=0.012 + C0*(line*0.45+shelf*0.16);
+    out[1]=0.045 + C1*(line*0.55+shelf*0.22);
+    out[2]=0.085 + C2*(line*0.55+shelf*0.22);
+    return;
+  }
+  const lift=smooth01(e,0,0.5);
+  const f=fr(e*32.0), ld=Math.min(f,1-f);              // 0 on a topographic contour
+  const line=smooth01(0.07-ld,0,0.07);
+  const coast=smooth01(0.016-e,0,0.016);               // bright shoreline
+  const peak=smooth01(e,0.33,0.5);                     // hot ridgelines
+  out[0]=Math.min(1, 0.02+0.06*lift + C0*(line*0.5 +coast*0.7) + peak*0.5);
+  out[1]=Math.min(1, 0.11+0.16*lift + C1*(line*0.65+coast*0.9) + peak*0.6);
+  out[2]=Math.min(1, 0.14+0.20*lift + C2*(line*0.65+coast*0.9) + peak*0.6);
+}
+
 /* Sea level is solved for, not guessed — every world gets real continents. */
 function calibrateSea(targetLand){
   const probes=[];
@@ -2093,7 +2123,9 @@ const THEMES = {
          '--good':'#5FB58A','--bad':'#C4574F','--covert':'#8B5FB5',
          '--serif':"'Spectral',Iowan Old Style,Palatino,serif" },
     bg:0x070A11, atmo:0x4E75A8, road:0x8A7550, iconAccent:0xE8CE96,
-    holo:0, tint:[0.20,0.33,0.52],
+    holo:0, tint:[0.20,0.33,0.52],                 // planet: warm earth-tone relief
+    lbl:{ big:'#F2E7CC', small:'#C2CDE0' },
+    legendFilter:'invert(78%) sepia(10%) saturate(400%) hue-rotate(190deg)',
   },
   holo: {
     label:'Sci-Fi',
@@ -2102,7 +2134,9 @@ const THEMES = {
          '--good':'#46E0A0','--bad':'#F0616B','--covert':'#7E7BF0',
          '--serif':"ui-sans-serif,system-ui,'Segoe UI',sans-serif" },
     bg:0x03070C, atmo:0x1FA6B8, road:0x2FBFB0, iconAccent:0x35E0D0,
-    holo:1, tint:[0.20,0.85,0.85],
+    holo:1, tint:[0.20,0.85,0.85],                 // planet: cyan technical contour scan
+    lbl:{ big:'#CFFFF7', small:'#8FD8DE' },
+    legendFilter:'invert(82%) sepia(48%) saturate(1200%) hue-rotate(120deg) brightness(1.05)',
   },
 };
 let THEME_NAME = 'antique';
@@ -2118,9 +2152,16 @@ function applyTheme(name){
   if(planet && planet.material && planet.material.uniforms.uHolo){
     planet.material.uniforms.uHolo.value = THEME.holo;
     planet.material.uniforms.uTint.value.setRGB(THEME.tint[0],THEME.tint[1],THEME.tint[2]);
+    // swap in this theme's baked terrain texture — the planet is re-rendered
+    // (technical scan vs relief map), not just re-tinted (Visual themes, DESIGN.md)
+    if(planet._terrainTex) planet.material.uniforms.map.value = planet._terrainTex[name] || planet._terrainTex.antique;
   }
   if(atmoMesh) atmoMesh.material.color.set(THEME.atmo);
   if(roadMat) roadMat.uniforms.tint.value.set(THEME.road);
+  for(const st of (S.settlements||[])){
+    if(st._label && st._label.material) st._label.material.color.set(THEME.lbl[st._label._big?'big':'small']);
+  }
+  if(typeof buildIconLegend==='function') buildIconLegend();   // legend glyph tint follows the theme
   if(S.settlements.length) updateMarkers();
   const b=document.getElementById('btnTheme'); if(b) b.textContent='Тема: '+THEME.label;
   try{ localStorage.setItem('nl_theme', name); }catch(e){}
@@ -2146,7 +2187,7 @@ function buildIconLegend(){
     '<div style="color:var(--brass);letter-spacing:.14em;font-size:9px;margin-bottom:5px">ЛЕГЕНДА</div>'+
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">'+
     rows.map(([k,l])=>'<div><img src="'+ICONS[k]._url+'" width="13" height="13" '+
-      'style="vertical-align:-2px;margin-right:5px;filter:invert(78%) sepia(10%) saturate(400%) hue-rotate(190deg)">'+l+'</div>').join('')+
+      'style="vertical-align:-2px;margin-right:5px;filter:'+THEME.legendFilter+'">'+l+'</div>').join('')+
     '</div><div style="margin-top:5px;color:#4C5975">колір іконки = фракція-власник<br>'+
     'на близькому зумі місто виростає: вулиці, будинки, мешканці</div>';
 }
@@ -2164,7 +2205,7 @@ function labelTexture(text, big){
   x.textBaseline='middle';
   x.lineWidth=6; x.strokeStyle='rgba(6,9,15,.92)';
   x.strokeText(text, pad, c.height/2);
-  x.fillStyle= big? '#F2E7CC' : '#C2CDE0';
+  x.fillStyle='#FFFFFF';                 // baked white; per-theme colour is applied as the sprite tint
   x.fillText(text, pad, c.height/2);
   const t=new THREE.CanvasTexture(c);
   t.minFilter=THREE.LinearFilter;
@@ -2242,35 +2283,40 @@ function buildScene(){
   cityCache=new Map(); cityLive=new Set();
 
   /* --- planet: relief mesh + baked climate texture + per-pixel shader --- */
+  /* Planet texture — baked once per world, once per theme. The elevation field is
+     evaluated a single time per texel and handed to each theme's colouring, so the
+     antique relief map and the sci-fi technical scan come out of one shared pass
+     (the packed height in alpha is identical, so the shader's bump/coast logic works
+     for both). The active theme's texture is bound now; switching swaps to the other
+     without a rebake (see applyTheme / Visual themes, DESIGN.md). */
   const TEX_W=1536, TEX_H=768;
-  const img=document.createElement('canvas');
-  img.width=TEX_W; img.height=TEX_H;
-  const ictx=img.getContext('2d');
-  const idata=ictx.createImageData(TEX_W,TEX_H);
-  const px=idata.data;
-  const pv=new THREE.Vector3(); const rgb=[0,0,0];
+  const mkCanvas=()=>{ const c=document.createElement('canvas'); c.width=TEX_W; c.height=TEX_H; return c; };
+  const imgA=mkCanvas(), imgB=mkCanvas();
+  const ctxA=imgA.getContext('2d'), ctxB=imgB.getContext('2d');
+  const dA=ctxA.createImageData(TEX_W,TEX_H), dB=ctxB.createImageData(TEX_W,TEX_H);
+  const pxA=dA.data, pxB=dB.data;
+  const pv=new THREE.Vector3(), rgb=[0,0,0], rgbT=[0,0,0];
   for(let y=0;y<TEX_H;y++){
     const lat=(y+0.5)/TEX_H*Math.PI - Math.PI/2;      // −π/2..π/2
     const cy=Math.cos(lat), sy=Math.sin(lat);
     for(let x=0;x<TEX_W;x++){
       const lon=(x+0.5)/TEX_W*Math.PI*2 - Math.PI;
       pv.set(cy*Math.cos(lon), sy, cy*Math.sin(lon));
-      const e=elevation(pv);
+      const e=elevation(pv);                          // once — shared by both themes
       terrainColor(pv, e, rgb);
+      terrainColorTech(pv, e, rgbT);
       const i=(y*TEX_W+x)*4;
-      px[i]  = rgb[0]*255;
-      px[i+1]= rgb[1]*255;
-      px[i+2]= rgb[2]*255;
-      px[i+3]= Math.max(0, Math.min(255, (e+0.45)/1.15*255));   // height, for bump
+      const hgt=Math.max(0, Math.min(255, (e+0.45)/1.15*255));  // packed height, for bump
+      pxA[i]=rgb[0]*255;  pxA[i+1]=rgb[1]*255;  pxA[i+2]=rgb[2]*255;  pxA[i+3]=hgt;
+      pxB[i]=rgbT[0]*255; pxB[i+1]=rgbT[1]*255; pxB[i+2]=rgbT[2]*255; pxB[i+3]=hgt;
     }
   }
-  ictx.putImageData(idata,0,0);
-  const terrainTex=new THREE.CanvasTexture(img);
-  terrainTex.wrapS=THREE.RepeatWrapping;
-  terrainTex.wrapT=THREE.ClampToEdgeWrapping;
-  terrainTex.minFilter=THREE.LinearFilter;
-  terrainTex.magFilter=THREE.LinearFilter;
-  terrainTex.generateMipmaps=false;
+  ctxA.putImageData(dA,0,0); ctxB.putImageData(dB,0,0);
+  const mkTex=cv=>{ const t=new THREE.CanvasTexture(cv);
+    t.wrapS=THREE.RepeatWrapping; t.wrapT=THREE.ClampToEdgeWrapping;
+    t.minFilter=THREE.LinearFilter; t.magFilter=THREE.LinearFilter; t.generateMipmaps=false; return t; };
+  const terrainTexAll={ antique:mkTex(imgA), holo:mkTex(imgB) };
+  const terrainTex=terrainTexAll[THEME_NAME]||terrainTexAll.antique;
 
   const geo=new THREE.IcosahedronGeometry(1, 72);
   const gpos=geo.attributes.position;
@@ -2350,12 +2396,15 @@ function buildScene(){
         float hr=texture2D(map, uv+vec2(texel.x,0.0)).a;
         float hd=texture2D(map, uv-vec2(0.0,texel.y)).a;
         float hu=texture2D(map, uv+vec2(0.0,texel.y)).a;
-        vec3 tang = normalize(cross(vec3(0.0,1.0,0.0), n)+vec3(1e-5));
-        vec3 bit  = normalize(cross(n, tang));
+        // Perturbed normal in WORLD space, built from the world normal vWN, so the
+        // fragment stage never references modelMatrix (GLSL injects that only into
+        // vertex shaders — doing so here failed to compile and left the planet unlit).
+        vec3 Nw = normalize(vWN);
+        vec3 tang = normalize(cross(vec3(0.0,1.0,0.0), Nw)+vec3(1e-5));
+        vec3 bit  = normalize(cross(Nw, tang));
         float gx=(hr-hl)*22.0 + (fbm3(q+vec3(3.1,0,0))-fbm3(q-vec3(3.1,0,0)))*0.9;
         float gy=(hu-hd)*22.0 + (fbm3(q+vec3(0,3.1,0))-fbm3(q-vec3(0,3.1,0)))*0.9;
-        vec3 nObj = normalize(n - (tang*gx + bit*gy)*sea*0.9);
-        vec3 N = normalize(mat3(modelMatrix)*nObj);
+        vec3 N = normalize(Nw - (tang*gx + bit*gy)*sea*0.9);
 
         vec3 Lw = normalize(lightDir);
         float lam = max(dot(N, Lw), 0.0);
@@ -2368,19 +2417,21 @@ function buildScene(){
         float spec = pow(max(dot(N,H),0.0), 48.0) * (1.0-sea) * 0.35;
         lit += vec3(0.55,0.68,0.85)*spec;
 
-        // atmospheric rim
+        // atmospheric rim (antique: cool blue halo)
         float rim = pow(1.0 - max(dot(normalize(vWN), V),0.0), 3.0);
         lit += vec3(0.20,0.33,0.52)*rim*0.35;
 
-        // theme treatment: holographic re-render (cool tint + lat/long grid + strong rim)
+        // theme treatment B: holographic readout. Keep the technical texture's cyan
+        // contour scan, light it gently so the whole disc self-glows, then overlay a
+        // lat/long grid and a bright cyan limb — a distinct render, not a re-tint.
         if(uHolo > 0.5){
-          float lum = dot(lit, vec3(0.299,0.587,0.114));
-          vec3 holo = uTint * (0.30 + lum*1.25);
-          vec2 gr = abs(fract(uv*vec2(48.0,24.0)) - 0.5);
-          float lines = smoothstep(0.45, 0.5, max(gr.x, gr.y));
-          holo += uTint * lines * 0.35 * sea;
-          float rim2 = pow(1.0 - max(dot(normalize(vWN), V),0.0), 2.0);
-          holo += uTint * rim2 * 0.7;
+          float shade = 0.5 + 0.7*lam;
+          vec3 holo = col*shade + col*0.28;                 // emissive lift keeps contours legible
+          vec2 gr = abs(fract(uv*vec2(64.0,32.0)) - 0.5);
+          float grid = smoothstep(0.47, 0.5, max(gr.x, gr.y));
+          holo += uTint * grid * 0.22;
+          float rim2 = pow(1.0 - max(dot(normalize(vWN), V),0.0), 2.3);
+          holo += uTint * rim2 * 1.0;
           lit = holo;
         }
 
@@ -2388,6 +2439,7 @@ function buildScene(){
       }`,
   });
   planet=new THREE.Mesh(geo, planetMat);
+  planet._terrainTex=terrainTexAll;                 // {antique,holo} — applyTheme swaps between them
   root.add(planet);
   atmoMesh=new THREE.Mesh(new THREE.SphereGeometry(1.055,64,40),
     new THREE.MeshBasicMaterial({color:THEME.atmo, transparent:true, opacity:0.09, side:THREE.BackSide}));
@@ -2447,12 +2499,14 @@ function buildScene(){
     fg.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
     const foot=new THREE.LineLoop(fg, makeFootprintMat());
     foot.renderOrder=1; root.add(foot); st._foot=foot;
-    const lab=labelTexture(st.name, st.tier==='city'||st.tier==='megalopolis');
-    const ls=makeSprite(lab.tex, 0.03);
+    const big=st.tier==='city'||st.tier==='megalopolis';
+    const lab=labelTexture(st.name, big);
+    const ls=makeSprite(lab.tex, 0.03, new THREE.Color(THEME.lbl[big?'big':'small']));
     ls.scale.set(0.028*lab.aspect, 0.028, 1);
     ls.center.set(0.5, 1.55);
     ls.position.copy(spr.position);
     ls.material.depthTest=false;
+    ls._big=big;
     markerGroup.add(ls);
     st._label=ls;
   }
