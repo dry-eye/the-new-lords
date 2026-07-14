@@ -3282,7 +3282,11 @@ function updateCamera(){
   const alt=Math.max(0, camDist-1);
   const sp=Math.sin(camPitch), cp=Math.cos(camPitch);
   const sy=Math.sin(camYaw),   cy=Math.cos(camYaw);
-  camera.position.set(alt*sp*cy, alt*sp*sy, 1+alt*cp);
+  // The pitch swing must lie ALONG the screen-vertical (camera up), not across it — else a
+  // vertical drag orbits sideways (swapped axes). With up=(-sy,cy,0), that in-plane offset
+  // is (sp*sy, -sp*cy): at yaw=0 the camera swings back along -Y as pitch grows, so dragging
+  // up tilts the view toward the horizon (horizon rises from the top edge), not sideways.
+  camera.position.set(alt*sp*sy, -alt*sp*cy, 1+alt*cp);
   camera.up.set(-sy, cy, 0);               // yaw-locked up → stable orbit, level horizon
   camera.lookAt(0,0,1);
   _camNrm.copy(camera.position).normalize();
