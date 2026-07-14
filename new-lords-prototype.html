@@ -2584,11 +2584,20 @@ function animateMarkers(){
    Each block is then developed around its perimeter with a courtyard inside,
    the way actual urban fabric works.
    ===================================================================== */
+/* #17 — the built area was a small island inside a much larger footprint contour
+   (build radius was only 0.20–0.51 of FOOT_R), so towns read as half-empty. Fill
+   the footprint denser by (a) growing the build disk toward the footprint — capped at
+   ~0.55·FOOT_R so buildings stay inside the contour's tightest lobe (~0.72·FOOT_R) with
+   margin; the smaller tiers had the most room, megalopolis was already near its ring —
+   and (b) adding buildings inside it: fuller street frontages (build ↑) plus courtyard
+   infill on the urban tiers (court: fraction of inner-court lots built; 0 keeps camps a
+   sparse cluster). Road corridor widths (roadWidth) and block setbacks are deliberately
+   UNCHANGED — density comes from more buildings, not narrower streets (alley spacing is #18). */
 const CITY = {
-  camp:        {radius:0.0060, depth:1, minBlock:0.50, floors:[1,1], build:0.30},
-  village:     {radius:0.0135, depth:4, minBlock:0.19, floors:[1,2], build:0.58},
-  city:        {radius:0.0250, depth:7, minBlock:0.095,floors:[2,6], build:0.86},
-  megalopolis: {radius:0.0380, depth:9, minBlock:0.062,floors:[3,12],build:0.93},
+  camp:        {radius:0.0085, depth:1, minBlock:0.42, floors:[1,1], build:0.36, court:0   },
+  village:     {radius:0.0200, depth:4, minBlock:0.150,floors:[1,2], build:0.66, court:0.45},
+  city:        {radius:0.0320, depth:7, minBlock:0.090,floors:[2,6], build:0.90, court:0.85},
+  megalopolis: {radius:0.0420, depth:9, minBlock:0.060,floors:[3,12],build:0.95, court:0.95},
 };
 function cityRng(st){ return mulberry32((st.id*2654435761 ^ S.seed*40503)>>>0); }
 
@@ -2601,7 +2610,7 @@ function subdivideCity(st){
   const blocks=[];
   const baseAng=rr()*Math.PI*2;
   const rot=(u,a)=>({x:u.x*Math.cos(a)-u.y*Math.sin(a), y:u.x*Math.sin(a)+u.y*Math.cos(a)});
-  const density=(x,y)=>Math.max(0.10, 1-Math.hypot(x,y)*0.85);
+  const density=(x,y)=>Math.max(0.20, 1-Math.hypot(x,y)*0.72);   // #17: gentler falloff + higher floor so the disk stays built-up out to its rim, not just at the core
 
   function rec(c, u, hw, hh, d){
     if(Math.hypot(c.x,c.y) - Math.max(hw,hh) > 1.05) return;
@@ -2680,6 +2689,23 @@ function developBlocks(town){
     side(hw, -(hh-depth/2), 0, 'u');
     side(hh-depth, hw-depth/2, 0, 'v');
     side(hh-depth, -(hw-depth/2), 0, 'v');
+    // #17: fill the courtyard interior with a light grid of inner buildings so blocks read as
+    // densely built rather than hollow — this is where most of the "half-empty" came from on the
+    // bigger tiers. A mews gap keeps them off the frontage backs; walkers only ever use the
+    // perimeter streets (see streetPoint), so nothing placed here can block a lane.
+    const court=cfg.court||0;
+    const mews=0.012;
+    const gu=(hw-depth)-mews, gv=(hh-depth)-mews;       // inner-court half-extents left to build on
+    if(court>0 && Math.min(gu,gv) >= 0.020){
+      const gap=0.012, cell=0.070;
+      const nu=Math.max(1, Math.round(gu*2/(cell+gap)));
+      const nv=Math.max(1, Math.round(gv*2/(cell+gap)));
+      const wCell=(gu*2-gap*(nu-1))/nu, dCell=(gv*2-gap*(nv-1))/nv;
+      for(let iu=0; iu<nu; iu++) for(let iv=0; iv<nv; iv++){
+        if(rr() >= court) continue;                    // court = share of inner-court lots built; a few stay open
+        put(-gu+wCell/2+iu*(wCell+gap), -gv+dCell/2+iv*(dCell+gap), wCell, dCell, ang0);
+      }
+    }
   }
   return out;
 }
