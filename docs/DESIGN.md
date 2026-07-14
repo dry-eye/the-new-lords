@@ -1525,6 +1525,9 @@ What you can click and what each inspector panel shows. One entry per selectable
 
 Several standing conventions govern how instances and terms are presented in the UI. New UI work should follow all of them by default.
 
+### Selection indicator — a universal frame
+A selected object — any selectable map instance: settlement, squad, enterprise, caravan, or character — is marked by one **universal selection frame**: corner brackets around its map icon, in the theme's accent colour (see "Visual themes," above), the same treatment for every object kind. The icon keeps its normal size — selection is shown by the frame, not by scaling the icon up (scaling the selected icon was the earlier behaviour and read as awkward: it shifted the icon's footprint and competed with the tier-conveys-size silhouette). Hover keeps a lighter, distinct cue (a subtle emphasis, not the full frame) so hover and selection never look the same. One frame style across every object kind keeps "what's selected" instantly legible anywhere on the map.
+
 ### Clickable inspectable instances
 Whenever a concrete instance of an object that has an inspector view — organization, settlement, squad, character, enterprise, caravan, etc. — is named in any inspector panel or tooltip, it must be a clickable link that selects and jumps to it. A plain-text instance name is a bug, not an acceptable default. This convention covers, at minimum: the settlement's owner org and that org's parent, the management-slot occupant org, the supply-policy settlement name, and the character's heir.
 
