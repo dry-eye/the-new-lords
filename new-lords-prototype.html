@@ -4203,6 +4203,11 @@ window.__dbg = {
   camDist:()=>camDist,
   hotIds:()=>[...cityLive],
   settlements:()=>S.settlements.map(s=>({id:s.id, tier:s.tier, name:s.name})),
+  // read-only orientation probes for headless verification: how centred a settlement is
+  // under the current planet spin (its dir·camera axis; 1 = dead-centre facing the camera),
+  // and whether a fly-to slerp is currently in flight.
+  faceZ:(id)=>{ const st=stl(id); return st? st.dir.clone().applyQuaternion(root.quaternion).z : null; },
+  flying:()=>!!flyQ,
 };
 
 /* =====================================================================
@@ -4353,7 +4358,13 @@ function renderInspector(){
   insp.innerHTML = fn? fn(s.id) : '';
 }
 function head(kind,name,sub){
-  return '<div class="ihead"><div><div class="ikind">'+kind+'</div><div class="iname">'+name+'</div></div>'+
+  // #47 — the header name teleports to the current selection, reusing the shared [data-sel]
+  // link machinery (L + the inspector click handler + selectionDir/flyTo): a city flies to
+  // itself, a character to their home settlement. Only linkify when the selection resolves to
+  // a location; otherwise the name stays plain text so a click has nothing to (fail to) fly to.
+  const s=S.selection;
+  const nameHTML=(s && selectionDir())? L(s.type,s.id,name) : name;
+  return '<div class="ihead"><div><div class="ikind">'+kind+'</div><div class="iname">'+nameHTML+'</div></div>'+
     '<div class="stat">'+(sub||'')+'</div></div>';
 }
 function row(k,v){return '<div class="row"><span class="k">'+k+'</span><span class="v">'+v+'</span></div>';}
