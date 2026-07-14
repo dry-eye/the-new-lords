@@ -3148,7 +3148,7 @@ function buildCity(st, maxResidents=48){
   const hex = buildHexLayer(st, lots, {orient, dirOf, R, S1, group});
 
   root.add(group);
-  return {group, walkers, st, orient, dirOf, nextWaypoint, hex};
+  return {group, walkers, st, orient, dirOf, nextWaypoint, hex, R};   // #50: R = city surface radius, for head-aligned picks
 }
 /* advance one town's walking cat heads along the streets by one frame's worth of time */
 function stepWalkers(c, dtMs){
@@ -3165,9 +3165,11 @@ function stepWalkers(c, dtMs){
       w.phase+=dtMs*0.004*sp;
     }
     const bob=Math.sin(w.phase)*(H*0.28);
-    w.mesh.matrix.copy(c.orient(w.x, w.y, w.face, H*0.85 + bob));
+    const lift=H*0.85 + bob;
+    w.mesh.matrix.copy(c.orient(w.x, w.y, w.face, lift));
     w.mesh.matrixWorldNeedsUpdate=true;
     w.dir=c.dirOf(w.x, w.y);
+    w.r=(c.R!=null?c.R:1)+lift;   // #50: the head's exact shell radius (surface R + lift) for a head-aligned pick
   }
 }
 
@@ -3530,7 +3532,17 @@ function updateCityLOD(){
   cityLive = new Set(cityCache.keys());                 // everything currently built is hot
   for(const c of cityCache.values()){
     stepWalkers(c, frameDtMs);
-    for(const w of c.walkers) if(w.id!=null) picks.push({type:'char', id:w.id, dir:w.dir, px:0.022}); // anonymous residents aren't pickable
+    // #50: every flying head is clickable. An IDENTIFIED cat (real S.char) picks its
+    // character; an ANONYMOUS density head (#16 — a cosmetic walker with no sim entity
+    // yet) is registered as a resident-pre-materialisation, so clicking it draws a real
+    // character from the settlement's latent demographic pool (DESIGN §236 «Identified
+    // vs anonymous», §954 «Settlement population: demographic pool»).
+    for(const w of c.walkers){
+      // r:w.r — project the pick at the head's OWN surface radius so the hit-test sits on the
+      // VISIBLE head at every screen position (not just centred); see screenPos()/#50 note.
+      if(w.id!=null) picks.push({type:'char', id:w.id, dir:w.dir, r:w.r, px:0.026});
+      else           picks.push({type:'resident', walker:w, settlementId:c.st.id, dir:w.dir, r:w.r, px:0.026});
+    }
   }
   updateHexHud();                                       // #43: tactical-layer readout for the active hot city
 }
@@ -3850,6 +3862,7 @@ function pickLabel(t){
   if(t.type==='caravan')    return 'караван #'+t.id;
   if(t.type==='enterprise'){ const e=ent(t.id); return e? ENT[e.kind].label : null; }
   if(t.type==='char')       return chr(t.id)?.name || null;
+  if(t.type==='resident')   return 'мешканець';   // #50: an unidentified head
   return null;
 }
 function targetFaction(t){
@@ -4336,8 +4349,14 @@ addEventListener('keydown',e=>{
 
 /* ---- screen-space picking & hover ---- */
 const projV=new THREE.Vector3();
-function screenPos(dir){
-  projV.copy(dir).multiplyScalar(1.035).applyQuaternion(root.quaternion);
+function screenPos(dir, r){
+  // r = the shell radius to project at. Icon markers are drawn on the r≈1.035 shell (the
+  // default), so their pick sits exactly under the drawn icon. #50: cat heads are drawn on
+  // the city surface (r≈1.005), NOT the icon shell — so a walker pick must project at the
+  // head's OWN radius (p.r), or an off-centre head shows a growing pick↔head parallax gap
+  // (two points on one ray at different radii project apart under perspective). p.dir stays
+  // the unit head direction (moveToward reuses it as a squad target), only the radius varies.
+  projV.copy(dir).multiplyScalar(r||1.035).applyQuaternion(root.quaternion);
   // limb test against the actual camera axis (not just +z) so it stays correct when tilted
   const behind = projV.dot(_camNrm) < 1/camDist - 0.02;
   projV.project(camera);
@@ -4358,9 +4377,9 @@ function pointInRing(cx,cy,ring){
 }
 function nearest(cx,cy){
   let best=null,bd=1e9;
-  const order={char:0, caravan:1, squad:2, enterprise:3, settlement:4};
+  const order={char:0, resident:0, caravan:1, squad:2, enterprise:3, settlement:4};   // #50: an anonymous head ranks with an identified one
   for(const p of picks){
-    const s=screenPos(p.dir);
+    const s=screenPos(p.dir, p.r);   // #50: walker picks carry the head's own shell radius (p.r); others default 1.035
     if(s.behind) continue;
     const rpx=p.px*innerHeight*0.62;
     const d=Math.hypot(s.x-cx, s.y-cy);
@@ -4374,8 +4393,19 @@ function nearest(cx,cy){
 }
 function pickAt(cx,cy){
   const p=nearest(cx,cy);
+  if(p && p.type==='resident'){ materializeResident(p); return; }
   if(p) select(p.type,p.id);
   else { S.selection=null; renderInspector(); renderEcon(); updateMarkers(); }
+}
+/* #50: an anonymous density head (#16) backs no sim entity. Selecting it MATERIALISES a
+   real character out of the settlement's latent demographic pool (makeChar → draw-from-
+   pool; DESIGN §236 «Identified vs anonymous»), binds the head to it, and opens its
+   window. The head keeps that binding for the rest of the tile's life, so re-clicking the
+   same cat re-opens the same, now-identified, character instead of drawing a fresh one. */
+function materializeResident(p){
+  const w=p.walker;
+  if(w.id==null) w.id = makeChar(p.settlementId).id;   // draw-from-pool, then bind the head
+  select('char', w.id);
 }
 let hover=null;
 const tip=document.getElementById('tip');
@@ -4417,6 +4447,10 @@ function tipHTML(p){
   if(p.type==='char'){
     const c=chr(p.id);
     return '<b>'+c.name+'</b><span class="tk">'+(c.ledOrgId? 'лідер · '+org(c.ledOrgId).name : 'мешканець')+'</span>';
+  }
+  if(p.type==='resident'){   // #50: an as-yet-anonymous head — click to identify it
+    const st=stl(p.settlementId);
+    return '<b>Мешканець</b><span class="tk">'+(st?st.name:'')+'</span><span class="tk">натисни, щоб пізнати</span>';
   }
   return '';
 }
@@ -4473,6 +4507,10 @@ function selectionFrameTarget(){
 window.__dbg = {
   focusSettlement:(id, alt=0.06)=>{ const st=stl(id); if(!st) return false;
     select('settlement', id); flyTo(st.dir); camAltTarget=alt; return true; },
+  // snap (no slerp/ease) the planet so direction d faces the camera focus, and optionally
+  // snap the zoom — a deterministic, drift-free centring for tests (kills spin + any fly).
+  snapDir:(d, alt)=>{ root.quaternion.setFromUnitVectors(new THREE.Vector3(d.x,d.y,d.z).normalize(), new THREE.Vector3(0,0,1));
+    spin.vel=0; flyQ=null; if(alt!=null){ camAlt=camAltTarget=alt; } return true; },
   zoom:(alt)=>{ camAltTarget=alt; },
   camDist:()=>camDist,
   hotIds:()=>[...cityLive],
@@ -4482,6 +4520,17 @@ window.__dbg = {
   // and whether a fly-to slerp is currently in flight.
   faceZ:(id)=>{ const st=stl(id); return st? st.dir.clone().applyQuaternion(root.quaternion).z : null; },
   flying:()=>!!flyQ,
+  // #50 test seam: the live walking heads of a hot city, each with the screen point
+  // where nearest() registers its pick (screenPos(dir)) AND the head's real drawn screen
+  // point (its mesh world position projected) — so a test can click the VISIBLE head and
+  // confirm the pick lands on it. id is the bound character (null = still anonymous).
+  walkers:(id)=>{ const c=cityCache.get(id); if(!c) return null;
+    const v=new THREE.Vector3();
+    return c.walkers.map((w,k)=>{
+      const pk=screenPos(w.dir, w.r);   // #50: the pick projects at the head's own shell (p.r) → sits on the head
+      v.setFromMatrixPosition(w.mesh.matrixWorld).project(camera);
+      return { k, id:w.id, dir:{x:w.dir.x, y:w.dir.y, z:w.dir.z}, pick:{x:pk.x, y:pk.y, behind:pk.behind},
+               head:{x:(v.x*0.5+0.5)*innerWidth, y:(-v.y*0.5+0.5)*innerHeight} }; }); },
 };
 
 /* =====================================================================
