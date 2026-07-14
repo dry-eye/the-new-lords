@@ -7,6 +7,8 @@ description: Use when the user runs /designsession — enter an explicit New Lor
 
 Explicit, queue-driven design work for New Lords, triggered by `/designsession`. The pipeline (`PIPELINE.md`) parks anything that needs a design decision in GitHub Issues under `status:to-design`; this skill is where those get resolved and handed back to the worker as `status:to-do`. Talk to the user in Ukrainian.
 
+**Scope — design only; the worker writes the code.** A design session produces *decisions and tasks*, not implementation. Do **not** write or edit prototype/game code (`new-lords-prototype.html`, etc.) in a design session — record the design in `docs/DESIGN.md` and file GitHub issues; the worker picks those up, implements, and merges to `main`. This holds even when the user says «треба зробити / додати / започаткувати X» — in a design session that means **file a task for X**, not build it now. The only exception is an explicit development order in this session (e.g. «реалізуй сам зараз», «напиши код», «не заводь задачу — зроби сам»). When unsure, file the task rather than coding.
+
 ## 1. Open the session
 
 Pull the queue and show it:
