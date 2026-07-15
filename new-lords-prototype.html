@@ -279,8 +279,14 @@
   клік — вибрати · тягни — обертати · колесо — зум (Ctrl+колесо — точний)<br>
   свій загін вибрано: ПКМ — рух · Shift+ПКМ — черга · утримай ПКМ — меню дій<br>
   стрілки — точне довертання · +/− — зум · пробіл — пауза<br>
-  наведи на іконку — підказка · наблизь впритул — вулиці, будинки й мешканці
+  наведи на іконку — підказка · наблизь впритул — вулиці, будинки й мешканці · гекс-тактика: G/B крок · V сітка
 </div>
+
+<div id="hexHud" style="position:fixed;left:50%;bottom:12px;transform:translateX(-50%);
+  display:none;z-index:40;pointer-events:none;font-size:11px;letter-spacing:.03em;
+  color:#E7D9B4;background:rgba(20,17,12,.72);border:1px solid rgba(200,155,60,.45);
+  border-radius:6px;padding:6px 12px;text-align:center;font-family:inherit;
+  box-shadow:0 2px 10px rgba(0,0,0,.4)"></div>
 
 <div id="graph">
   <canvas id="graphCanvas"></canvas>
@@ -2019,6 +2025,7 @@ const sun=new THREE.DirectionalLight(0xFFF3DA, 0.95); sun.position.set(0.4,0.5,1
 
 let planet, roadLines, roadMat, markerGroup, atmoMesh, vGlobe=null;
 let globeScene=null, globeRT=null, bgMesh=null, globeDirty=true, _gKey='';
+let selFrame=null, bracketTex=null;   // #49 — one shared corner-bracket selection frame
 
 /* ---------- icon atlas: every object type gets a drawn glyph ---------- */
 const ICONS={};
@@ -2183,7 +2190,7 @@ try { const s=localStorage.getItem('nl_theme'); if(s && THEMES[s]) THEME_NAME=s;
 let THEME = THEMES[THEME_NAME];
 
 function applyTheme(name){
-  if(!THEMES[name]) name='antique';
+  if(!THEMES[name]) name='map';
   THEME_NAME=name; THEME=THEMES[name];
   const rs=document.documentElement.style;
   for(const k in THEME.ui) rs.setProperty(k, THEME.ui[k]);
@@ -2198,6 +2205,7 @@ function applyTheme(name){
   if(vGlobe && vGlobe.material.uniforms.uPal){ vGlobe.material.uniforms.uPal.value = THEME.globePal||0; globeDirty=true; }
   if(atmoMesh) atmoMesh.material.color.set(THEME.atmo);
   if(roadMat) roadMat.uniforms.tint.value.set(THEME.road);
+  if(selFrame) selFrame.material.color.set(THEME.iconAccent);   // #49 — selection frame tracks the theme accent
   for(const st of (S.settlements||[])){
     if(st._label && st._label.material) st._label.material.color.set(THEME.lbl[st._label._big?'big':'small']);
   }
@@ -2261,6 +2269,22 @@ function makeSprite(tex, size, color){
   m.renderOrder=10;
   return m;
 }
+/* #49 — universal selection frame: four corner brackets, drawn once in white on a
+   transparent field (reusing iconTexture, which centres the context and gives a dark
+   halo helper) so a single sprite can be recoloured per-theme via material.color and
+   scaled to hug whichever marker is selected. Selection = this frame, never icon scale. */
+function makeBracketTexture(){
+  return iconTexture((x,r)=>{
+    const e=r*0.82, a=r*0.42, lw=Math.max(3, r*0.11);
+    const seg=xx=>{ xx.beginPath();
+      xx.moveTo(-e+a,-e); xx.lineTo(-e,-e); xx.lineTo(-e,-e+a);   // top-left corner
+      xx.moveTo( e-a,-e); xx.lineTo( e,-e); xx.lineTo( e,-e+a);   // top-right corner
+      xx.moveTo( e-a, e); xx.lineTo( e, e); xx.lineTo( e, e-a);   // bottom-right corner
+      xx.moveTo(-e+a, e); xx.lineTo(-e, e); xx.lineTo(-e, e-a); };  // bottom-left corner
+    outline(x, xx=>{ seg(xx); xx.stroke(); }, lw+6);               // dark halo so brackets read over terrain
+    x.lineWidth=lw; seg(x); x.stroke();
+  }, 128);
+}
 
 /* ---------- settlement territory footprint ---------------------------------
    An organic outline drawn on the sphere around each settlement: a circle
@@ -2294,7 +2318,7 @@ function footprintRing(st){
    (plain depth can't be trusted for a line hugging the surface at grazing angles). */
 function makeFootprintMat(){
   const m=new THREE.ShaderMaterial({
-    uniforms:{ horizon:{value:0.3}, tint:{value:new THREE.Color(0x8894AC)}, alpha:{value:0.4} },
+    uniforms:{ horizon:{value:0.3}, camNrm:{value:new THREE.Vector3(0,0,1)}, tint:{value:new THREE.Color(0x8894AC)}, alpha:{value:0.4} },
     transparent:true, depthWrite:false, depthTest:false,
     vertexShader:`
       varying vec3 vW;
@@ -2303,11 +2327,12 @@ function makeFootprintMat(){
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
       }`,
     fragmentShader:`
-      uniform float horizon; uniform vec3 tint; uniform float alpha;
+      uniform float horizon; uniform vec3 camNrm; uniform vec3 tint; uniform float alpha;
       varying vec3 vW;
       void main(){
-        if(vW.z < horizon) discard;
-        float fade = smoothstep(horizon, horizon+0.12, vW.z);
+        float d = dot(vW, camNrm);              // limb along the (possibly tilted) camera axis
+        if(d < horizon) discard;
+        float fade = smoothstep(horizon, horizon+0.12, d);
         gl_FragColor = vec4(tint, alpha*fade);
       }`,
   });
@@ -2744,7 +2769,7 @@ function buildScene(){
   /* Roads are drawn on the sphere's surface, so depth alone can't be trusted at
      grazing angles — the far hemisphere is discarded outright in the shader. */
   roadMat=new THREE.ShaderMaterial({
-    uniforms:{ horizon:{value:0.3}, tint:{value:new THREE.Color(THEME.road)} },
+    uniforms:{ horizon:{value:0.3}, camNrm:{value:new THREE.Vector3(0,0,1)}, tint:{value:new THREE.Color(THEME.road)} },
     transparent:true, depthWrite:false,
     vertexShader:`
       varying vec3 vW;
@@ -2754,12 +2779,15 @@ function buildScene(){
       }`,
     fragmentShader:`
       uniform float horizon;
+      uniform vec3 camNrm;
       uniform vec3 tint;
       varying vec3 vW;
       void main(){
-        // camera sits on +Z: anything with z below the horizon plane is on the far side
-        if(vW.z < horizon) discard;
-        float fade = smoothstep(horizon, horizon+0.12, vW.z);
+        // the camera axis (camNrm) tilts with the view (#28); anything past the limb
+        // measured along it — i.e. below horizon — is on the far side and discarded
+        float d = dot(vW, camNrm);
+        if(d < horizon) discard;
+        float fade = smoothstep(horizon, horizon+0.12, d);
         gl_FragColor = vec4(tint, 0.72*fade);
       }`,
   });
@@ -2768,6 +2796,11 @@ function buildScene(){
   root.add(roadLines);
 
   markerGroup=new THREE.Group(); root.add(markerGroup);
+  // #49 — one shared selection frame overlay, follows the active selection each frame
+  if(!bracketTex) bracketTex=makeBracketTexture();
+  selFrame=makeSprite(bracketTex, 0.05, THEME.iconAccent);
+  selFrame.renderOrder=9; selFrame.visible=false;   // under icons (10); hidden until something is selected
+  markerGroup.add(selFrame);
   pawnSprites=[]; pawnPositions=[]; pawnBuiltFor=null;
 
   const TIER_PX={megalopolis:0.062, city:0.048, village:0.034, camp:0.026};
@@ -2828,7 +2861,7 @@ function updateMarkers(){
     st._spr.material.color.set(col);
     const sel=S.selection && S.selection.type==='settlement' && S.selection.id===st.id;
     const hov=hover && hover.type==='settlement' && hover.id===st.id;
-    st._spr.scale.setScalar(st._px*(sel?1.35:hov?1.18:1));
+    st._spr.scale.setScalar(st._px*(hov?1.18:1));   // #49 selection = frame, not scale; hover keeps its own lighter cue
     if(st._foot){
       st._foot.material.uniforms.tint.value.set(col);
       st._foot.material.uniforms.alpha.value = sel?0.9 : hov?0.6 : 0.38;
@@ -2842,9 +2875,9 @@ function updateMarkers(){
       markerGroup.add(e._spr);
     }
     if(!e._spr) continue;
-    const sel=S.selection && S.selection.type==='enterprise' && S.selection.id===e.id;
+    const hov=hover && hover.type==='enterprise' && hover.id===e.id;
     e._spr.material.color.set(e.stalled? 0x9A6A62 : THEME.iconAccent);
-    e._spr.scale.setScalar(0.026*(sel?1.35:1));
+    e._spr.scale.setScalar(0.026*(hov?1.15:1));   // #49 selection = frame; keep a subtle hover-only cue
     picks.push({type:'enterprise', id:e.id, dir:e._dir, px:0.026});
   }
   const live=new Set();
@@ -2854,8 +2887,8 @@ function updateMarkers(){
     let m=squadMeshes.get(sq.id);
     if(!m){ m=makeSprite(ICONS.squad, 0.034); markerGroup.add(m); squadMeshes.set(sq.id,m); }
     m.material.color.set(factionColor(sq.factionId));
-    const sel=S.selection && S.selection.type==='squad' && S.selection.id===sq.id;
-    m.scale.setScalar((0.026+Math.min(0.016, sq.strength/900))*(sel?1.4:1));
+    const hov=hover && hover.type==='squad' && hover.id===sq.id;
+    m.scale.setScalar((0.026+Math.min(0.016, sq.strength/900))*(hov?1.15:1));   // #49 selection = frame; keep a subtle hover-only cue
     picks.push({type:'squad', id:sq.id, dir:sq.rdir, px:0.034});
   }
   for(const [id,m] of squadMeshes) if(!live.has(id)){ markerGroup.remove(m); squadMeshes.delete(id); }
@@ -2874,12 +2907,14 @@ function updateMarkers(){
 /* every frame: ease render positions and hide anything behind the globe */
 function animateMarkers(){
   const horizon = 1/camDist;
-  if(roadMat) roadMat.uniforms.horizon.value = horizon;
-  for(const m of footMats) m.uniforms.horizon.value = horizon;
+  // The limb (horizon) is measured along the camera axis _camNrm, which tilts with the
+  // view (#28); at pitch=0 _camNrm=(0,0,1) so every test below reduces to the old z-test.
+  if(roadMat){ roadMat.uniforms.horizon.value = horizon; roadMat.uniforms.camNrm.value.copy(_camNrm); }
+  for(const m of footMats){ m.uniforms.horizon.value = horizon; m.uniforms.camNrm.value.copy(_camNrm); }
   const q=root.quaternion;
   const put=(spr, dir, lift)=>{
     spr.position.copy(dir).multiplyScalar(lift);
-    const z=dir.clone().applyQuaternion(q).z;
+    const z=dir.clone().applyQuaternion(q).dot(_camNrm);
     spr.visible = z > horizon - 0.02;
     const fade=Math.min(1, Math.max(0,(z-horizon+0.02)/0.08));
     spr.material.opacity = fade;
@@ -2918,8 +2953,29 @@ function animateMarkers(){
   // globe is never visible, so skip its render cost. Pure visibility cull; the hot-set
   // logic (cityLive) is untouched.
   for(const c of cityCache.values()){
-    const z=c.st.dir.clone().applyQuaternion(q).z;
+    const z=c.st.dir.clone().applyQuaternion(q).dot(_camNrm);
     c.group.visible = z > horizon - 0.03;
+  }
+  // #49 — universal selection frame: hug the selected object's icon with corner brackets.
+  // One shared overlay; sized to the marker's on-screen radius, hidden when nothing is
+  // selected or when the selected marker is behind the globe.
+  if(selFrame){
+    const t=selectionFrameTarget();
+    if(!t){ selFrame.visible=false; }
+    else {
+      const K=1.7;                                   // frame a touch larger than the icon it wraps
+      selFrame.scale.set(t.px*K, t.px*K, 1);
+      if(t.spr){                                     // a real marker exists: inherit its exact position + limb culling
+        selFrame.position.copy(t.spr.position);
+        selFrame.visible=t.spr.visible;
+        selFrame.material.opacity=t.spr.material.opacity;
+      } else {                                        // char/org (no dedicated marker): place from the on-sphere direction
+        selFrame.position.copy(t.dir).multiplyScalar(1.045);
+        const z=t.dir.clone().applyQuaternion(q).dot(_camNrm);
+        selFrame.visible = z > horizon - 0.02;
+        selFrame.material.opacity=Math.min(1, Math.max(0,(z-horizon+0.02)/0.08));
+      }
+    }
   }
 }
 
@@ -2932,16 +2988,43 @@ function animateMarkers(){
    Each block is then developed around its perimeter with a courtyard inside,
    the way actual urban fabric works.
    ===================================================================== */
+/* #17 — the built area was a small island inside a much larger footprint contour
+   (build radius was only 0.20–0.51 of FOOT_R), so towns read as half-empty. Fill
+   the footprint denser by (a) growing the build disk toward the footprint — capped at
+   ~0.55·FOOT_R so buildings stay inside the contour's tightest lobe (~0.72·FOOT_R) with
+   margin; the smaller tiers had the most room, megalopolis was already near its ring —
+   and (b) adding buildings inside it: fuller street frontages (build ↑) plus courtyard
+   infill on the urban tiers (court: fraction of inner-court lots built; 0 keeps camps a
+   sparse cluster). #17 left road corridors and setbacks untouched. */
+/* #18 — after #17's fill the passages read as cramped slivers and cats had nowhere to walk:
+   the deep lanes all sat on roadWidth's 0.018 floor, so the tightest walked lanes were only a
+   cat-width or two of clear pavement between the taller frontages. Widen the passages WITHOUT
+   undoing #17's density (per the #18 coordination) by reshaping the roadWidth curve to open the
+   NARROW lanes while leaving the already-generous avenues (and the sparse camp, whose one road is
+   the top-level split) exactly as they were — so no tier's streets get narrower: raise the floor
+   0.018→0.026 (the deep lanes cats actually thread grow ~44%) and slow the falloff a touch
+   0.72→0.73 (mid lanes widen a few %), with the base UNCHANGED at 0.075 so roadWidth(0) is
+   identical to main. Clear alley = roadWidth(d)+2·setback (setback unchanged at 0.012), so the
+   tightest lanes go 0.042→0.050 (+19%). To keep the footprint filled AND add buildings, minBlock
+   drops ~22% on the built tiers: the finer subdivision the raised floor now safely allows
+   recovers/adds blocks, and each block still lines full frontages + a courtyard (court/build
+   unchanged, near max) — measured (seed 1874): megalopolis buildings +5% AND median lane +14%
+   (both up together), city median lane +18%, village +17%, camp unchanged. Walkers only use these
+   perimeter corridors (streetPoint), so wider corridors = directly more walkable (cat pathfinding #20). */
 const CITY = {
-  camp:        {radius:0.0060, depth:1, minBlock:0.50, floors:[1,1], build:0.30},
-  village:     {radius:0.0135, depth:4, minBlock:0.19, floors:[1,2], build:0.58},
-  city:        {radius:0.0250, depth:7, minBlock:0.095,floors:[2,6], build:0.86},
-  megalopolis: {radius:0.0380, depth:9, minBlock:0.062,floors:[3,12],build:0.93},
+  camp:        {radius:0.0085, depth:1, minBlock:0.42, floors:[1,1], build:0.36, court:0   },
+  village:     {radius:0.0200, depth:4, minBlock:0.117,floors:[1,2], build:0.66, court:0.45},
+  city:        {radius:0.0320, depth:7, minBlock:0.070,floors:[2,6], build:0.90, court:0.85},
+  megalopolis: {radius:0.0420, depth:9, minBlock:0.047,floors:[3,12],build:0.95, court:0.95},
 };
 function cityRng(st){ return mulberry32((st.id*2654435761 ^ S.seed*40503)>>>0); }
 
-/* road corridor width by how major the split is — avenues at the top, lanes at the bottom */
-function roadWidth(d){ return Math.max(0.018, 0.075 * Math.pow(0.72, d)); }   // floor nudged up so the deepest lanes stay walkable beside the taller buildings
+/* road corridor width by how major the split is — avenues at the top, lanes at the bottom.
+   #18: floor raised 0.018→0.026 (the deep lanes cats thread widen ~44%) and falloff slowed
+   0.72→0.73 (mid lanes widen a few %); base stays 0.075 so the top avenues — and the camp's single
+   top-level road — are untouched. The ubiquitous narrow lanes open into a readable, passable alley
+   beside the taller #17 buildings, and no tier's streets get narrower. */
+function roadWidth(d){ return Math.max(0.026, 0.075 * Math.pow(0.73, d)); }
 
 /* --- recursive block subdivision inside the city disk --- */
 function subdivideCity(st){
@@ -2949,7 +3032,7 @@ function subdivideCity(st){
   const blocks=[];
   const baseAng=rr()*Math.PI*2;
   const rot=(u,a)=>({x:u.x*Math.cos(a)-u.y*Math.sin(a), y:u.x*Math.sin(a)+u.y*Math.cos(a)});
-  const density=(x,y)=>Math.max(0.10, 1-Math.hypot(x,y)*0.85);
+  const density=(x,y)=>Math.max(0.20, 1-Math.hypot(x,y)*0.72);   // #17: gentler falloff + higher floor so the disk stays built-up out to its rim, not just at the core
 
   function rec(c, u, hw, hh, d){
     if(Math.hypot(c.x,c.y) - Math.max(hw,hh) > 1.05) return;
@@ -2985,12 +3068,29 @@ function subdivideCity(st){
   return {blocks, cfg, rr, density};
 }
 
+/* --- pick which blocks become parks / sports grounds (green, no buildings) --- */
+function markParks(town){
+  const {blocks, rr}=town;
+  let footballBudget=2;                                            // a couple of full pitches per town at most
+  for(const b of [...blocks].sort((a,z)=>(z.hw*z.hh)-(a.hw*a.hh))){ // biggest greens first -> they get football
+    const big=b.hw>0.22 && b.hh>0.15;
+    if(b.den<0.32 || rr()<0.14 || (big && rr()<0.55)){
+      b.park=true;
+      const s=Math.min(b.hw,b.hh);
+      if(big && footballBudget>0 && rr()<0.75){ b.field='football'; footballBudget--; }
+      else if(s>0.13 && rr()<0.5) b.field='fivepitch';
+      else if(s>0.07 && rr()<0.4) b.field='tennis';
+    }
+  }
+}
+
 /* --- develop each block: buildings around the perimeter, courtyard inside --- */
 function developBlocks(town){
   const {blocks, cfg, rr, density}=town;
   const out=[];
   const [flo,fhi]=cfg.floors;
   for(const b of blocks){
+    if(b.park) continue;                            // parks carry no buildings
     const u=b.u, v={x:-b.u.y, y:b.u.x};
     const setback=0.012;
     const hw=b.hw-setback, hh=b.hh-setback;
@@ -3028,6 +3128,23 @@ function developBlocks(town){
     side(hw, -(hh-depth/2), 0, 'u');
     side(hh-depth, hw-depth/2, 0, 'v');
     side(hh-depth, -(hw-depth/2), 0, 'v');
+    // #17: fill the courtyard interior with a light grid of inner buildings so blocks read as
+    // densely built rather than hollow — this is where most of the "half-empty" came from on the
+    // bigger tiers. A mews gap keeps them off the frontage backs; walkers only ever use the
+    // perimeter streets (see streetPoint), so nothing placed here can block a lane.
+    const court=cfg.court||0;
+    const mews=0.012;
+    const gu=(hw-depth)-mews, gv=(hh-depth)-mews;       // inner-court half-extents left to build on
+    if(court>0 && Math.min(gu,gv) >= 0.020){
+      const gap=0.012, cell=0.070;
+      const nu=Math.max(1, Math.round(gu*2/(cell+gap)));
+      const nv=Math.max(1, Math.round(gv*2/(cell+gap)));
+      const wCell=(gu*2-gap*(nu-1))/nu, dCell=(gv*2-gap*(nv-1))/nv;
+      for(let iu=0; iu<nu; iu++) for(let iv=0; iv<nv; iv++){
+        if(rr() >= court) continue;                    // court = share of inner-court lots built; a few stay open
+        put(-gu+wCell/2+iu*(wCell+gap), -gv+dCell/2+iv*(dCell+gap), wCell, dCell, ang0);
+      }
+    }
   }
   return out;
 }
@@ -3063,19 +3180,52 @@ const DISK=new THREE.CircleGeometry(1, 44);
 
 /* one flying cat head (sphere + ears + muzzle), sized in surface units; the group is
    placed and oriented per frame by stepWalkers. Shared primitives, per-head material. */
-function makeCatHead(fur){
+function makeCatHead(fur, weapon){
   const H=0.00100;
   const head=fur.clone().offsetHSL(0,0,0.05);
   const matH=new THREE.MeshLambertMaterial({color:head});
   const matM=new THREE.MeshLambertMaterial({color:head.clone().offsetHSL(0,-0.05,0.10)});
+  const matW=new THREE.MeshLambertMaterial({color:0xE8E2D6});     // pale whiskers, so they read against the fur
   const g=new THREE.Group();
-  const part=(geo,mat,px,py,pz,sx,sy,sz)=>{
-    const m=new THREE.Mesh(geo,mat); m.position.set(px,py,pz); m.scale.set(sx,sy,sz); g.add(m);
+  const part=(geo,mat,px,py,pz,sx,sy,sz,rx,ry)=>{
+    const m=new THREE.Mesh(geo,mat); m.position.set(px,py,pz); m.scale.set(sx,sy,sz);
+    if(rx) m.rotation.x=rx; if(ry) m.rotation.y=ry; g.add(m);
   };
   part(SPH, matH,  0,      0,      0,      H*0.24,H*0.22,H*0.24);   // head — +Y up, +Z forward
-  part(CONE,matH, -H*0.12, H*0.16, 0,      H*0.08,H*0.16,H*0.08);  // left ear
-  part(CONE,matH,  H*0.12, H*0.16, 0,      H*0.08,H*0.16,H*0.08);  // right ear
+  part(CONE,matH, -H*0.12, H*0.16, 0,      H*0.10,H*0.24,H*0.10);  // left ear  (enlarged, #54)
+  part(CONE,matH,  H*0.12, H*0.16, 0,      H*0.10,H*0.24,H*0.10);  // right ear (enlarged, #54)
   part(SPH, matM,  0,     -H*0.02, H*0.18, H*0.08,H*0.06,H*0.08);  // muzzle
+  // #54: whiskers — three thin bars per side, rooted at the muzzle cheeks and fanning outward in
+  // the head's tangent plane (the plane the top-down camera sees). Symmetric: the right side uses
+  // side=+1 / angle −θ, the left mirrors it with side=−1 / angle +θ.
+  const WL=H*0.20, WT=H*0.012, bx=H*0.05, by=-H*0.02, bz=H*0.16;   // length, thickness, muzzle-cheek root
+  for(const s of [1,-1]) for(const th of [0.30, 0, -0.30]){
+    const cx=s*(bx + WL/2*Math.cos(th)), cz=bz + WL/2*Math.sin(th);
+    part(BOX, matW, cx, by, cz, WL, WT, WT, 0, -s*th);            // elongated along its own axis, fanned by ry
+  }
+  // exactly one weapon per head — rifle for shooters, sword for meleers (skill rule at the call
+  // site). The head is bodiless and, on the sphere, floats ears-up toward the top-down camera,
+  // so the weapon lies in the tangent plane beside the head (offset +X) pointing +Z (the facing
+  // / movement dir) — where it stays visible and inherits the head group's orientation. Sized
+  // in H so it scales with the (enlarged) head.
+  const AX=H*0.28;                                                 // floats just beside the head, to the right
+  if(weapon==='rifle'){                                            // barrel runs along +Z (facing dir)
+    const gun =new THREE.MeshLambertMaterial({color:0x2B2B30});
+    const wood=new THREE.MeshLambertMaterial({color:0x6B4A2A});
+    part(BOX, gun,  AX,  0,       H*0.06, H*0.05, H*0.06, H*0.30);  // receiver/body
+    part(BOX, gun,  AX,  H*0.005, H*0.30, H*0.02, H*0.02, H*0.24);  // barrel
+    part(BOX, wood, AX, -H*0.01, -H*0.18, H*0.05, H*0.07, H*0.12);  // stock
+    part(BOX, gun,  AX, -H*0.09,  H*0.02, H*0.03, H*0.10, H*0.05);  // magazine (hangs down)
+  }else{                                                           // sword: blade along +Z, guard across X
+    const steel=new THREE.MeshLambertMaterial({color:0xC2C8D2});
+    const gold =new THREE.MeshLambertMaterial({color:0x9A7B33});
+    const wood =new THREE.MeshLambertMaterial({color:0x6B4A2A});
+    part(BOX,  steel, AX, 0,  H*0.14, H*0.04, H*0.015,H*0.34);            // blade (flat faces camera)
+    part(CONE, steel, AX, 0,  H*0.34, H*0.02, H*0.06, H*0.02, Math.PI/2); // tip — apex rotated to +Z
+    part(BOX,  gold,  AX, 0, -H*0.05, H*0.14, H*0.03, H*0.04);            // cross-guard (spans X)
+    part(BOX,  wood,  AX, 0, -H*0.14, H*0.03, H*0.03, H*0.12);            // grip
+    part(SPH,  gold,  AX, 0, -H*0.22, H*0.035,H*0.035,H*0.035);           // pommel
+  }
   return g;
 }
 
@@ -3084,6 +3234,7 @@ let cityCache=new Map(), cityLive=new Set(), frameDtMs=16;
 function buildCity(st, maxResidents=48){
   const town=subdivideCity(st);
   const cfg=town.cfg, rr=town.rr;
+  markParks(town);                       // choose green/recreation blocks before buildings are placed
   const lots=developBlocks(town);
 
   const up=st.dir.clone();
@@ -3127,8 +3278,8 @@ function buildCity(st, maxResidents=48){
     const ang=Math.atan2(b.u.y,b.u.x);
     const m=orient(b.c.x, b.c.y, ang, 0.00006);
     scale(m, b.hw*2*S1, 0.00010, b.hh*2*S1);
-    const grass = b.den < 0.35 || rr()<0.12;
-    col.setHSL(grass?0.26:0.09, grass?0.20:0.10, grass?0.24:0.30);
+    if(b.park){ if(b.field==='tennis') col.setHSL(0.58,0.42,0.40); else col.setHSL(0.30,0.32,0.30); } // green park / blue tennis court
+    else col.setHSL(0.09, 0.10, 0.30);
     accGeo(gAcc, BOX, m, col);
   }
   group.add(accMesh(gAcc));
@@ -3155,6 +3306,33 @@ function buildCity(st, maxResidents=48){
   }
   group.add(accMesh(bAcc));
 
+  // 3b. parks — trees on green blocks, white line-markings on the sports pitches
+  const pAcc=MeshAcc(), wAcc=MeshAcc();
+  const fieldLine=(cx,cy,lineAng,len)=>{ const m=orient(cx,cy,lineAng,0.00022); scale(m,len,0.00026,0.00060); col.set(0xeef1f2); accGeo(wAcc,BOX,m,col); };
+  for(const b of town.blocks){
+    if(!b.park) continue;
+    const u=b.u, v={x:-b.u.y,y:b.u.x}, ang=Math.atan2(u.y,u.x);
+    const W=(lx,ly)=>({x:b.c.x+u.x*lx+v.x*ly, y:b.c.y+u.y*lx+v.y*ly});
+    if(b.field){
+      const fhw=b.hw*0.9, fhh=b.hh*0.9; let p;
+      p=W(0,fhh);  fieldLine(p.x,p.y,ang,2*fhw*S1);
+      p=W(0,-fhh); fieldLine(p.x,p.y,ang,2*fhw*S1);
+      p=W(fhw,0);  fieldLine(p.x,p.y,ang+Math.PI/2,2*fhh*S1);
+      p=W(-fhw,0); fieldLine(p.x,p.y,ang+Math.PI/2,2*fhh*S1);
+      fieldLine(b.c.x,b.c.y,ang+Math.PI/2,2*fhh*S1);         // halfway / net line
+    } else {
+      const n=Math.max(2, Math.round(b.hw*b.hh*70));
+      for(let i=0;i<n;i++){
+        const lx=(rr()-0.5)*1.7*b.hw, ly=(rr()-0.5)*1.7*b.hh, p=W(lx,ly);
+        if(Math.hypot(p.x,p.y)>1.0) continue;
+        const m=orient(p.x,p.y,0,0.0016); scale(m,0.0015,0.0032,0.0015);
+        col.set(0x3f7d4f); accGeo(pAcc, CONE, m, col);
+      }
+    }
+  }
+  if(pAcc.pos.length) group.add(accMesh(pAcc));
+  if(wAcc.pos.length) group.add(accMesh(wAcc));
+
   // 4. residents: flying cat heads that WALK the streets — movable, stepped per frame
   //    (stepWalkers). Streets are the corridors between blocks; a head drifts between
   //    points on block edges. No capsule body — just the floating head.
@@ -3179,25 +3357,48 @@ function buildCity(st, maxResidents=48){
     }
     return {x:0,y:0};
   };
-  const residents=S.chars.filter(c=>c.homeId===st.id && c.alive).slice(0, maxResidents);
-  residents.forEach((c,i)=>{
-    const b=blocks[(c.id*5+i)%blocks.length];
-    const start=streetPoint(b, c.id%4, ((c.id%7)/7-0.5)*1.2);
+  //    Two kinds of walker share the streets. IDENTIFIED residents are the settlement's
+  //    real sim characters (leader, player, named folk): coloured by role and pickable.
+  //    A handful of them can't fill a city, so we top up with ANONYMOUS residents — purely
+  //    cosmetic cat heads that walk exactly like the rest but back NO sim entity and aren't
+  //    pickable (the same render-time materialisation the squad pawns use; DESIGN §236
+  //    "Identified vs anonymous"). The total scales with the town's built footprint — its
+  //    block count is ≈ how much street there is to fill — so a sprawling megalopolis reads
+  //    as busy and a camp stays sparse (issue #16: cities were looking empty).
+  const realResidents=S.chars.filter(c=>c.homeId===st.id && c.alive);
+  const footprint=town.blocks.length;
+  const wanted=Math.min(110, Math.round(footprint*1.7));   // ~1.7 residents per block, hard-capped for readability
+  const total=Math.min(maxResidents, Math.max(realResidents.length, wanted));
+  const spawnWalker=(seed, char)=>{
+    const b=blocks[(seed*5)%blocks.length];
+    const start=streetPoint(b, seed%4, ((seed%7)/7-0.5)*1.2);
     if(Math.hypot(start.x,start.y)>1.0){ start.x=0; start.y=0; }
-    const isLeader=!!c.ledOrgId, isPlayer=c.id===S.playerCharId;
+    const isLeader=char && !!char.ledOrgId, isPlayer=char && char.id===S.playerCharId;
     const fur = isPlayer? new THREE.Color(0xC89B3C)
               : isLeader? new THREE.Color(0xEADCB6)
-              : new THREE.Color().setHSL(0.07+((c.id%9)/9)*0.06, 0.18+((c.id%3)*0.10), 0.42+((c.id%5)/5)*0.28);
-    const head=makeCatHead(fur);
+              : new THREE.Color().setHSL(0.07+((seed%9)/9)*0.06, 0.18+((seed%3)*0.10), 0.42+((seed%5)/5)*0.28);
+    // exactly one weapon per head (#33): an IDENTIFIED cat picks by skill; an ANONYMOUS cat
+    // (no sim entity, no skills) gets a stable cosmetic weapon from its per-slot seed.
+    const weapon = char ? (char.skills.shooting > char.skills.melee ? 'rifle' : 'sword')
+                        : ((seed%2) ? 'rifle' : 'sword');
+    const head=makeCatHead(fur, weapon);
     head.matrixAutoUpdate=false;
     group.add(head);
-    walkers.push({ id:c.id, mesh:head, x:start.x, y:start.y, tgt:nextWaypoint(),
-                   face:(c.id%360)/360*Math.PI*2, spd:0.09+((c.id%5)/5)*0.07,
-                   phase:(c.id%12)/12*6.283, dir:dirOf(start.x,start.y) });
-  });
+    walkers.push({ id: char? char.id : null, mesh:head, x:start.x, y:start.y, tgt:nextWaypoint(),
+                   face:(seed%360)/360*Math.PI*2, spd:0.09+((seed%5)/5)*0.07,
+                   phase:(seed%12)/12*6.283, dir:dirOf(start.x,start.y) });
+  };
+  for(let k=0;k<total;k++){
+    if(k<realResidents.length) spawnWalker(realResidents[k].id, realResidents[k]);
+    else spawnWalker((st.id*131+k*9277+7)>>>0, null);   // stable per-slot cosmetic seed — no sim entity created
+  }
+
+  // #43: the hex tactical layer materialises WITH the city geometry (rides the LOD
+  // hot-region boundary) and is torn down with it when the tile goes cold.
+  const hex = buildHexLayer(st, lots, {orient, dirOf, R, S1, group});
 
   root.add(group);
-  return {group, walkers, st, orient, dirOf, nextWaypoint};
+  return {group, walkers, st, orient, dirOf, nextWaypoint, hex, R};   // #50: R = city surface radius, for head-aligned picks
 }
 /* advance one town's walking cat heads along the streets by one frame's worth of time */
 function stepWalkers(c, dtMs){
@@ -3214,11 +3415,297 @@ function stepWalkers(c, dtMs){
       w.phase+=dtMs*0.004*sp;
     }
     const bob=Math.sin(w.phase)*(H*0.28);
-    w.mesh.matrix.copy(c.orient(w.x, w.y, w.face, H*0.85 + bob));
+    const lift=H*0.85 + bob;
+    w.mesh.matrix.copy(c.orient(w.x, w.y, w.face, lift));
     w.mesh.matrixWorldNeedsUpdate=true;
     w.dir=c.dirOf(w.x, w.y);
+    w.r=(c.R!=null?c.R:1)+lift;   // #50: the head's exact shell radius (surface R + lift) for a head-aligned pick
   }
 }
+
+/* =====================================================================
+   HEX TACTICAL LAYER (#43) — the local, hot-region-only tactical grid.
+   Source of truth: docs/PATHFINDING_SPEC.md — «Tactical movement — the hex
+   grid», «Formations & team-based edge passability», «Mass / crowd movement»,
+   «Scale, performance & determinism».
+
+   Resolved design (issue #43):
+     • Graph↔hex hand-off rides the LOD hot-region boundary: the grid MATERIALISES
+       with a city's geometry (buildCity, when the tile goes hot) and COLLAPSES
+       with it (updateCityLOD removes the city group) — no separate persistence.
+       A unit entering snaps to the nearest free hex; leaving, it projects back to
+       the graph. (Snap-in is exercised by materialisation below; graph travel is
+       the existing walker layer.)
+     • One unit per hex. Buildings / impassable / the map edge block their hexes;
+       units never enter a blocked hex.
+     • Movement is perpendicular to hex edges — a step to an edge-adjacent
+       neighbour is, in a regular hex, exactly the centre→centre segment normal to
+       the shared edge.
+     • A "formation" is any contiguous cluster of same-team units. An edge is
+       friendly-threadable (and closed to other teams) iff BOTH hexes it divides
+       are held by the same team — an edge internal to one team's own cluster.
+     • Mass step: a whole selected crowd advances one hex simultaneously; blocked
+       units hold, the rest advance (never a whole-move cancel, never a re-path of
+       the mass).
+     • Determinism: the grid + its units are derived deterministically from the
+       region's authoritative state (seeded from the settlement id + world seed),
+       so the same seed always yields the same hex outcome — it is part of the
+       authoritative sim, not a cosmetic Math.random() layer like the wanderers.
+   ===================================================================== */
+// A tactical unit's radius, in a city's LOCAL (x,y) units — the city disk is
+// |xy|<1. Chosen so the grid reads legibly at the prototype's scale; the spec's
+// "minimum hex = 1.5 × unit radius" is then applied *exactly* on the next line.
+const TAC_UNIT_R  = 0.052;
+const HEX_INRADIUS = 1.5 * TAC_UNIT_R;             // spec: min cell = 1.5 × unit radius (centre→edge)
+const HEX_SIZE     = HEX_INRADIUS * 2/Math.sqrt(3);// circumradius (centre→vertex), pointy-top layout
+// pointy-top axial neighbour directions. A move to any of these is one straight
+// step perpendicular to the shared edge (spec: "perpendicular to hex edges").
+const HEX_DIRS = [ [1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1] ];
+const HEX_DIR_VEC = HEX_DIRS.map(([dq,dr])=>{      // unit displacement of each step, for aiming
+  const x=HEX_SIZE*Math.sqrt(3)*(dq+dr/2), y=HEX_SIZE*1.5*dr, L=Math.hypot(x,y);
+  return {x:x/L, y:y/L};
+});
+const hexKey=(q,r)=>q+','+r;
+function axialToXY(q,r){ return { x:HEX_SIZE*Math.sqrt(3)*(q+r/2), y:HEX_SIZE*1.5*r }; }
+// is local point (x,y) inside building lot L (a rotated rectangle), grown by margin?
+function pointInLot(x,y,L,margin){
+  const dx=x-L.x, dy=y-L.y, c=Math.cos(L.ang), s=Math.sin(L.ang);
+  const lx= dx*c + dy*s;                            // along the lot's width axis (ang)
+  const ly=-dx*s + dy*c;                            // along the lot's depth axis
+  return Math.abs(lx) <= L.w/2+margin && Math.abs(ly) <= L.d/2+margin;
+}
+const HEX_DISK_R = 0.97;                            // grid fills the city disk out to here
+const LINE_LIFT=0.00050, FILL_LIFT=0.00038, UNIT_H=0.0019;
+const UNIT_LIFT = 0.00050 + UNIT_H/2;
+
+/* Build the hex grid + its two demonstrator formations for one hot city.
+   ctx = { orient, dirOf, R, S1, group } from buildCity. Returns the layer API. */
+function buildHexLayer(st, lots, ctx){
+  // Seeded from the settlement + world seed → deterministic materialisation. This is
+  // a SEPARATE stream from the global sim RNG (never touched) and from the cosmetic
+  // Math.random() wanderers, so rebuilding a hot region reproduces it byte-for-byte.
+  const rng = mulberry32((st.id*2654435761 ^ S.seed*40503 ^ 0x9e3779b9) >>> 0);
+
+  // ---- 1. cells: every hex whose centre lies in the disk; blocked by buildings ----
+  const cells = new Map();
+  const qspan = Math.ceil(HEX_DISK_R/(HEX_SIZE*Math.sqrt(3))) + 2;
+  const rspan = Math.ceil(HEX_DISK_R/(HEX_SIZE*1.5)) + 2;
+  for(let r=-rspan; r<=rspan; r++) for(let q=-qspan; q<=qspan; q++){
+    const {x,y}=axialToXY(q,r);
+    if(Math.hypot(x,y) > HEX_DISK_R) continue;       // outside the disk → not part of the grid (map edge)
+    let blocked=false;
+    for(const L of lots){ if(pointInLot(x,y,L, TAC_UNIT_R*0.35)){ blocked=true; break; } }
+    cells.set(hexKey(q,r), {q,r,x,y,blocked,unit:null});
+  }
+  const cell=(q,r)=>cells.get(hexKey(q,r));
+  const neighbours=(q,r)=>HEX_DIRS.map(([dq,dr])=>cell(q+dq,r+dr));
+
+  // ---- 2. units: two contiguous same-team formations facing across the disk ----
+  const units=[]; const uById=new Map(); let nextUid=1;
+  const nearestFree=(tx,ty)=>{
+    let best=null,bd=1e9;
+    for(const c of cells.values()){ if(c.blocked||c.unit!=null) continue;
+      const d=Math.hypot(c.x-tx,c.y-ty); if(d<bd){bd=d;best=c;} }
+    return best;
+  };
+  const growFormation=(team,tx,ty,count)=>{          // packed BFS blob from the nearest free cell
+    const seed=nearestFree(tx,ty); if(!seed) return;
+    const seen=new Set([hexKey(seed.q,seed.r)]); const queue=[seed]; let placed=0;
+    while(queue.length && placed<count){
+      const c=queue.shift();
+      if(!c.blocked && c.unit==null){
+        const u={id:nextUid++, team, q:c.q, r:c.r, mesh:null};
+        c.unit=u.id; units.push(u); uById.set(u.id,u); placed++;
+      }
+      const dirs=HEX_DIRS.slice();                    // deterministic shuffle → slightly organic edge
+      for(let i=dirs.length-1;i>0;i--){ const j=Math.floor(rng()*(i+1)); const t=dirs[i]; dirs[i]=dirs[j]; dirs[j]=t; }
+      for(const [dq,dr] of dirs){
+        const nk=hexKey(c.q+dq,c.r+dr), nc=cells.get(nk);
+        if(nc && !nc.blocked && !seen.has(nk)){ seen.add(nk); queue.push(nc); }
+      }
+    }
+  };
+  const freeCount=[...cells.values()].filter(c=>!c.blocked).length;
+  const per=Math.max(8, Math.min(24, Math.round(freeCount*0.13)));
+  growFormation(0, -0.34, -0.05, per);               // team 0 = your crowd (left)
+  growFormation(1,  0.34,  0.05, per);               // team 1 = the other side (right)
+
+  // ---- 3. queries: formations & team-based edge passability ----
+  const teamOf=c=>(c && c.unit!=null) ? uById.get(c.unit).team : null;
+  // an edge (between adjacent cells a,b) belongs to team T iff BOTH sides are T's
+  // → friendly-threadable by T, closed to everyone else. Otherwise it's a plain
+  // contested boundary (a front line), threadable by nobody.
+  const edgeTeam=(a,b)=>{ const ta=teamOf(a), tb=teamOf(b); return (ta!=null && ta===tb)? ta : null; };
+  const edgeThreadable=(a,b,team)=>edgeTeam(a,b)===team;
+  const formations=()=>{
+    const seen=new Set(), out=[];
+    for(const c of cells.values()){
+      if(c.unit==null || seen.has(hexKey(c.q,c.r))) continue;
+      const team=uById.get(c.unit).team, comp=[], stack=[c]; seen.add(hexKey(c.q,c.r));
+      while(stack.length){ const x=stack.pop(); comp.push(x);
+        for(const nc of neighbours(x.q,x.r)){
+          if(!nc || nc.unit==null) continue; const nk=hexKey(nc.q,nc.r);
+          if(!seen.has(nk) && uById.get(nc.unit).team===team){ seen.add(nk); stack.push(nc); }
+        }
+      }
+      out.push({team, size:comp.length, cells:comp.map(x=>hexKey(x.q,x.r))});
+    }
+    return out;
+  };
+  const centroid=team=>{ let sx=0,sy=0,n=0; for(const u of units) if(u.team===team){ const p=axialToXY(u.q,u.r); sx+=p.x; sy+=p.y; n++; }
+    return n? {x:sx/n,y:sy/n,n} : null; };
+
+  // ---- 4. mass / crowd movement: whole team steps one hex; blocked hold, rest go ----
+  // A uniform hex translation is a bijection, so two movers never target the same
+  // cell; a mover is blocked only by the disk edge, a building, or a NON-moving
+  // occupant — and, transitively, by a blocked mover ahead of it in the column.
+  const massStep=(team, dirIndex)=>{
+    const [dq,dr]=HEX_DIRS[((dirIndex%6)+6)%6];
+    const movers=units.filter(u=>u.team===team);
+    const movingSet=new Set(movers.map(u=>u.id));
+    const target=new Map(), blocked=new Set();
+    for(const u of movers){
+      const t=cell(u.q+dq,u.r+dr); target.set(u.id,t);
+      if(!t || t.blocked){ blocked.add(u.id); continue; }       // map edge / building
+      if(t.unit!=null && !movingSet.has(t.unit)) blocked.add(u.id); // a stationary unit holds it
+    }
+    let changed=true;                                            // propagate the stall down the column
+    while(changed){ changed=false;
+      for(const u of movers){ if(blocked.has(u.id)) continue;
+        const t=target.get(u.id);
+        if(t.unit!=null && movingSet.has(t.unit) && blocked.has(t.unit)){ blocked.add(u.id); changed=true; }
+      }
+    }
+    const going=movers.filter(u=>!blocked.has(u.id));
+    for(const u of going) cell(u.q,u.r).unit=null;               // vacate (all sources distinct)
+    for(const u of going){ const t=target.get(u.id); u.q=t.q; u.r=t.r; }
+    for(const u of going) cell(u.q,u.r).unit=u.id;               // occupy (targets now free)
+    refresh();
+    return { moved:going.length, held:movers.length-going.length };
+  };
+  const stepForward=team=>{                                      // step a crowd toward the other side
+    const a=centroid(team), b=centroid(team^1);
+    let idx=2;                                                   // default: "north" if no foe
+    if(a && b){ const vx=b.x-a.x, vy=b.y-a.y, L=Math.hypot(vx,vy)||1;
+      let best=-2; HEX_DIR_VEC.forEach((d,i)=>{ const dot=(d.x*vx+d.y*vy)/L; if(dot>best){best=dot;idx=i;} }); }
+    return Object.assign({dir:idx}, massStep(team, idx));
+  };
+
+  // ---- 5. determinism probe: a stable hash of blocked cells + unit placements ----
+  const hash=()=>{
+    let h=2166136261>>>0; const bump=n=>{ h^=(n>>>0); h=Math.imul(h,16777619)>>>0; };
+    const bl=[...cells.values()].filter(c=>c.blocked).map(c=>(c.q+512)*1024+(c.r+512)).sort((a,b)=>a-b);
+    bump(bl.length); for(const v of bl) bump(v);
+    const us=units.map(u=>u.team*4194304 + (u.q+512)*1024 + (u.r+512)).sort((a,b)=>a-b);
+    bump(us.length); for(const v of us) bump(v);
+    return h>>>0;
+  };
+  const stats=()=>{ const f=formations();
+    return { cells:cells.size, blocked:[...cells.values()].filter(c=>c.blocked).length,
+             teamA:units.filter(u=>u.team===0).length, teamB:units.filter(u=>u.team===1).length,
+             formations:f.length, hash:hash() }; };
+
+  // ---- 6. render: grid outline + blocked fills + per-team unit cones ----
+  const vpos=(x,y,lift)=>ctx.dirOf(x,y).multiplyScalar(ctx.R+lift);
+  // grid outline (one LineSegments draw)
+  const lp=[];
+  for(const c of cells.values()){
+    const cor=[]; for(let i=0;i<6;i++){ const a=(60*i-30)*Math.PI/180;
+      cor.push(vpos(c.x+HEX_SIZE*Math.cos(a), c.y+HEX_SIZE*Math.sin(a), LINE_LIFT)); }
+    for(let i=0;i<6;i++){ const p=cor[i], q2=cor[(i+1)%6]; lp.push(p.x,p.y,p.z, q2.x,q2.y,q2.z); }
+  }
+  const lgeo=new THREE.BufferGeometry();
+  lgeo.setAttribute('position', new THREE.Float32BufferAttribute(lp,3));
+  const lineSeg=new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({
+    color:0xC89B3C, transparent:true, opacity:0.26, depthWrite:false }));
+  ctx.group.add(lineSeg);
+  // blocked-cell fills (one Mesh) — so "buildings block" reads at a glance
+  const fp=[];
+  for(const c of cells.values()){ if(!c.blocked) continue;
+    const cen=vpos(c.x,c.y,FILL_LIFT), cor=[];
+    for(let i=0;i<6;i++){ const a=(60*i-30)*Math.PI/180;
+      cor.push(vpos(c.x+HEX_SIZE*0.92*Math.cos(a), c.y+HEX_SIZE*0.92*Math.sin(a), FILL_LIFT)); }
+    for(let i=0;i<6;i++){ const p=cor[i], q2=cor[(i+1)%6];
+      fp.push(cen.x,cen.y,cen.z, p.x,p.y,p.z, q2.x,q2.y,q2.z); }
+  }
+  let fillMesh=null;
+  if(fp.length){ const fgeo=new THREE.BufferGeometry();
+    fgeo.setAttribute('position', new THREE.Float32BufferAttribute(fp,3));
+    fillMesh=new THREE.Mesh(fgeo, new THREE.MeshBasicMaterial({
+      color:0x51261f, transparent:true, opacity:0.5, side:THREE.DoubleSide, depthWrite:false }));
+    ctx.group.add(fillMesh);
+  }
+  // per-team unit cones
+  const pf=playerFactionId();
+  const teamMat=[
+    new THREE.MeshLambertMaterial({color:new THREE.Color(pf!=null?factionColor(pf):'#E3B23C')}),
+    new THREE.MeshLambertMaterial({color:new THREE.Color('#4F86C6')}),
+  ];
+  const rW=TAC_UNIT_R*ctx.S1*0.78;
+  const placeUnit=u=>{
+    const c=cell(u.q,u.r); if(!c) return;
+    const m=ctx.orient(c.x,c.y,0,UNIT_LIFT);
+    m.multiply(new THREE.Matrix4().makeScale(rW, UNIT_H, rW));
+    u.mesh.matrix.copy(m); u.mesh.matrixWorldNeedsUpdate=true;
+  };
+  for(const u of units){
+    const mesh=new THREE.Mesh(CONE, teamMat[u.team]);
+    mesh.matrixAutoUpdate=false; ctx.group.add(mesh); u.mesh=mesh; placeUnit(u);
+  }
+  function refresh(){ for(const u of units) if(u.mesh) placeUnit(u); }
+
+  let visible=true;
+  const setVisible=v=>{ visible=v; lineSeg.visible=v; if(fillMesh) fillMesh.visible=v;
+    for(const u of units) if(u.mesh) u.mesh.visible=v; };
+
+  return { st, cells, units, uById, cell, neighbours, teamOf, edgeTeam, edgeThreadable,
+           formations, centroid, massStep, stepForward, hash, stats, refresh,
+           setVisible, toggle:()=>setVisible(!visible), isVisible:()=>visible };
+}
+
+/* the hot city whose hex layer is "active" (nearest the camera axis) + helpers */
+function hexActiveCity(){
+  let best=null,bd=-2; const cd=cameraDir();
+  for(const c of cityCache.values()){ if(!c.hex) continue; const d=c.st.dir.dot(cd); if(d>bd){bd=d;best=c;} }
+  return best;
+}
+function hexActiveLayer(){ const c=hexActiveCity(); return c? c.hex : null; }
+function updateHexHud(){
+  const el=document.getElementById('hexHud'); if(!el) return;
+  const L=hexActiveLayer();
+  if(!L){ el.style.display='none'; return; }
+  const s=L.stats();
+  el.style.display='block';
+  el.innerHTML='ГЕКС-ТАКТИКА · '+s.cells+' клітин · '+s.blocked+' заблок. · загони: ваші '+s.teamA+
+    ' / ворог '+s.teamB+' · формацій '+s.formations+
+    '<br><span style="opacity:.66">G — крок вашого натовпу вперед · B — крок ворога · V — сітка вкл/викл</span>';
+}
+/* Rematerialise the active city's hex layer from its authoritative (seeded) state —
+   the same machinery going-cold→hot uses. Determinism probe: rebuild() must return the
+   layer's original fresh hash regardless of any mass-steps taken since. */
+function hexRebuildActive(){
+  const c=hexActiveCity(); if(!c) return null;
+  const st=c.st;
+  root.remove(c.group); cityCache.delete(st.id);
+  const nc=buildCity(st, Math.max(16, Math.round(180/Math.max(1,cityCache.size+1))));
+  cityCache.set(st.id, nc);
+  return nc.hex? nc.hex.hash() : null;
+}
+// Console / test surface for the hex tactical layer.
+window.__hex = {
+  active: hexActiveCity,
+  layer: hexActiveLayer,
+  stats: ()=>{ const L=hexActiveLayer(); return L? L.stats() : null; },
+  hash:  ()=>{ const L=hexActiveLayer(); return L? L.hash() : null; },
+  formations: ()=>{ const L=hexActiveLayer(); return L? L.formations() : null; },
+  massStep: (team,dir)=>{ const L=hexActiveLayer(); return L? L.massStep(team,dir) : null; },
+  stepForward: (team)=>{ const L=hexActiveLayer(); return L? L.stepForward(team) : null; },
+  edgeThreadable: (qa,ra,qb,rb,team)=>{ const L=hexActiveLayer(); if(!L) return null;
+    return L.edgeThreadable(L.cell(qa,ra), L.cell(qb,rb), team); },
+  rebuild: hexRebuildActive,
+  DIRS: HEX_DIRS,
+};
+
 /* =====================================================================
    HOT-REGION RENDER TRIGGER (#26) — detailed loading around the camera AND
    around the player's own squads. ONE rule materialises a settlement's
@@ -3241,7 +3728,7 @@ const HOT_PAWN_DIST = 1.90;   // resident sprites fade in a little higher than f
 const HOT_PAWN_COS  = 0.85;   // ...across a WIDER ~32° cone, so full-geometry tiles are ringed by dot tiles
 const HOT_SQUAD_COS = 0.997;  // an own squad within ~4.4° of a tile counts as "present" → tile is hot
 const HOT_SQUAD_PAWN_DIST = 2.6; // own-side squads surface their pawns out to this altitude, wherever they sit
-const CITY_BUILD_PER_FRAME = 2;  // amortise: cap new cities built per frame so a big reveal never spikes one frame
+const CITY_BUILD_PER_FRAME = 1;  // amortise: build ONE (now denser #16) city per frame so a big reveal never spikes one frame
 
 function cameraDir(){ return new THREE.Vector3(0,0,1).applyQuaternion(root.quaternion.clone().invert()); }
 function playerFactionId(){
@@ -3283,8 +3770,9 @@ function updateCityLOD(){
   const hotIds=new Set(hot.map(s=>s.id));
   for(const [id,c] of cityCache) if(!hotIds.has(id)){ root.remove(c.group); cityCache.delete(id); }
   // share one resident-head budget across however many cities are live, so "several"
-  // hot tiles don't multiply the walker draw calls without bound.
-  const cap=Math.max(12, Math.round(96/Math.max(1,hot.length)));
+  // hot tiles don't multiply the walker draw calls without bound. The budget is sized so a
+  // lone hot city reaches its full footprint-scaled crowd (#16) while a whole cluster splits it.
+  const cap=Math.max(16, Math.round(180/Math.max(1,hot.length)));
   let built=0;
   for(const st of hot){
     if(cityCache.has(st.id)) continue;
@@ -3294,8 +3782,19 @@ function updateCityLOD(){
   cityLive = new Set(cityCache.keys());                 // everything currently built is hot
   for(const c of cityCache.values()){
     stepWalkers(c, frameDtMs);
-    for(const w of c.walkers) picks.push({type:'char', id:w.id, dir:w.dir, px:0.022});
+    // #50: every flying head is clickable. An IDENTIFIED cat (real S.char) picks its
+    // character; an ANONYMOUS density head (#16 — a cosmetic walker with no sim entity
+    // yet) is registered as a resident-pre-materialisation, so clicking it draws a real
+    // character from the settlement's latent demographic pool (DESIGN §236 «Identified
+    // vs anonymous», §954 «Settlement population: demographic pool»).
+    for(const w of c.walkers){
+      // r:w.r — project the pick at the head's OWN surface radius so the hit-test sits on the
+      // VISIBLE head at every screen position (not just centred); see screenPos()/#50 note.
+      if(w.id!=null) picks.push({type:'char', id:w.id, dir:w.dir, r:w.r, px:0.026});
+      else           picks.push({type:'resident', walker:w, settlementId:c.st.id, dir:w.dir, r:w.r, px:0.026});
+    }
   }
+  updateHexHud();                                       // #43: tactical-layer readout for the active hot city
 }
 
 function updatePawns(){
@@ -3391,11 +3890,34 @@ function updateSquadPawns(){
 }
 
 /* =====================================================================
-   CAMERA — trackball: the planet turns freely, no poles, no limits
+   CAMERA — trackball: the planet turns freely, no poles, no limits.
+   Tilt (#28): only while zoomed in close (camAlt ≤ TILT_ALT_MAX) can the view
+   pitch off the default top-down toward the horizon and yaw (orbit) around the
+   focused near-surface point. Pitch 0 = straight down — byte-identical to the
+   old fixed camera; pitch is clamped short of the horizon (never up into the
+   sky). Driven by an Alt + middle-button drag (below); the moment the camera
+   climbs past TILT_ALT_MAX the view snaps firmly back to a strict top-down.
    ===================================================================== */
+let camPitch=0, camYaw=0;                  // radians — off-top-down tilt (#28)
+const PITCH_MAX=70*Math.PI/180;            // clamp: toward the horizon, never past it
+const TILT_ALT_MAX=0.2;                     // tilt only at very low altitude — street level, well below city geometry (camAlt 0.45); above it the view snaps to strict top-down
+const TILT_PITCH_PER_PX=0.006, TILT_YAW_PER_PX=0.006;
+const _camNrm=new THREE.Vector3(0,0,1);    // unit camera direction from the planet centre
 function updateCamera(){
-  camera.position.set(0,0,camDist);
-  camera.lookAt(0,0,0);
+  // Orbit the camera on a sphere of radius camAlt about the near-surface focus point
+  // F=(0,0,1): pitch tilts it down toward the horizon, yaw spins that oblique view
+  // around F. At pitch=0 this is exactly the old (0,0,camDist)→origin straight-down view.
+  const alt=Math.max(0, camDist-1);
+  const sp=Math.sin(camPitch), cp=Math.cos(camPitch);
+  const sy=Math.sin(camYaw),   cy=Math.cos(camYaw);
+  // The pitch swing must lie ALONG the screen-vertical (camera up), not across it — else a
+  // vertical drag orbits sideways (swapped axes). With up=(-sy,cy,0), that in-plane offset
+  // is (sp*sy, -sp*cy): at yaw=0 the camera swings back along -Y as pitch grows, so dragging
+  // up tilts the view toward the horizon (horizon rises from the top edge), not sideways.
+  camera.position.set(alt*sp*sy, -alt*sp*cy, 1+alt*cp);
+  camera.up.set(-sy, cy, 0);               // yaw-locked up → stable orbit, level horizon
+  camera.lookAt(0,0,1);
+  _camNrm.copy(camera.position).normalize();
   sun.position.set(0.5,0.6,1.2);
 }
 let drag=null;
@@ -3416,10 +3938,10 @@ canvas.addEventListener('pointerdown',e=>{
   // With the options window up, a press on the globe just closes it (#24): a left-click
   // outside picks nothing, a right-click only closes — neither issues an order.
   if(optMenuOpen){ if(e.button===2) e.preventDefault(); closeOptMenu(); return; }
-  // RMB with your own squad selected is a game control, not a camera drag: start the
-  // hold-to-open timer and DON'T set `drag`, so the globe never rotates under it. (#24)
-  const psq = e.button===2 ? selectedPlayerSquad() : null;
-  if(psq){
+  // RMB with a controllable actor selected (squad / org / led-org character) is a game
+  // control, not a camera drag: start the hold-to-open timer and DON'T set `drag`, so the
+  // globe never rotates under it. (#24 squad → #52 every controllable actor)
+  if(e.button===2 && selectedControllable()){
     e.preventDefault();
     rmb={sx:e.clientX, sy:e.clientY, x:e.clientX, y:e.clientY, moved:0,
          shift:e.shiftKey, target:nearest(e.clientX,e.clientY), opened:false, timer:null};
@@ -3428,7 +3950,7 @@ canvas.addEventListener('pointerdown',e=>{
     try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
     return;
   }
-  if(e.button===1) e.preventDefault();            // middle: suppress autoscroll; we pin on release
+  if(e.button===1) e.preventDefault();            // middle: suppress autoscroll (a drag rotates the globe / Alt-drag tilts; a stationary press pins on release)
   drag={x:e.clientX, y:e.clientY, moved:0, button:e.button};
   spin.vel=0;
   canvas.setPointerCapture(e.pointerId);
@@ -3447,10 +3969,28 @@ addEventListener('pointermove',e=>{
   const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
   drag.x=e.clientX; drag.y=e.clientY;
   drag.moved+=Math.abs(dx)+Math.abs(dy);
+  if(drag.button===2) return;                     // right-drag without a squad selected no longer
+                                                  // rotates the globe (that was a temporary
+                                                  // fallback) — the right button is squad orders (#24)
+  if(drag.button===1 && e.altKey && camAlt<=TILT_ALT_MAX){   // Alt + MIDDLE = TILT (#28), close-up only
+    // vertical drag → pitch, horizontal drag → yaw (orbit). Drag up tilts toward the horizon
+    // (0° … ~70°, clamped short of it); yaw stays inverted, so drag right orbits the other way.
+    camPitch=Math.max(0, Math.min(PITCH_MAX, camPitch - dy*TILT_PITCH_PER_PX));
+    camYaw  -= dx*TILT_YAW_PER_PX;
+    if(camYaw>Math.PI) camYaw-=2*Math.PI; else if(camYaw<-Math.PI) camYaw+=2*Math.PI;
+    spin.vel=0; flyQ=null;
+    return;
+  }
+  // LEFT-drag, or a plain (no-Alt / zoomed-out) MIDDLE-drag → rotate the trackball globe.
+  // A stationary middle press stays under the moved<6 threshold → still pins on release.
   const len=Math.hypot(dx,dy);
   if(len<0.01) return;
   const k=dragScale();
-  tmpV.set(dy,dx,0).normalize();
+  // trackball axis in the camera's SCREEN frame — dy about camera-right, dx about camera-up
+  // (both horizontal thanks to the yaw-locked up), NOT fixed world XY, so the drag stays
+  // aligned with the cursor even when the view is tilted (camPitch/camYaw ≠ 0).
+  const _cp=Math.cos(camPitch), _sy=Math.sin(camYaw), _cy=Math.cos(camYaw);
+  tmpV.set(dy*_cy*_cp - dx*_sy, dy*_sy*_cp + dx*_cy, 0).normalize();
   const ang=len*k;
   tmpQ.setFromAxisAngle(tmpV, ang);
   root.quaternion.premultiply(tmpQ).normalize();
@@ -3531,14 +4071,23 @@ let quickCastOrders=false;        // "quick-cast" toggle (default off)
 let curOpts=[];                   // options currently rendered (for click/quick-cast dispatch)
 const optMenuEl=document.getElementById('optMenu');
 
-// The selected actor is controllable here only if it's YOUR OWN squad. (Org /
-// character contexts are a later task — see optionsFor's extension point.)
+// The selected actor is a controllable SQUAD only if it's YOUR OWN squad.
 function selectedPlayerSquad(){
   const s=S.selection;
   if(!s || s.type!=='squad') return null;
   const sq=sqd(s.id); if(!sq) return null;
   const o=org(sq.orgId);
   return (o && isPlayerOrg(o)) ? sq : null;
+}
+// Is the current selection a controllable actor that CAN own an options window? — a
+// player squad, a player-controlled org, or (Player Mode) a character leading such an
+// org. Mirrors optionsFor's branching; the RMB gesture only arms for these. (#52)
+function selectedControllable(){
+  const s=S.selection; if(!s) return false;
+  if(s.type==='squad') return !!selectedPlayerSquad();
+  if(s.type==='org'){ const o=org(s.id); return !!(o && isPlayerOrg(o)); }
+  if(s.type==='char'){ const c=chr(s.id); const led=c&&c.alive?org(c.ledOrgId):null; return !!(led && isPlayerOrg(led)); }
+  return false;
 }
 
 // Screen pixel → a direction on the planet's surface (unit sphere), in the planet's
@@ -3563,6 +4112,7 @@ function pickLabel(t){
   if(t.type==='caravan')    return 'караван #'+t.id;
   if(t.type==='enterprise'){ const e=ent(t.id); return e? ENT[e.kind].label : null; }
   if(t.type==='char')       return chr(t.id)?.name || null;
+  if(t.type==='resident')   return 'мешканець';   // #50: an unidentified head
   return null;
 }
 function targetFaction(t){
@@ -3652,6 +4202,179 @@ function squadOptions(sq, target, pointDir){
     run: ()=> here ? standDown(sq) : issueGarrison(sq, st)});
   return opts;
 }
+/* --- ORGANIZATION actor: target-driven actions (DESIGN: "Context-sensitive option
+   menu — one mechanism for every controllable actor" → the Organization bullet). These
+   introduce NO new actions — each is a second path to something the org already does
+   (slots/alliances/agent edges from the graph model, posts, the reassignment right).
+   Self-directed decisions (BecomePolitical / ChangeLeadershipType / Expand / TakePerk /
+   founding a subordinate) have no cursor target and deliberately stay OUT of this menu —
+   they remain in the inspector's Decisions/Perks tabs. --- */
+
+// The organization associated with whatever is under the cursor — a settlement's owner,
+// a squad/enterprise/caravan's org, a character's led-or-member org — or null on open ground.
+function targetOrg(t){
+  if(!t) return null;
+  if(t.type==='settlement') return org(stl(t.id)?.ownerOrgId) || null;
+  if(t.type==='squad')      return org(sqd(t.id)?.orgId) || null;
+  if(t.type==='caravan')    return org(byId(S.caravans,t.id)?.orgId) || null;
+  if(t.type==='enterprise') return org(ent(t.id)?.ownerOrgId) || null;
+  if(t.type==='char'){ const c=chr(t.id); return c? (org(c.ledOrgId)||org(c.orgId)||null) : null; }
+  return null;
+}
+// first slot-relationship edge from a→b of one of the given kinds (or null)
+function slotEdge(fromId, toId, kinds){
+  return S.edges.find(e=>e.from===fromId && e.to===toId && kinds.includes(e.kind)) || null;
+}
+function allianceEdge(aId, bId){
+  return S.edges.find(e=>e.kind==='alliance' &&
+    ((e.from===aId&&e.to===bId)||(e.from===bId&&e.to===aId))) || null;
+}
+// Capacity gates. The prototype stores no capacity fields (DESIGN's capacity table isn't
+// implemented here), so these are computed from what it DOES have — kind + derived
+// management — keeping the gate central and honest, if coarse.
+function controlSlotCap(o){ return 2 + Math.floor(orgManagement(o)/5) + (o.kind==='squad'?2:0); }
+function allianceCap(o){ return 3; }
+function heldSlots(o, kind){ return S.edges.filter(e=>e.from===o.id && e.kind===kind).length; }
+function heldAlliances(o){ return S.edges.filter(e=>e.kind==='alliance' && (e.from===o.id||e.to===o.id)).length; }
+// A controlled org's leader/posts can be reassigned only for these kinds (never network /
+// secret_police) — DESIGN: "Who can reassign a controlled org's leader or posts."
+const REASSIGNABLE_KINDS = ['squad','business','political','military','intelligence'];
+
+// --- executors: mutate state exactly like decide()'s slot/alliance paths + the inspector ---
+function makeSlot(o, t, kind, salary, covert){
+  o.treasury -= (kind==='control'?180:120);
+  makeEdge(kind, o.id, t.id, {salary, visibility: covert?'covert':'public'});
+  logEvent('<span class="link" data-sel="org:'+o.id+'">'+o.name+'</span> відкрив '+
+    (kind==='control'?'слот контролю':'слот впливу')+(covert?' (covert)':'')+
+    ' над <span class="link" data-sel="org:'+t.id+'">'+t.name+'</span>.');
+  renderInspector();
+}
+function breakSlot(o, e){
+  S.edges=S.edges.filter(x=>x.id!==e.id);
+  teleEvent('SlotBroken',{edgeId:e.id, kind:e.kind, from:e.from, to:e.to, cause:'player'});
+  logEvent('<b>'+o.name+'</b> розірвав слот <b>'+e.kind+'</b>.'); renderInspector();
+}
+function proposeAlliance(o, t){
+  makeEdge('alliance', o.id, t.id);
+  logEvent('⚑ <span class="link" data-sel="org:'+o.id+'">'+o.name+'</span> уклав союз з <span class="link" data-sel="org:'+t.id+'">'+t.name+'</span>.');
+  renderInspector();
+}
+function breakAlliance(o, e){
+  S.edges=S.edges.filter(x=>x.id!==e.id);
+  logEvent('<b>'+o.name+'</b> розірвав союз.'); renderInspector();
+}
+function intelReport(o, t){
+  const links=S.edges.filter(x=>x.from===t.id||x.to===t.id).length;
+  logEvent('🔍 Розвідка про <b>'+t.name+'</b>: скарбниця ~'+num(t.treasury)+'💰, зв\'язків '+links+
+    ', лідер '+(chr(t.leaderId)?chr(t.leaderId).name:'—')+'.');
+}
+function sabotage(o, t){
+  o.treasury-=150;
+  const hit=Math.min(t.treasury, Math.round(40+rnd()*80));
+  t.treasury-=hit; t.loyalty=Math.max(0,t.loyalty-6);
+  teleEvent('Sabotage',{fromOrgId:o.id, toOrgId:t.id, damage:hit});
+  logEvent('💥 <b>'+o.name+'</b> оплатив саботаж проти <b>'+t.name+'</b> (−'+hit+'💰).');
+  renderInspector();
+}
+function reassignLeader(o, t){
+  // promote t's heir or next living member — a leader change with the usual consequences
+  const cand = (chr(t.heirId)&&chr(t.heirId).alive? chr(t.heirId) : null) ||
+    t.members.map(chr).find(c=>c&&c.alive&&c.id!==t.leaderId);
+  if(!cand){ logEvent('Немає кандидата на лідера у <b>'+t.name+'</b>.'); return; }
+  const old=chr(t.leaderId); if(old && old.ledOrgId===t.id) old.ledOrgId=null;
+  setLeader(t, cand);
+  t.loyalty=Math.max(0, t.loyalty-8);                 // loyalty shock, per succession consequences
+  teleEvent('LeaderReassigned',{orgId:t.id, byOrgId:o.id, charId:cand.id});
+  logEvent('<b>'+o.name+'</b> перепризначив лідера <b>'+t.name+'</b> → <span class="link" data-sel="char:'+cand.id+'">'+cand.name+'</span>.');
+  renderInspector();
+}
+function assignPost(o, c){
+  const empty=['Advisor','Negotiator','Bodyguard'].find(p=>!o.posts[p]);
+  if(!empty) return;
+  o.posts[empty]=c.id; c.post=empty;
+  logEvent('<b>'+c.name+'</b> призначений на посаду '+empty+' у <b>'+o.name+'</b>.'); renderInspector();
+}
+function removePost(o, c){
+  for(const p in o.posts) if(o.posts[p]===c.id && p!=='Leader') o.posts[p]=null;
+  if(c.post && c.post!=='Leader') c.post=null;
+  logEvent('<b>'+c.name+'</b> знятий з посади у <b>'+o.name+'</b>.'); renderInspector();
+}
+
+// The org's applicable target-driven actions — a pure function of (o, target). Enable/
+// disable lives here, centrally; the widget just renders the list.
+function orgOptions(o, target){
+  const opts=[];
+  const t=targetOrg(target);                          // the OTHER org under the cursor (may be self / null)
+  const tChar = target && target.type==='char' ? chr(target.id) : null;
+  const other = t && t.id!==o.id ? t : null;          // a genuinely different org
+
+  // --- POST — natural target: a character; enabled only for o's OWN member ---
+  if(tChar){
+    const own = o.members.includes(tChar.id) || tChar.orgId===o.id;
+    const heldPost = own ? Object.keys(o.posts).find(p=>o.posts[p]===tChar.id && p!=='Leader') : null;
+    if(heldPost){
+      opts.push({key:'post', label:'Зняти з посади ('+heldPost+')', enabled:true,
+        run:()=>removePost(o, tChar)});
+    } else {
+      const emptyPost=['Advisor','Negotiator','Bodyguard'].find(p=>!o.posts[p]);
+      opts.push({key:'post', label:'Призначити на посаду', enabled: !!(own && emptyPost),
+        why: own? 'немає вільної посади' : 'потрібен свій учасник', run:()=>assignPost(o, tChar)});
+    }
+  }
+
+  // --- everything else has an ORGANIZATION as its natural target ---
+  if(other){
+    const tn=other.name;
+    // SLOT — create/break a control or influence slot (target: another org)
+    const slot = slotEdge(o.id, other.id, ['control','influence','investment']);
+    if(slot){
+      opts.push({key:'breakslot', label:'Розірвати слот → '+tn, enabled:true, run:()=>breakSlot(o, slot)});
+    } else {
+      opts.push({key:'control', label:'Слот контролю → '+tn,
+        enabled: o.treasury>=180 && heldSlots(o,'control')<controlSlotCap(o),
+        why:'потрібні кошти / ємність', run:()=>makeSlot(o, other, 'control', rint(4,10), false)});
+      opts.push({key:'influence', label:'Слот впливу → '+tn,
+        enabled: o.treasury>=120 && heldSlots(o,'influence')<controlSlotCap(o)+2,
+        why:'потрібні кошти', run:()=>makeSlot(o, other, 'influence', rint(3,9), true)});
+    }
+    // ALLIANCE — propose/break, only between INDEPENDENT orgs (target: another independent org)
+    const ally = allianceEdge(o.id, other.id);
+    if(ally){
+      opts.push({key:'breakally', label:'Розірвати союз → '+tn, enabled:true, run:()=>breakAlliance(o, ally)});
+    } else {
+      const canAlly = o.parentId==null && other.parentId==null && heldAlliances(o)<allianceCap(o);
+      opts.push({key:'ally', label:'Запропонувати союз → '+tn, enabled:canAlly,
+        why: (o.parentId!=null||other.parentId!=null)?'лише між незалежними':'межа союзів',
+        run:()=>proposeAlliance(o, other)});
+    }
+    // INTEL / SABOTAGE — only THROUGH an existing covert agent edge o→other
+    const agent = S.edges.find(e=>e.from===o.id && e.to===other.id && e.visibility==='covert'
+      && ['control','influence'].includes(e.kind));
+    if(agent){
+      opts.push({key:'intel', label:'Розвідка → '+tn, enabled:true, run:()=>intelReport(o, other)});
+      opts.push({key:'sabotage', label:'Саботаж → '+tn, enabled:o.treasury>=150,
+        why:'потрібні кошти', run:()=>sabotage(o, other)});
+    }
+    // REASSIGN — a controlled org's leader/posts: via a control slot OR direct parenthood,
+    // and only for reassignable kinds (DESIGN: never a network / secret_police target).
+    const controls = other.parentId===o.id || !!slotEdge(o.id, other.id, ['control']);
+    if(controls){
+      opts.push({key:'reassign', label:'Перепризначити лідера → '+tn,
+        enabled: REASSIGNABLE_KINDS.includes(other.kind),
+        why:'вид організації не дозволяє', run:()=>reassignLeader(o, other)});
+    }
+  }
+  return opts;
+}
+// Shared spec builder so a played character reaches its led org's menu transitively.
+function orgSpec(o, target){
+  const t=targetOrg(target);
+  return { title:'Організація · '+o.name, targetLabel: pickLabel(target) || (t? t.name : 'ціль'),
+           opts: orgOptions(o, target) };
+}
+
+// CENTRAL RESOLVER — (selected actor, target under cursor) → applicable actions. Branches
+// by S.selection.type; every branch reuses the SAME widget + enable/disable discipline.
 function optionsFor(sel, target, pointDir){
   if(!sel) return null;
   if(sel.type==='squad'){
@@ -3660,11 +4383,20 @@ function optionsFor(sel, target, pointDir){
     return { title:'Загін #'+sq.id, targetLabel: pickLabel(target)||'точка',
              opts: squadOptions(sq, target, pointDir) };
   }
-  /* EXTENSION POINT — org / character actors resolve to their OWN target-driven
-     action lists here (org: create/break a control slot, propose alliance, assign a
-     post, …; a played character reaches its led org's actions transitively). Same
-     widget, same central enable/disable rule — DESIGN: "one mechanism for every
-     controllable actor". Not wired in this task (squad scope only). */
+  if(sel.type==='org'){
+    const o=org(sel.id);
+    if(!o || !isPlayerOrg(o)) return null;             // only an org YOU control
+    return orgSpec(o, target);
+  }
+  if(sel.type==='char'){
+    // Player Mode: a character has no own target-driven action — the menu is the menu of
+    // the org it LEADS, reached transitively (DESIGN: "an org is reached transitively
+    // through the character's leadership"). Self-directed char/org decisions stay off it.
+    const c=chr(sel.id);
+    const led = c && c.alive ? org(c.ledOrgId) : null;
+    if(!led || !isPlayerOrg(led)) return null;
+    return orgSpec(led, target);
+  }
   return null;
 }
 
@@ -3697,7 +4429,7 @@ function openOptMenu(){
   if(!rmb) return;
   rmb.timer=null;
   const spec=optionsFor(S.selection, rmb.target, rmb.target? null : screenToDir(rmb.x, rmb.y));
-  if(!spec) return;
+  if(!spec || !spec.opts.length) return;   // no applicable action (e.g. an org actor over open ground)
   renderOptMenu(spec, rmb.x, rmb.y);
   rmb.opened=true; optMenuOpen=true;
   if(navigator.vibrate) navigator.vibrate(10);
@@ -3738,7 +4470,11 @@ function touchRotate(dx,dy){
   const len=Math.hypot(dx,dy);
   if(len<0.01) return;
   const k=dragScale();
-  tmpV.set(dy,dx,0).normalize();
+  // trackball axis in the camera's SCREEN frame — dy about camera-right, dx about camera-up
+  // (both horizontal thanks to the yaw-locked up), NOT fixed world XY, so the drag stays
+  // aligned with the cursor even when the view is tilted (camPitch/camYaw ≠ 0).
+  const _cp=Math.cos(camPitch), _sy=Math.sin(camYaw), _cy=Math.cos(camYaw);
+  tmpV.set(dy*_cy*_cp - dx*_sy, dy*_sy*_cp + dx*_cy, 0).normalize();
   const ang=len*k;
   tmpQ.setFromAxisAngle(tmpV, ang);
   root.quaternion.premultiply(tmpQ).normalize();
@@ -3826,6 +4562,15 @@ canvas.addEventListener('touchcancel',()=>{ clearLP(); touchG=null; lpFired=fals
 function stepCamera(){
   camAlt += (camAltTarget-camAlt)*0.16;
   camDist = 1 + camAlt;
+  // Auto-flatten (#28): tilt is a close-up-only affordance. The moment the camera climbs
+  // past TILT_ALT_MAX, snap firmly back toward a strict top-down — an oblique angle reads
+  // poorly against the globe's curvature, and tilt is only offered near the ground.
+  if(camAlt>TILT_ALT_MAX && (camPitch!==0 || camYaw!==0)){
+    const e=0.5;                                  // firm, decisive levelling — settles in a few frames
+    camPitch+=(0-camPitch)*e; camYaw+=(0-camYaw)*e;
+    if(Math.abs(camPitch)<1e-3) camPitch=0;
+    if(Math.abs(camYaw)<1e-3) camYaw=0;
+  }
   if(!drag && spin.vel>1e-6){                     // inertia, damped
     tmpQ.setFromAxisAngle(spin.axis, spin.vel);
     root.quaternion.premultiply(tmpQ).normalize();
@@ -3846,13 +4591,24 @@ addEventListener('keydown',e=>{
   if(e.key==='+'||e.key==='=') camAltTarget=Math.max(ALT_MIN,camAltTarget/1.18);
   if(e.key==='-'||e.key==='_') camAltTarget=Math.min(ALT_MAX,camAltTarget*1.18);
   if(e.key===' '){ e.preventDefault(); document.getElementById('btnPause').click(); }
+  // #43 hex tactical controls — act on the hot city under the camera
+  if(e.key==='g'||e.key==='G'){ const L=hexActiveLayer(); if(L){ L.stepForward(0); updateHexHud(); } }   // your crowd steps forward
+  if(e.key==='b'||e.key==='B'){ const L=hexActiveLayer(); if(L){ L.stepForward(1); updateHexHud(); } }   // the other side steps forward
+  if(e.key==='v'||e.key==='V'){ const L=hexActiveLayer(); if(L){ L.toggle(); } }                          // toggle the grid overlay
 });
 
 /* ---- screen-space picking & hover ---- */
 const projV=new THREE.Vector3();
-function screenPos(dir){
-  projV.copy(dir).multiplyScalar(1.035).applyQuaternion(root.quaternion);
-  const behind = projV.z < 1/camDist - 0.02;
+function screenPos(dir, r){
+  // r = the shell radius to project at. Icon markers are drawn on the r≈1.035 shell (the
+  // default), so their pick sits exactly under the drawn icon. #50: cat heads are drawn on
+  // the city surface (r≈1.005), NOT the icon shell — so a walker pick must project at the
+  // head's OWN radius (p.r), or an off-centre head shows a growing pick↔head parallax gap
+  // (two points on one ray at different radii project apart under perspective). p.dir stays
+  // the unit head direction (moveToward reuses it as a squad target), only the radius varies.
+  projV.copy(dir).multiplyScalar(r||1.035).applyQuaternion(root.quaternion);
+  // limb test against the actual camera axis (not just +z) so it stays correct when tilted
+  const behind = projV.dot(_camNrm) < 1/camDist - 0.02;
   projV.project(camera);
   return {x:(projV.x*0.5+0.5)*innerWidth, y:(-projV.y*0.5+0.5)*innerHeight, behind};
 }
@@ -3871,9 +4627,9 @@ function pointInRing(cx,cy,ring){
 }
 function nearest(cx,cy){
   let best=null,bd=1e9;
-  const order={char:0, caravan:1, squad:2, enterprise:3, settlement:4};
+  const order={char:0, resident:0, caravan:1, squad:2, enterprise:3, settlement:4};   // #50: an anonymous head ranks with an identified one
   for(const p of picks){
-    const s=screenPos(p.dir);
+    const s=screenPos(p.dir, p.r);   // #50: walker picks carry the head's own shell radius (p.r); others default 1.035
     if(s.behind) continue;
     const rpx=p.px*innerHeight*0.62;
     const d=Math.hypot(s.x-cx, s.y-cy);
@@ -3887,8 +4643,19 @@ function nearest(cx,cy){
 }
 function pickAt(cx,cy){
   const p=nearest(cx,cy);
+  if(p && p.type==='resident'){ materializeResident(p); return; }
   if(p) select(p.type,p.id);
   else { S.selection=null; renderInspector(); renderEcon(); updateMarkers(); }
+}
+/* #50: an anonymous density head (#16) backs no sim entity. Selecting it MATERIALISES a
+   real character out of the settlement's latent demographic pool (makeChar → draw-from-
+   pool; DESIGN §236 «Identified vs anonymous»), binds the head to it, and opens its
+   window. The head keeps that binding for the rest of the tile's life, so re-clicking the
+   same cat re-opens the same, now-identified, character instead of drawing a fresh one. */
+function materializeResident(p){
+  const w=p.walker;
+  if(w.id==null) w.id = makeChar(p.settlementId).id;   // draw-from-pool, then bind the head
+  select('char', w.id);
 }
 let hover=null;
 const tip=document.getElementById('tip');
@@ -3931,6 +4698,10 @@ function tipHTML(p){
     const c=chr(p.id);
     return '<b>'+c.name+'</b><span class="tk">'+(c.ledOrgId? 'лідер · '+org(c.ledOrgId).name : 'мешканець')+'</span>';
   }
+  if(p.type==='resident'){   // #50: an as-yet-anonymous head — click to identify it
+    const st=stl(p.settlementId);
+    return '<b>Мешканець</b><span class="tk">'+(st?st.name:'')+'</span><span class="tk">натисни, щоб пізнати</span>';
+  }
   return '';
 }
 function select(type,id){
@@ -3967,6 +4738,50 @@ function selectionDir(){
   }
   return null;
 }
+/* #49 — resolve the current selection to the marker the shared frame should hug.
+   Returns {spr,px} when a real marker sprite exists (frame inherits its rendered
+   position + limb culling), or {dir,px} for char/org which have no dedicated marker
+   (frame is placed from the on-sphere direction, as selectionDir already resolves). */
+function selectionFrameTarget(){
+  const s=S.selection; if(!s) return null;
+  if(s.type==='settlement'){ const st=stl(s.id); if(st&&st._spr) return {spr:st._spr, px:st._spr.scale.x}; }
+  else if(s.type==='enterprise'){ const e=ent(s.id); if(e&&e._spr) return {spr:e._spr, px:e._spr.scale.x}; }
+  else if(s.type==='squad'){ const m=squadMeshes.get(s.id); if(m) return {spr:m, px:m.scale.x}; }
+  else if(s.type==='caravan'){ const m=caravanMeshes.get(s.id); if(m) return {spr:m, px:m.scale.x}; }
+  const d=selectionDir(); return d? {dir:d, px:0.03} : null;
+}
+
+/* Debug / test drive surface — mirrors the existing window.S / window.TELE console
+   hooks. Aims the camera at a settlement through the REAL select→flyTo→zoom path (so
+   the hot-region trigger fires exactly as it does for a user), and reads hot state. */
+window.__dbg = {
+  focusSettlement:(id, alt=0.06)=>{ const st=stl(id); if(!st) return false;
+    select('settlement', id); flyTo(st.dir); camAltTarget=alt; return true; },
+  // snap (no slerp/ease) the planet so direction d faces the camera focus, and optionally
+  // snap the zoom — a deterministic, drift-free centring for tests (kills spin + any fly).
+  snapDir:(d, alt)=>{ root.quaternion.setFromUnitVectors(new THREE.Vector3(d.x,d.y,d.z).normalize(), new THREE.Vector3(0,0,1));
+    spin.vel=0; flyQ=null; if(alt!=null){ camAlt=camAltTarget=alt; } return true; },
+  zoom:(alt)=>{ camAltTarget=alt; },
+  camDist:()=>camDist,
+  hotIds:()=>[...cityLive],
+  settlements:()=>S.settlements.map(s=>({id:s.id, tier:s.tier, name:s.name})),
+  // read-only orientation probes for headless verification: how centred a settlement is
+  // under the current planet spin (its dir·camera axis; 1 = dead-centre facing the camera),
+  // and whether a fly-to slerp is currently in flight.
+  faceZ:(id)=>{ const st=stl(id); return st? st.dir.clone().applyQuaternion(root.quaternion).z : null; },
+  flying:()=>!!flyQ,
+  // #50 test seam: the live walking heads of a hot city, each with the screen point
+  // where nearest() registers its pick (screenPos(dir)) AND the head's real drawn screen
+  // point (its mesh world position projected) — so a test can click the VISIBLE head and
+  // confirm the pick lands on it. id is the bound character (null = still anonymous).
+  walkers:(id)=>{ const c=cityCache.get(id); if(!c) return null;
+    const v=new THREE.Vector3();
+    return c.walkers.map((w,k)=>{
+      const pk=screenPos(w.dir, w.r);   // #50: the pick projects at the head's own shell (p.r) → sits on the head
+      v.setFromMatrixPosition(w.mesh.matrixWorld).project(camera);
+      return { k, id:w.id, dir:{x:w.dir.x, y:w.dir.y, z:w.dir.z}, pick:{x:pk.x, y:pk.y, behind:pk.behind},
+               head:{x:(v.x*0.5+0.5)*innerWidth, y:(-v.y*0.5+0.5)*innerHeight} }; }); },
+};
 
 /* =====================================================================
    PINNABLE TOOLTIPS — one system shared by entity- and term-tooltips.
@@ -4116,7 +4931,13 @@ function renderInspector(){
   insp.innerHTML = fn? fn(s.id) : '';
 }
 function head(kind,name,sub){
-  return '<div class="ihead"><div><div class="ikind">'+kind+'</div><div class="iname">'+name+'</div></div>'+
+  // #47 — the header name teleports to the current selection, reusing the shared [data-sel]
+  // link machinery (L + the inspector click handler + selectionDir/flyTo): a city flies to
+  // itself, a character to their home settlement. Only linkify when the selection resolves to
+  // a location; otherwise the name stays plain text so a click has nothing to (fail to) fly to.
+  const s=S.selection;
+  const nameHTML=(s && selectionDir())? L(s.type,s.id,name) : name;
+  return '<div class="ihead"><div><div class="ikind">'+kind+'</div><div class="iname">'+nameHTML+'</div></div>'+
     '<div class="stat">'+(sub||'')+'</div></div>';
 }
 function row(k,v){return '<div class="row"><span class="k">'+k+'</span><span class="v">'+v+'</span></div>';}
@@ -4479,40 +5300,167 @@ function graphEdges(){
   }
   return out;
 }
-/* layout: faction clusters, so politics is legible at a glance */
+/* a node's cluster id: its faction (realm/free-city/bandit), else its own id */
+function graphClusterId(o){ return o.factionId!=null ? o.factionId : o.id; }
+/* order faction clusters around the ring by political proximity (DESIGN §83):
+   a greedy walk over inter-cluster edge weights lands related factions adjacent,
+   so the few cross-faction chords cross the empty centre — not each other. */
+function orderClusters(facList, cw){
+  if(facList.length<=2) return facList.slice();
+  const w=(a,b)=> cw.get(a<b?a+'|'+b:b+'|'+a)||0;
+  let start=facList[0], bestDeg=-1;
+  for(const f of facList){ let d=0; for(const g of facList) if(g!==f) d+=w(f,g); if(d>bestDeg){bestDeg=d; start=f;} }
+  const remaining=new Set(facList); remaining.delete(start);
+  const seq=[start];
+  while(remaining.size){
+    const last=seq[seq.length-1]; let nxt=null, best=-1;
+    for(const f of remaining){ const ww=w(last,f); if(ww>best){best=ww; nxt=f;} }
+    seq.push(nxt); remaining.delete(nxt);
+  }
+  return seq;
+}
+/* radial tree layout of one cluster: root at its centre, children fanned by subtree
+   size so the hierarchy edges of a faction never cross each other. Fills `homes`. */
+function radialTreePlace(root, memberSet, childrenOf, cx, cy, homes){
+  const RING=44;
+  const kids=id=>(childrenOf.get(id)||[]).filter(c=>memberSet.has(c));
+  const leaves=id=>{ const ch=kids(id); if(!ch.length) return 1; let s=0; for(const c of ch) s+=leaves(c); return s; };
+  const place=(id, depth, a0, a1)=>{
+    const ang=(a0+a1)/2, r=depth*RING;
+    homes.set(id, {x:cx+Math.cos(ang)*r, y:cy+Math.sin(ang)*r, depth, ang});
+    const ch=kids(id); if(!ch.length) return;
+    const tot=ch.reduce((s,c)=>s+leaves(c),0)||1;
+    let a=a0;
+    for(const c of ch){ const na=a+(a1-a0)*(leaves(c)/tot); place(c, depth+1, a, na); a=na; }
+  };
+  place(root, 0, -Math.PI, Math.PI);
+}
+/* layout: connected orgs form faction clusters on a ring, each drawn as a radial
+   hierarchy tree (politics legible at a glance, DESIGN §83); zero-degree orgs get
+   their own tidy grid zone, kept out of the connected web (DESIGN §90). Every node
+   is anchored to a computed home, so the tree structure — not a tug-of-war of
+   springs — sets the shape, and edges cross far less than the old central hairball. */
 function layoutGraph(){
   gNodes.clear();
   const orgs=S.orgs.filter(orgVisible);
-  const fids=[...new Set(orgs.map(o=>o.factionId||o.id))];
+  const visIds=new Set(orgs.map(o=>o.id));
   const cx=gW/2, cy=gH/2;
-  const R=Math.min(gW,gH)*0.34;
-  const centers=new Map();
-  fids.forEach((f,i)=>{
-    const a=i/Math.max(1,fids.length)*Math.PI*2;
-    centers.set(f, {x:cx+Math.cos(a)*R, y:cy+Math.sin(a)*R});
-  });
-  orgs.forEach((o,i)=>{
-    const c=centers.get(o.factionId||o.id)||{x:cx,y:cy};
-    const a=(i*2.399);                       // golden-angle scatter inside the cluster
-    const r=18+Math.sqrt(i%40)*16;
-    gNodes.set('O'+o.id, {key:'O'+o.id, type:'org', o,
-      x:c.x+Math.cos(a)*r, y:c.y+Math.sin(a)*r, vx:0, vy:0});
-  });
-  if(gShowProp){
-    for(const st of S.settlements){
-      const on=gNodes.get('O'+st.ownerOrgId);
-      const b=on||{x:cx,y:cy};
-      gNodes.set('S'+st.id, {key:'S'+st.id, type:'settlement', s:st,
-        x:b.x+(Math.random()-0.5)*40, y:b.y+(Math.random()-0.5)*40, vx:0, vy:0});
-    }
-    for(const e of S.ents){
-      const on=gNodes.get('O'+e.ownerOrgId);
-      if(!on) continue;
-      gNodes.set('E'+e.id, {key:'E'+e.id, type:'enterprise', e,
-        x:on.x+(Math.random()-0.5)*30, y:on.y+(Math.random()-0.5)*30, vx:0, vy:0});
-    }
+
+  /* degree = org-to-org edges among visible orgs (hierarchy + slots; ownership excluded).
+     zero-degree orgs (most bandits, lone businesses) are the sparse periphery. */
+  const deg=new Map();
+  for(const e of S.edges){
+    if(e.kind==='ownership') continue;
+    if(!visIds.has(e.from)||!visIds.has(e.to)) continue;
+    deg.set(e.from,(deg.get(e.from)||0)+1);
+    deg.set(e.to,(deg.get(e.to)||0)+1);
   }
-  for(let i=0;i<220;i++) relax();
+  const connected=orgs.filter(o=>(deg.get(o.id)||0)>0);
+  const isolated =orgs.filter(o=>(deg.get(o.id)||0)===0);
+  const connSet=new Set(connected.map(o=>o.id));
+
+  /* faction clusters + their ring order */
+  const facList=[...new Set(connected.map(graphClusterId))];
+  const facOf=new Map(connected.map(o=>[o.id, graphClusterId(o)]));
+  const cw=new Map();
+  for(const e of S.edges){
+    if(e.kind==='ownership'||e.kind==='hierarchy') continue;
+    const fa=facOf.get(e.from), fb=facOf.get(e.to);
+    if(fa==null||fb==null||fa===fb) continue;
+    const key=fa<fb?fa+'|'+fb:fb+'|'+fa;
+    cw.set(key,(cw.get(key)||0)+1);
+  }
+  const order=orderClusters(facList, cw);
+  const n=order.length;
+  const ccx=cx, ccy=cy - gH*0.075;                      // connected ring centre, nudged up
+  const Rx=Math.min(gW*0.33, 540), Ry=Math.min(gH*0.25, 240);   // wide ellipse uses the landscape
+  const centers=new Map();
+  order.forEach((f,i)=>{
+    const a=-Math.PI/2 + i/Math.max(1,n)*Math.PI*2;     // first cluster at the top
+    centers.set(f, n<=1? {x:ccx,y:ccy} : {x:ccx+Math.cos(a)*Rx, y:ccy+Math.sin(a)*Ry});
+  });
+
+  /* in-cluster hierarchy tree (parent→children), same faction only */
+  const childrenOf=new Map();
+  const hasParent=new Set();
+  for(const e of S.edges){
+    if(e.kind!=='hierarchy') continue;
+    if(!connSet.has(e.from)||!connSet.has(e.to)) continue;
+    if(facOf.get(e.from)!==facOf.get(e.to)) continue;
+    if(!childrenOf.has(e.from)) childrenOf.set(e.from,[]);
+    childrenOf.get(e.from).push(e.to);
+    hasParent.add(e.to);
+  }
+
+  /* per cluster: pick a root, attach parentless members to it, lay out radially */
+  const homes=new Map();
+  for(const f of order){
+    const members=connected.filter(o=>graphClusterId(o)===f).map(o=>o.id);
+    const c=centers.get(f)||{x:ccx,y:ccy};
+    let root=members[0], bs=-1;
+    for(const id of members){ const o=org(id);
+      const s=(o.kind==='political'&&o.parentId==null?1000:0)+(deg.get(id)||0);
+      if(s>bs){bs=s; root=id;} }
+    for(const id of members){          // members with no in-cluster parent hang off the root
+      if(id===root||hasParent.has(id)) continue;
+      if(!childrenOf.has(root)) childrenOf.set(root,[]);
+      if(!childrenOf.get(root).includes(id)) childrenOf.get(root).push(id);
+    }
+    radialTreePlace(root, new Set(members), childrenOf, c.x, c.y, homes);
+  }
+
+  /* seed connected org nodes at their tree homes (any member the tree walk missed —
+     rare in odd live-play states — is nudged off the cluster centre so it can't stack) */
+  let miss=0;
+  for(const o of connected){
+    let h=homes.get(o.id);
+    if(!h){ const c=centers.get(graphClusterId(o))||{x:ccx,y:ccy}; const a=(miss++)*2.399;
+      h={x:c.x+Math.cos(a)*22, y:c.y+Math.sin(a)*22, depth:1}; }
+    gNodes.set('O'+o.id,{key:'O'+o.id,type:'org',o,
+      x:h.x, y:h.y, vx:0, vy:0, fac:graphClusterId(o),
+      hx:h.x, hy:h.y, pin:h.depth===0?0.05:0.03, iso:false});
+  }
+
+  /* isolated zone: a tidy grid, clearly below/apart from the connected ring (DESIGN §90) */
+  isolated.sort((a,b)=> (a.kind<b.kind?-1:a.kind>b.kind?1:0) || (a.name<b.name?-1:1));
+  const colStep=76, rowStep=42;
+  const maxCols=Math.max(1, Math.floor(Math.min(gW*0.62, 900)/colStep));
+  const cols=Math.max(1, Math.min(maxCols, Math.ceil(Math.sqrt(isolated.length*1.9))));
+  const zoneY0=(n<=1? ccy : ccy+Ry) + 120;              // just below the ring
+  const wide=Math.min(cols, isolated.length);
+  isolated.forEach((o,i)=>{
+    const col=i%cols, row=Math.floor(i/cols);
+    const hx=cx + (col-(wide-1)/2)*colStep, hy=zoneY0 + row*rowStep;
+    gNodes.set('O'+o.id,{key:'O'+o.id,type:'org',o,
+      x:hx, y:hy, vx:0, vy:0, fac:'iso'+o.id, hx, hy, pin:0.06, iso:true});
+  });
+
+  /* property nodes: fanned OUTWARD from the owner (away from cluster centre) so the
+     ownership edges are short and radial instead of tangling across the diagram. */
+  if(gShowProp){
+    const propIdx=new Map();
+    const placeProp=(key, node, ownerId)=>{
+      const on=gNodes.get('O'+ownerId);
+      if(!on){ gNodes.set(key, Object.assign(node,{x:cx,y:cy,vx:0,vy:0,fac:null,hx:cx,hy:cy,pin:0.004,iso:false})); return; }
+      const list=propIdx.get(ownerId)||(propIdx.set(ownerId,[]).get(ownerId));
+      const idx=list.length; list.push(key);
+      // outward direction: from cluster centre through the owner (down, for isolated/root)
+      let base;
+      if(on.iso){ base=Math.PI/2; }
+      else { const c=centers.get(on.fac)||{x:ccx,y:ccy};
+        const dx=on.hx-c.x, dy=on.hy-c.y;
+        base=(Math.abs(dx)+Math.abs(dy)<1)? Math.PI/2 : Math.atan2(dy,dx); }
+      const off=[0, 0.5, -0.5, 1.0, -1.0, 1.5, -1.5];    // alternating fan around the outward ray
+      const ang=base+(off[idx]!=null?off[idx]:0);
+      const rad=(on.iso?18:26)+Math.floor(idx/2)*8;
+      const hx=on.hx+Math.cos(ang)*rad, hy=on.hy+Math.sin(ang)*rad;
+      gNodes.set(key, Object.assign(node,{x:hx+(Math.random()-0.5)*6, y:hy+(Math.random()-0.5)*6,
+        vx:0, vy:0, fac:on.fac, hx, hy, pin:0.02, iso:on.iso}));
+    };
+    for(const st of S.settlements) placeProp('S'+st.id, {key:'S'+st.id,type:'settlement',s:st}, st.ownerOrgId);
+    for(const e of S.ents){ if(gNodes.has('O'+e.ownerOrgId)) placeProp('E'+e.id, {key:'E'+e.id,type:'enterprise',e}, e.ownerOrgId); }
+  }
+  for(let i=0;i<240;i++) relax();
 }
 function relax(){
   const arr=[...gNodes.values()];
@@ -4534,7 +5482,7 @@ function relax(){
         let dx=m.x-n.x, dy=m.y-n.y;
         let d2=dx*dx+dy*dy;
         if(d2>CELL*CELL*4 || d2<0.01){ if(d2<0.01){n.vx+=Math.random()-0.5;n.vy+=Math.random()-0.5;} continue; }
-        const d=Math.sqrt(d2), f=900/d2;
+        const d=Math.sqrt(d2), f=780/d2;
         n.vx-=dx/d*f; n.vy-=dy/d*f;
       }
     }
@@ -4544,13 +5492,23 @@ function relax(){
     if(!a||!b) continue;
     const dx=b.x-a.x, dy=b.y-a.y;
     const d=Math.max(1,Math.hypot(dx,dy));
-    const rest = e.kind==='ownership'? 42 : e.kind==='hierarchy'? 70 : 120;
-    const f=(d-rest)*0.02;
+    // homes carry the structure, so springs are gentle: ownership snugs property to its
+    // owner; intra-cluster springs firm up the tree; cross-cluster edges stay long & weak
+    // so a chord never drags two faction blobs into each other.
+    const sameFac = a.fac!=null && a.fac===b.fac;
+    let rest, k;
+    if(e.kind==='ownership'){ rest=22; k=0.02; }
+    else if(e.kind==='hierarchy'){ rest=44; k=0.012; }
+    else if(sameFac){ rest=90; k=0.012; }
+    else { rest=230; k=0.003; }
+    const f=(d-rest)*k;
     a.vx+=dx/d*f; a.vy+=dy/d*f; b.vx-=dx/d*f; b.vy-=dy/d*f;
   }
-  const cx=gW/2, cy=gH/2;
   for(const n of arr){
-    n.vx += (cx-n.x)*0.0016; n.vy += (cy-n.y)*0.0016;   // gentle gravity
+    // home anchor (cluster centre for connected, grid slot for isolated) replaces the
+    // old global gravity — it is what keeps factions in distinct regions of the canvas.
+    n.vx += (n.hx-n.x)*(n.pin||0.004);
+    n.vy += (n.hy-n.y)*(n.pin||0.004);
     n.x += Math.max(-8,Math.min(8,n.vx));
     n.y += Math.max(-8,Math.min(8,n.vy));
     n.vx*=0.62; n.vy*=0.62;

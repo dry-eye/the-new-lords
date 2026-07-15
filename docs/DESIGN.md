@@ -268,7 +268,7 @@ Orgs follow the same materialize/cohort pattern as pawns (see Org cohorts, below
 | +collision | 2.8 | 20 | 60 | — | ~2µs (~10× movement) |
 | +AI+pathfinding | 3.9 | 26 | — | — | ~3µs (pathfinding is mostly amortized, adding only ~50%) |
 
-**Rough target ceilings** (leaving ~30% headroom): cohorts scale to **millions** · a movement-only cosmetic crowd tops out around **30k** (with a cliff at 100k) · collision-bodied pawns top out around **15–20k** · **full AI+pathfinding tops out around 10–15k in a dedicated simulation step, or around 5k if it has to run inside a 60fps render frame.** (The game's "pathfinding" is ring-sampling + steering, not per-pawn A* — true A* at this scale would need flow-fields instead.)
+**Rough target ceilings** (leaving ~30% headroom): cohorts scale to **millions** · a movement-only cosmetic crowd tops out around **30k** (with a cliff at 100k) · collision-bodied pawns top out around **15–20k** · **full AI+pathfinding tops out around 10–15k in a dedicated simulation step, or around 5k if it has to run inside a 60fps render frame.** (The game's "pathfinding" is ring-sampling + steering, not per-pawn A* — true A* at this scale would need flow-fields instead. The full pathfinding & movement model — strategic road/street graphs plus a local tactical hex grid — is specified separately in `docs/PATHFINDING_SPEC.md`.)
 
 **Org cohorts — resolved: orgs get the same LOD treatment pawns do.** Every org is, by definition, identified (it always has a persistent record — identity, treasury, leader) — so an org never dissolves to anonymous the way a rank-and-file pawn or an untouched villager can. What it *can* do is go **dormant**: a **low-activity, similar-org cohort** groups many individual dormant org records under one aggregate `{count, composition, avgWealth, avgPower}` view for cheap display/scoring purposes, without deleting or regenerating any of them — each org's own record is untouched and resumes ticking exactly as it was the moment it materializes again.
 
@@ -1524,6 +1524,9 @@ What you can click and what each inspector panel shows. One entry per selectable
 ## UI conventions
 
 Several standing conventions govern how instances and terms are presented in the UI. New UI work should follow all of them by default.
+
+### Selection indicator — a universal frame
+A selected object — any selectable map instance: settlement, squad, enterprise, caravan, or character — is marked by one **universal selection frame**: corner brackets around its map icon, in the theme's accent colour (see "Visual themes," above), the same treatment for every object kind. The icon keeps its normal size — selection is shown by the frame, not by scaling the icon up (scaling the selected icon was the earlier behaviour and read as awkward: it shifted the icon's footprint and competed with the tier-conveys-size silhouette). Hover keeps a lighter, distinct cue (a subtle emphasis, not the full frame) so hover and selection never look the same. One frame style across every object kind keeps "what's selected" instantly legible anywhere on the map.
 
 ### Clickable inspectable instances
 Whenever a concrete instance of an object that has an inspector view — organization, settlement, squad, character, enterprise, caravan, etc. — is named in any inspector panel or tooltip, it must be a clickable link that selects and jumps to it. A plain-text instance name is a bug, not an acceptable default. This convention covers, at minimum: the settlement's owner org and that org's parent, the management-slot occupant org, the supply-policy settlement name, and the character's heir.

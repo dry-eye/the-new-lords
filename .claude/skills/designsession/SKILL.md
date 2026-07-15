@@ -35,5 +35,6 @@ Writing into `docs/DESIGN.md` follows **`sync-design` (Trigger 1) exactly** — 
 - Comment the resolution summary on the issue (what was decided + the DESIGN.md section).
 - `gh issue edit <N> --remove-label "status:to-design" --add-label "status:to-do"`.
 - Spawned new work? File new issues — `status:to-do` if clear, `status:to-design` if it still needs its own decision.
+- **If you `gh issue close` a design issue instead of relabeling** (a pure decision, or the implementation lives in another issue), still **remove its `status:to-design` label** (`gh issue edit <N> --remove-label "status:to-design"`) — a closed issue must never linger under `to-design`, or it clutters the queue view.
 
 Still unresolved this session? Leave it in `status:to-design` with a comment on where it stands.
