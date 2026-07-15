@@ -43,7 +43,7 @@ to-design → to-do → in-progress → PR (squash self-merge) → issue closed
 
 **Візуальні рішення.** Для вибору вигляду рендерити 2–3 варіанти візуально (композит) і давати обирати з побаченого — не питати текстом.
 
-**Git.** Ізольовані коміти (зміну дизайн-доку — окремо); auto-push одразу після коміту; при відмові push — `git pull --rebase origin main` і повторити.
+**Git — усе через worktree + PR.** Будь-яка зміна версійних файлів — код прототипу, `docs/**`, `PIPELINE.md`, специ, `.claude/**` — іде через окремий git-worktree/гілку → PR (`Closes #N`, де є задача) → **squash auto-merge** у `main`. **Ніколи не комітити/пушити прямо в `main`**, зокрема design- і pipeline-правки. Auto-merge і delete-branch-on-merge увімкнено на репо; агент мержить свій PR сам (`gh pr merge --squash --auto --delete-branch`) — потрібен дозвіл `Bash(gh pr merge:*)` у `.claude/settings.json`. Ізольовані коміти (зміну дизайн-доку — окремим PR). При відмові push — `git pull --rebase origin main` і повторити. 1 логічна зміна = 1 гілка = 1 PR = 1 squash-коміт (відкат = Revert на її PR).
 
 **Джерело істини.** `docs/DESIGN.md` (+ специ) — єдине джерело; прототип (`new-lords-prototype.html`) — тонке чесне відображення. New Lords ізольований — сусідній `M:/Projects/PowerMap` не читати.
 
