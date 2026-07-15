@@ -911,6 +911,8 @@ function zoneAt(p){
   const e=elevation(p);
   if(e>0.34) return 'mountain';
   const t=tempAt(p,e), m=moistureAt(p);
+  if(t<0.13) return 'tundra';               // cold polar caps only
+  if(t>0.52 && m>0.60) return 'jungle';     // hot & wet — dense forest
   if(t>0.52 && m<0.40) return 'desert';
   if(m>0.48 && t>0.20) return 'forest';
   return 'plain';
@@ -2021,7 +2023,8 @@ const root=new THREE.Group(); scene.add(root);   // the planet spins, the camera
 scene.add(new THREE.AmbientLight(0x8CA4CC, 0.62));
 const sun=new THREE.DirectionalLight(0xFFF3DA, 0.95); sun.position.set(0.4,0.5,1); scene.add(sun);
 
-let planet, roadLines, roadMat, markerGroup, atmoMesh;
+let planet, roadLines, roadMat, markerGroup, atmoMesh, vGlobe=null;
+let globeScene=null, globeRT=null, bgMesh=null, globeDirty=true, _gKey='';
 let selFrame=null, bracketTex=null;   // #49 — one shared corner-bracket selection frame
 
 /* ---------- icon atlas: every object type gets a drawn glyph ---------- */
@@ -2031,7 +2034,9 @@ function iconTexture(draw, size=96){
   const c=document.createElement('canvas'); c.width=c.height=size;
   const x=c.getContext('2d');
   x.lineCap='round'; x.lineJoin='round';
-  x.strokeStyle='#fff'; x.fillStyle='#fff';
+  // A2 "printed" style: fill light-grey so the faction sprite-tint reads as a muted
+  // colour, then a thin dark contour on top — cartographic, not a heavy solid block.
+  x.strokeStyle='#D8D8D8'; x.fillStyle='#D8D8D8';
   x.translate(size/2,size/2);
   draw(x, size/2);
   const t=new THREE.CanvasTexture(c);
@@ -2039,8 +2044,8 @@ function iconTexture(draw, size=96){
   t._url=c.toDataURL();
   return t;
 }
-function outline(x,fn,w){          // dark halo so icons read over any terrain
-  x.save(); x.strokeStyle='rgba(6,9,15,.9)'; x.lineWidth=w||9; fn(x); x.restore();
+function outline(x,fn,w){          // thin dark contour (A2 printed look), not a wide halo
+  x.save(); x.strokeStyle='rgba(14,18,26,.92)'; x.lineWidth=(w?Math.min(w,5):5); fn(x); x.restore();
 }
 function buildIcons(){
   // ---- settlements, by tier: silhouette says how big the place is ----
@@ -2157,35 +2162,35 @@ buildIcons();
 
 /* ===== Visual themes — one switch restyles UI + icons + planet together (DESIGN.md) ===== */
 const THEMES = {
-  antique: {
-    label:'Антик',
-    ui:{ '--ink':'#080B12','--panel':'#101624','--panel-2':'#0B1120','--rule':'#243049',
-         '--text':'#CBD5E6','--dim':'#7B88A6','--brass':'#C89B3C','--brass-dim':'#8A6C2C',
+  map: {   // light cartographic — the vector topo globe in parchment
+    label:'Мапа',
+    ui:{ '--ink':'#0A0D14','--panel':'#131824','--panel-2':'#0D1220','--rule':'#2A3346',
+         '--text':'#D2D8E4','--dim':'#828EA4','--brass':'#C89B3C','--brass-dim':'#8A6C2C',
          '--good':'#5FB58A','--bad':'#C4574F','--covert':'#8B5FB5',
          '--serif':"'Spectral',Iowan Old Style,Palatino,serif" },
-    bg:0x070A11, atmo:0x4E75A8, road:0x8A7550, iconAccent:0xE8CE96,
-    holo:0, tint:[0.20,0.33,0.52],                 // planet: warm earth-tone relief
-    lbl:{ big:'#F2E7CC', small:'#C2CDE0' },
-    legendFilter:'invert(78%) sepia(10%) saturate(400%) hue-rotate(190deg)',
+    bg:0x0B0F17, atmo:0x2E4258, road:0x5A4A30, iconAccent:0x3A2E1C,
+    globePal:0, holo:0, tint:[0.20,0.33,0.52],     // dark ink road/icons read on the light globe
+    lbl:{ big:'#2A2214', small:'#514732' },
+    legendFilter:'invert(20%) sepia(30%) saturate(500%) hue-rotate(5deg)',
   },
-  holo: {
-    label:'Sci-Fi',
-    ui:{ '--ink':'#04070C','--panel':'#071119','--panel-2':'#050C13','--rule':'#123A44',
-         '--text':'#BFE9F2','--dim':'#5E8792','--brass':'#35E0D0','--brass-dim':'#1C8C86',
-         '--good':'#46E0A0','--bad':'#F0616B','--covert':'#7E7BF0',
-         '--serif':"ui-sans-serif,system-ui,'Segoe UI',sans-serif" },
-    bg:0x03070C, atmo:0x1FA6B8, road:0x2FBFB0, iconAccent:0x35E0D0,
-    holo:1, tint:[0.20,0.85,0.85],                 // planet: cyan technical contour scan
-    lbl:{ big:'#CFFFF7', small:'#8FD8DE' },
-    legendFilter:'invert(82%) sepia(48%) saturate(1200%) hue-rotate(120deg) brightness(1.05)',
+  night: {  // dark monochrome — the same globe as a glowing night chart
+    label:'Ніч',
+    ui:{ '--ink':'#06080E','--panel':'#0C121C','--panel-2':'#080D16','--rule':'#1E2A3A',
+         '--text':'#C2D0E2','--dim':'#6E7E95','--brass':'#93AAC4','--brass-dim':'#5E7085',
+         '--good':'#5FB58A','--bad':'#C4574F','--covert':'#8B5FB5',
+         '--serif':"'Spectral',Iowan Old Style,Palatino,serif" },
+    bg:0x05070C, atmo:0x2A4460, road:0x93A6BE, iconAccent:0xB6C6DC,
+    globePal:1, holo:0, tint:[0.40,0.60,0.80],      // light road/icons read on the dark globe
+    lbl:{ big:'#D3E1F2', small:'#93A4BC' },
+    legendFilter:'invert(82%) sepia(10%) saturate(400%) hue-rotate(180deg)',
   },
 };
-let THEME_NAME = 'antique';
+let THEME_NAME = 'map';
 try { const s=localStorage.getItem('nl_theme'); if(s && THEMES[s]) THEME_NAME=s; } catch(e){}
 let THEME = THEMES[THEME_NAME];
 
 function applyTheme(name){
-  if(!THEMES[name]) name='antique';
+  if(!THEMES[name]) name='map';
   THEME_NAME=name; THEME=THEMES[name];
   const rs=document.documentElement.style;
   for(const k in THEME.ui) rs.setProperty(k, THEME.ui[k]);
@@ -2197,6 +2202,7 @@ function applyTheme(name){
     // (technical scan vs relief map), not just re-tinted (Visual themes, DESIGN.md)
     if(planet._terrainTex) planet.material.uniforms.map.value = planet._terrainTex[name] || planet._terrainTex.antique;
   }
+  if(vGlobe && vGlobe.material.uniforms.uPal){ vGlobe.material.uniforms.uPal.value = THEME.globePal||0; globeDirty=true; }
   if(atmoMesh) atmoMesh.material.color.set(THEME.atmo);
   if(roadMat) roadMat.uniforms.tint.value.set(THEME.road);
   if(selFrame) selFrame.material.color.set(THEME.iconAccent);   // #49 — selection frame tracks the theme accent
@@ -2208,7 +2214,7 @@ function applyTheme(name){
   const b=document.getElementById('btnTheme'); if(b) b.textContent='Тема: '+THEME.label;
   try{ localStorage.setItem('nl_theme', name); }catch(e){}
 }
-function toggleTheme(){ applyTheme(THEME_NAME==='antique'?'holo':'antique'); }
+function toggleTheme(){ applyTheme(THEME_NAME==='map'?'night':'map'); }
 document.getElementById('btnTheme').onclick=toggleTheme;
 addEventListener('keydown',e=>{
   const tag=(e.target&&e.target.tagName)||'';
@@ -2337,6 +2343,179 @@ function makeFootprintMat(){
 /* ---------- pick registry: screen-space picking, exact and cheap ---------- */
 let picks=[];   // {type,id,dir,px,ring} — px is the icon radius, ring the footprint
 
+/* =====================================================================
+   VECTOR GLOBE — analytic ray-cast planet (replaces texture-on-mesh).
+   Everything is computed per-pixel in a GLSL3 fragment shader, so the
+   coastline is a math curve (crisp/vector at any zoom) and the ocean is
+   flat — no texel steps, no mesh facets. The elevation/climate field is
+   an exact GLSL port of the JS functions, so shader land matches the JS
+   world (settlements sit on real coastlines). Full-screen triangle in
+   clip space; the JS world rotation is fed in as uInvRot so continents
+   spin with the existing camera controls. =========================== */
+const VGLOBE_VS = `in vec3 position; out vec2 vNdc;
+void main(){ vNdc=position.xy; gl_Position=vec4(position.xy, 1.0, 1.0); }`;
+const VGLOBE_FS = `precision highp float; precision highp int;
+uniform mat4 uInvVP; uniform vec3 uCamPos; uniform mat3 uInvRot;
+uniform float uSEA; uniform vec3 uWARP; uniform int uNSEED; uniform int uForestStyle; uniform int uPal;
+in vec2 vNdc; out vec4 outColor;
+uint hash3u(int i,int j,int k){
+  uint n=uint(i)*374761393u+uint(j)*668265263u+uint(k)*1274126177u+uint(uNSEED)*2654435761u;
+  n=(n^(n>>13u))*1274126177u; return (n^(n>>16u)); }
+float h3(int i,int j,int k){ return float(hash3u(i,j,k))/4294967296.0; }
+float fade(float t){ return t*t*(3.0-2.0*t); }
+float vnoise(vec3 p){
+  int xi=int(floor(p.x)),yi=int(floor(p.y)),zi=int(floor(p.z));
+  float xf=p.x-float(xi),yf=p.y-float(yi),zf=p.z-float(zi);
+  float u=fade(xf),v=fade(yf),w=fade(zf);
+  float c000=h3(xi,yi,zi),c100=h3(xi+1,yi,zi),c010=h3(xi,yi+1,zi),c110=h3(xi+1,yi+1,zi);
+  float c001=h3(xi,yi,zi+1),c101=h3(xi+1,yi,zi+1),c011=h3(xi,yi+1,zi+1),c111=h3(xi+1,yi+1,zi+1);
+  float x00=c000+(c100-c000)*u,x10=c010+(c110-c010)*u,x01=c001+(c101-c001)*u,x11=c011+(c111-c011)*u;
+  float y0=x00+(x10-x00)*v,y1=x01+(x11-x01)*v; return (y0+(y1-y0)*w)*2.0-1.0; }
+float fbm(vec3 p,int oct,float lac,float gain){
+  float a=1.0,f=1.0,s=0.0,nm=0.0;
+  for(int i=0;i<8;i++){ if(i>=oct)break;
+    s+=a*vnoise(vec3(p.x*f+float(i)*17.3,p.y*f-float(i)*29.1,p.z*f+float(i)*41.7)); nm+=a; a*=gain; f*=lac; }
+  return s/nm; }
+float ridge(vec3 p,int oct){
+  float a=0.6,f=1.0,s=0.0;
+  for(int i=0;i<8;i++){ if(i>=oct)break;
+    float n=1.0-abs(vnoise(vec3(p.x*f+float(i)*7.7,p.y*f+float(i)*13.3,p.z*f-float(i)*5.1))); s+=a*n*n; a*=0.5; f*=2.05; }
+  return s; }
+float sm01(float v,float a,float b){ float t=clamp((v-a)/(b-a),0.0,1.0); return t*t*(3.0-2.0*t); }
+float elevation(vec3 p){
+  vec3 W=uWARP;
+  float wx=fbm(vec3(p.x*1.7+W.x,p.y*1.7+W.y,p.z*1.7+W.z),3,2.0,0.5);
+  float wy=fbm(vec3(p.x*1.7+W.y,p.y*1.7+W.z,p.z*1.7+W.x),3,2.0,0.5);
+  float q=0.42; vec3 c=vec3(p.x*1.25+wx*q,p.y*1.25+wy*q,p.z*1.25+(wx-wy)*q*0.5);
+  float base=fbm(c,6,2.1,0.52); base=base*0.85+0.14*fbm(c*3.1,3,2.2,0.5);
+  float land=base-uSEA; if(land<=0.0) return land*0.85;
+  float belt=max(0.0,ridge(c*2.3,4)-0.42); float mtn=belt*sm01(land,0.02,0.30)*1.35;
+  return land*0.9+mtn; }
+float moistureAt(vec3 p){ return fbm(vec3(p.x*2.4+11.3,p.y*2.4-7.9,p.z*2.4+3.1),4,2.1,0.55)*0.5+0.5; }
+float tempAt(vec3 p,float e){ float lat=abs(p.y);
+  return clamp(1.06-lat*1.28-max(0.0,e)*0.85+fbm(vec3(p.x*1.6-21.7,p.y*1.6+5.5,p.z*1.6-9.9),2,2.0,0.5)*0.10,0.0,1.0); }
+int zoneId(vec3 p,float e){ if(e<=0.0)return 0; if(e>0.34)return 3;
+  float t=tempAt(p,e),m=moistureAt(p);
+  if(t<0.13) return 5;                // tundra
+  if(t>0.52&&m>0.60) return 6;        // jungle (dense forest)
+  if(t>0.52&&m<0.40) return 4;        // desert
+  if(m>0.48&&t>0.20) return 2;        // forest
+  return 1; }                         // plain
+float hash21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+float sdSeg(vec2 p,vec2 a,vec2 b){ vec2 pa=p-a,ba=b-a; float h=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0); return length(pa-ba*h); }
+float forestInk(vec2 f,vec2 cell,int style){
+  if(style==3) return 0.0;                                                                        // tint only — no glyphs
+  if(hash21(cell)>0.72) return 0.0;
+  float cx=0.5+(hash21(cell+3.1)-0.5)*0.42, cy=0.5+(hash21(cell+1.9)-0.5)*0.30;
+  vec2 c=vec2(cx,cy); float dd=length(f-c);
+  if(style==0){ float r=0.18+0.05*hash21(cell+7.7); return smoothstep(0.045,0.0,abs(dd-r)); }     // crown ring (circle)
+  if(style==1){ return smoothstep(0.10,0.045,dd); }                                               // small filled dot (stipple)
+  float r=0.19; return smoothstep(0.05,0.0,abs(dd-r))*smoothstep(-0.03,0.04,f.y-c.y);             // deciduous arc (upper ∩)
+}
+float desertDot(vec2 uv){ vec2 dom=vec2(uv.x*2.0,uv.y)*120.0; vec2 cell=floor(dom),f=fract(dom)-0.5;
+  if(hash21(cell+1.7)>0.72)return 0.0; vec2 j=(vec2(hash21(cell+2.3),hash21(cell+5.9))-0.5)*0.5;
+  return smoothstep(0.17,0.08,length(f-j)); }
+float plainFurrow(vec2 uv){ float dr=fbm(vec3(uv*7.0,3.0),3,2.0,0.5);
+  float y=uv.y*150.0+sin(uv.x*70.0)*0.6+dr*2.6; float fr=fract(y),ld=min(fr,1.0-fr); return smoothstep(0.12,0.0,ld)*0.7; }
+void main(){
+  vec4 far=uInvVP*vec4(vNdc,1.0,1.0); far/=far.w;
+  vec3 rd=normalize(far.xyz-uCamPos), ro=uCamPos;
+  float b=dot(ro,rd), c=dot(ro,ro)-1.0, disc=b*b-c;
+  if(disc<0.0) discard;
+  float t=-b-sqrt(disc); if(t<0.0) discard;
+  vec3 wHit=ro+rd*t; vec3 d=normalize(uInvRot*wHit);
+  float e=elevation(d);
+  float aa=max(fwidth(e),1e-4);
+  float land=smoothstep(-aa,aa,e), coast=smoothstep(2.5*aa,0.0,abs(e));
+  vec3 ocean, landC, lineC; float tintScale;
+  if(uPal==1){ ocean=vec3(0.055,0.085,0.125); landC=vec3(0.20,0.23,0.27); lineC=vec3(0.60,0.68,0.78); tintScale=0.5; } // dark monochrome
+  else { ocean=vec3(0.55,0.62,0.66); landC=vec3(0.86,0.81,0.66); lineC=vec3(0.24,0.19,0.13); tintScale=1.0; }         // light parchment
+  float bk=e*26.0; float bm=min(fract(bk),1.0-fract(bk)); float bw=fwidth(bk);
+  float bathy=smoothstep(bw*1.3,0.0,bm)*step(e,0.0);
+  float hk=e*20.0; float hm=min(fract(hk),1.0-fract(hk)); float hw=fwidth(hk);
+  float isoh=smoothstep(hw*1.3,0.0,hm)*step(0.0,e);
+  int z=zoneId(d,e);
+  vec2 suv=vec2(atan(d.z,d.x)/6.2831853+0.5, asin(clamp(d.y,-1.0,1.0))/3.14159265+0.5);
+  vec2 dom=vec2(suv.x*2.0,suv.y)*82.0; vec2 cell=floor(dom),fcell=fract(dom);
+  vec3 shift=vec3(0.0);                                        // biome tint as offset from landC (works in both palettes)
+  if(z==2) shift=vec3(-0.16,-0.02,-0.22);                     // forest — greener
+  else if(z==6) shift=vec3(-0.42,-0.20,-0.40);               // jungle — deep green
+  else if(z==5) shift=vec3(0.02,0.06,0.14);                  // tundra — cool light
+  else if(z==4) shift=vec3(0.10,0.01,-0.16);                 // desert — warm
+  else if(z==3) shift=vec3(-0.05,-0.04,-0.03);               // mountain — slightly darker
+  vec3 tint=clamp(landC+shift*tintScale, 0.0, 1.0);
+  float motif=0.0;
+  if(uForestStyle<=2){                                        // legacy glyph experiments
+    if(z==2) motif=forestInk(fcell,cell,uForestStyle);
+    else if(z==4) motif=desertDot(suv);
+    else if(z==1) motif=plainFurrow(suv);
+  }
+  // zone-as-shape borders (derivative of the zone mask → ~1px line, zoom-independent)
+  float zborder=0.0;
+  if(uForestStyle==4){ float fm=(z==2)?1.0:0.0; zborder=clamp(fwidth(fm)*1.3,0.0,1.0); }      // forest zone only
+  else if(uForestStyle==5){ zborder=clamp(fwidth(float(z))*1.3,0.0,1.0); }                    // every biome zone
+  vec3 col=mix(ocean,tint,land);
+  col=mix(col,mix(ocean,lineC,0.5),bathy*0.30*(1.0-land));    // fainter isobaths
+  col=mix(col,lineC,isoh*0.26*land);                          // fainter land contours
+  vec3 motifCol=(z==2)?vec3(0.16,0.30,0.15):lineC;
+  col=mix(col,motifCol,motif*0.62*land);                      // softer, less attention-grabbing motifs
+  col=mix(col,lineC,zborder*0.6*land);                        // zone boundary ink
+  col=mix(col,lineC,coast);
+  outColor=vec4(col,1.0); }`;
+/* Planet cache — the heavy globe shader renders to an offscreen target ONLY when
+   the camera or world rotation actually change; every frame just blits that cached
+   texture (a couple of instructions). A static view costs ~nothing, so the planet
+   can no longer pin/overheat the GPU. vGlobe & cache globals are hoisted above so
+   applyTheme() can touch them before buildScene runs. */
+function _tri(){ const g=new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute([-1,-1,0, 3,-1,0, -1,3,0],3)); return g; }
+function buildVectorGlobe(){
+  if(vGlobe){ globeScene.remove(vGlobe); vGlobe.geometry.dispose(); vGlobe.material.dispose(); vGlobe=null; }
+  const mat=new THREE.RawShaderMaterial({
+    glslVersion:THREE.GLSL3, depthTest:false, depthWrite:false,
+    uniforms:{ uInvVP:{value:new THREE.Matrix4()}, uCamPos:{value:new THREE.Vector3()},
+      uInvRot:{value:new THREE.Matrix3()}, uSEA:{value:SEA},
+      uWARP:{value:new THREE.Vector3(WARP.x,WARP.y,WARP.z)}, uNSEED:{value:NSEED}, uForestStyle:{value:3}, uPal:{value:(THEME.globePal||0)} },
+    vertexShader:VGLOBE_VS, fragmentShader:VGLOBE_FS });
+  vGlobe=new THREE.Mesh(_tri(),mat); vGlobe.frustumCulled=false;
+  if(!globeScene) globeScene=new THREE.Scene();
+  globeScene.add(vGlobe);
+  if(!globeRT) globeRT=new THREE.WebGLRenderTarget(2,2,{minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter, depthBuffer:false});
+  if(!bgMesh){
+    const bmat=new THREE.RawShaderMaterial({ glslVersion:THREE.GLSL3, depthTest:false, depthWrite:false,
+      uniforms:{ tex:{value:globeRT.texture}, res:{value:new THREE.Vector2(2,2)} },
+      vertexShader:'in vec3 position; void main(){ gl_Position=vec4(position.xy,1.0,1.0); }',
+      fragmentShader:'precision highp float; uniform sampler2D tex; uniform vec2 res; out vec4 o; void main(){ o=texture(tex, gl_FragCoord.xy/res); }' });
+    bgMesh=new THREE.Mesh(_tri(),bmat); bgMesh.frustumCulled=false; bgMesh.renderOrder=-10; scene.add(bgMesh);
+  }
+  bgMesh.material.uniforms.tex.value=globeRT.texture;
+  globeDirty=true;
+}
+function updateGlobeUniforms(){
+  if(!vGlobe) return;
+  camera.updateMatrixWorld(); root.updateMatrixWorld();
+  const u=vGlobe.material.uniforms;
+  const vp=new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  u.uInvVP.value.copy(vp).invert();
+  u.uCamPos.value.copy(camera.position);
+  u.uInvRot.value.setFromMatrix4(root.matrixWorld).transpose();
+  u.uSEA.value=SEA; u.uWARP.value.set(WARP.x,WARP.y,WARP.z); u.uNSEED.value=NSEED;
+}
+function renderGlobeCache(){
+  if(!vGlobe||!globeRT) return;
+  const sz=renderer.getDrawingBufferSize(new THREE.Vector2());
+  if(globeRT.width!==sz.x || globeRT.height!==sz.y){ globeRT.setSize(sz.x,sz.y); bgMesh.material.uniforms.res.value.set(sz.x,sz.y); globeDirty=true; }
+  camera.updateMatrixWorld(); root.updateMatrixWorld();
+  const k=camera.matrixWorldInverse.elements.join(',')+'|'+root.matrixWorld.elements.slice(0,11).join(',')+'|'+vGlobe.material.uniforms.uPal.value;
+  if(k!==_gKey){ _gKey=k; globeDirty=true; }
+  if(!globeDirty) return;                                  // static view → reuse the cached texture, zero shader work
+  updateGlobeUniforms();
+  const prev=renderer.getRenderTarget();
+  renderer.setRenderTarget(globeRT);
+  renderer.render(globeScene, camera);
+  renderer.setRenderTarget(prev);
+  globeDirty=false;
+}
+
 function buildScene(){
   root.clear(); picks=[]; footMats=[]; pawnBuiltFor=null; pawnSprites=[]; pawnPositions=[];
   cityCache=new Map(); cityLive=new Set(); squadPawnCache=new Map();
@@ -2350,10 +2529,10 @@ function buildScene(){
      without a rebake (see applyTheme / Visual themes, DESIGN.md). */
   const TEX_W=1536, TEX_H=768;
   const mkCanvas=()=>{ const c=document.createElement('canvas'); c.width=TEX_W; c.height=TEX_H; return c; };
-  const imgA=mkCanvas(), imgB=mkCanvas();
-  const ctxA=imgA.getContext('2d'), ctxB=imgB.getContext('2d');
-  const dA=ctxA.createImageData(TEX_W,TEX_H), dB=ctxB.createImageData(TEX_W,TEX_H);
-  const pxA=dA.data, pxB=dB.data;
+  const imgA=mkCanvas(), imgB=mkCanvas(), imgZ=mkCanvas();
+  const ctxA=imgA.getContext('2d'), ctxB=imgB.getContext('2d'), ctxZ=imgZ.getContext('2d');
+  const dA=ctxA.createImageData(TEX_W,TEX_H), dB=ctxB.createImageData(TEX_W,TEX_H), dZ=ctxZ.createImageData(TEX_W,TEX_H);
+  const pxA=dA.data, pxB=dB.data, pxZ=dZ.data;
   const pv=new THREE.Vector3(), rgb=[0,0,0], rgbT=[0,0,0];
   for(let y=0;y<TEX_H;y++){
     const lat=(y+0.5)/TEX_H*Math.PI - Math.PI/2;      // −π/2..π/2
@@ -2368,13 +2547,25 @@ function buildScene(){
       const hgt=Math.max(0, Math.min(255, (e+0.45)/1.15*255));  // packed height, for bump
       pxA[i]=rgb[0]*255;  pxA[i+1]=rgb[1]*255;  pxA[i+2]=rgb[2]*255;  pxA[i+3]=hgt;
       pxB[i]=rgbT[0]*255; pxB[i+1]=rgbT[1]*255; pxB[i+2]=rgbT[2]*255; pxB[i+3]=hgt;
+      // biome id for the antique stylized line-work shader (0 ocean,1 plain,2 forest,3 mountain,4 desert)
+      let zid=0;
+      if(e>0){
+        if(e>0.34) zid=3;
+        else { const tt=tempAt(pv,e), mm=moistureAt(pv);
+          zid = (tt>0.52&&mm<0.40)?4 : (mm>0.48&&tt>0.20)?2 : 1; }
+      }
+      pxZ[i]=zid; pxZ[i+1]=0; pxZ[i+2]=0; pxZ[i+3]=255;
     }
   }
-  ctxA.putImageData(dA,0,0); ctxB.putImageData(dB,0,0);
+  ctxA.putImageData(dA,0,0); ctxB.putImageData(dB,0,0); ctxZ.putImageData(dZ,0,0);
   const mkTex=cv=>{ const t=new THREE.CanvasTexture(cv);
     t.wrapS=THREE.RepeatWrapping; t.wrapT=THREE.ClampToEdgeWrapping;
     t.minFilter=THREE.LinearFilter; t.magFilter=THREE.LinearFilter; t.generateMipmaps=false; return t; };
+  const mkTexN=cv=>{ const t=new THREE.CanvasTexture(cv);
+    t.wrapS=THREE.RepeatWrapping; t.wrapT=THREE.ClampToEdgeWrapping;
+    t.minFilter=THREE.NearestFilter; t.magFilter=THREE.NearestFilter; t.generateMipmaps=false; return t; };
   const terrainTexAll={ antique:mkTex(imgA), holo:mkTex(imgB) };
+  const zoneTex=mkTexN(imgZ);
   const terrainTex=terrainTexAll[THEME_NAME]||terrainTexAll.antique;
 
   const geo=new THREE.IcosahedronGeometry(1, 72);
@@ -2391,6 +2582,8 @@ function buildScene(){
   const planetMat=new THREE.ShaderMaterial({
     uniforms:{
       map:{value:terrainTex},
+      zoneMap:{value:zoneTex},
+      uMute:{value:0.0},                                // 0 natural relief .. 1 monochrome staff-map
       texel:{value:new THREE.Vector2(1/TEX_W, 1/TEX_H)},
       lightDir:{value:new THREE.Vector3(0.45,0.55,1.0).normalize()},
       uHolo:{value: THEME.holo},
@@ -2407,6 +2600,8 @@ function buildScene(){
     fragmentShader:`
       precision highp float;
       uniform sampler2D map;
+      uniform sampler2D zoneMap;
+      uniform float uMute;
       uniform vec2 texel;
       uniform vec3 lightDir;
       uniform float uHolo;
@@ -2434,6 +2629,39 @@ function buildScene(){
       }
       vec2 sphUV(vec3 n){
         return vec2(atan(n.z,n.x)/6.2831853+0.5, asin(clamp(n.y,-1.0,1.0))/3.14159265+0.5);
+      }
+      // ---- antique stylized biome line-work (Theme A): fine cartographic ink motifs ----
+      float hash21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+      float sdSeg(vec2 p, vec2 a, vec2 b){ vec2 pa=p-a, ba=b-a; float h=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0); return length(pa-ba*h); }
+      float forestInk(vec2 f, vec2 cell){                 // thin fir-tree glyphs, dense enough to read as forest
+        if(hash21(cell)>0.80) return 0.0;
+        float cx=0.5+(hash21(cell+3.1)-0.5)*0.4, cy=0.66;
+        float hgt=0.42+0.12*hash21(cell+7.7), w=0.05;
+        float d=sdSeg(f, vec2(cx,cy), vec2(cx, cy-hgt*0.35));
+        for(int k=0;k<3;k++){
+          float t=float(k);
+          float yy=cy-hgt*(0.30+0.22*t), ww=0.17-0.035*t;
+          d=min(d, sdSeg(f, vec2(cx-ww,yy), vec2(cx, yy-0.11)));
+          d=min(d, sdSeg(f, vec2(cx+ww,yy), vec2(cx, yy-0.11)));
+        }
+        return smoothstep(w, w*0.35, d);
+      }
+      float mountInk(float e){                            // elevation isolines
+        float fr=fract(e*30.0), ld=min(fr,1.0-fr);
+        return smoothstep(0.09,0.0, ld);
+      }
+      float plainInk(vec2 uv){                            // fine furrow lines, drifting so they don't read as a mechanical grid
+        float drift=fbm3(vec3(uv*7.0, 3.0));              // low-freq waver by region
+        float y=uv.y*150.0 + sin(uv.x*70.0)*0.6 + drift*2.6;
+        float fr=fract(y), ld=min(fr,1.0-fr);
+        return smoothstep(0.12,0.0, ld)*0.7;
+      }
+      float desertInk(vec2 uv){                           // fine dotting
+        vec2 dom=vec2(uv.x*2.0, uv.y)*120.0;
+        vec2 cell=floor(dom), f=fract(dom)-0.5;
+        if(hash21(cell+1.7)>0.72) return 0.0;
+        vec2 j=(vec2(hash21(cell+2.3),hash21(cell+5.9))-0.5)*0.5;
+        return smoothstep(0.17,0.08, length(f-j));
       }
       void main(){
         vec3 n = normalize(vObj);
@@ -2480,6 +2708,26 @@ function buildScene(){
         float rim = pow(1.0 - max(dot(normalize(vWN), V),0.0), 3.0);
         lit += vec3(0.20,0.33,0.52)*rim*0.35;
 
+        // antique stylized biome line-work (Theme A): muted relief + fine brass ink motifs
+        if(uHolo < 0.5){
+          float zid = texture2D(zoneMap, uv).r * 255.0;
+          float eR  = h*1.15 - 0.45;
+          vec2 dom  = vec2(uv.x*2.0, uv.y)*82.0;          // fir-glyph grid
+          vec2 cell = floor(dom), f = fract(dom);
+          float ink = 0.0;
+          if(zid>1.5 && zid<2.5)       ink = forestInk(f, cell);
+          else if(zid>2.5 && zid<3.5)  ink = mountInk(eR);
+          else if(zid>0.5 && zid<1.5)  ink = plainInk(uv);
+          else if(zid>3.5)             ink = desertInk(uv);
+          // mute the naturalistic base toward a warm parchment tone (staff-map look)
+          float baseL = dot(lit, vec3(0.299,0.587,0.114));
+          vec3 parch = vec3(baseL) * vec3(1.15,1.04,0.80);
+          if(zid>0.5) lit = mix(lit, parch, uMute);       // land only; keep the ocean as-is
+          vec3 inkCol = vec3(0.90,0.72,0.34);             // brass ink
+          if(zid>3.5) inkCol = vec3(0.40,0.28,0.16);      // dark ink reads on pale desert sand
+          lit = mix(lit, inkCol, clamp(ink,0.0,1.0)*0.85);
+        }
+
         // theme treatment B: holographic readout. Keep the technical texture's cyan
         // contour scan, light it gently so the whole disc self-glows, then overlay a
         // lat/long grid and a bright cyan limb — a distinct render, not a re-tint.
@@ -2500,6 +2748,8 @@ function buildScene(){
   planet=new THREE.Mesh(geo, planetMat);
   planet._terrainTex=terrainTexAll;                 // {antique,holo} — applyTheme swaps between them
   root.add(planet);
+  planet.visible=false;                             // hidden: replaced by the analytic vector globe
+  buildVectorGlobe();
   atmoMesh=new THREE.Mesh(new THREE.SphereGeometry(1.055,64,40),
     new THREE.MeshBasicMaterial({color:THEME.atmo, transparent:true, opacity:0.09, side:THREE.BackSide}));
   root.add(atmoMesh);
@@ -5566,6 +5816,7 @@ function frame(now){
   updateCamera();
   stepFly();
   animateMarkers();
+  renderGlobeCache();
   renderer.render(scene,camera);
   if(graphOpen) drawGraph();
   requestAnimationFrame(frame);
