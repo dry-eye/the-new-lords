@@ -999,6 +999,52 @@ function calibrateSea(targetLand){
   SEA=(lo+hi)/2;
 }
 
+/* --- land connectivity (issue #62) -------------------------------------------
+   The calibrated elevation field routinely yields several disjoint continents
+   and islands. Every settlement, road, adjacency edge and caravan must sit on
+   ONE reachable landmass — otherwise a road/supply line would span open ocean
+   that carries no travel rule. This pass samples the sphere on the same
+   Fibonacci lattice used for candidate sites, flags land, and flood-fills the
+   land samples into connected components by nearest-neighbour adjacency: two
+   land samples are neighbours when closer than ~1.4x the lattice spacing — i.e.
+   only the immediate ~6-point first ring connects. That is loose enough that a
+   contiguous continent (even a one-cell isthmus) never fragments, yet tight
+   enough that two continents separated by any real strait are NOT stitched into
+   one component (a looser cutoff reaches the second ring and bridges them across
+   open ocean, which would scatter roads across the sea). It returns the LARGEST
+   single playable landmass. The other continents/islands stay in the elevation
+   field and still render (DESIGN.md, "World shape") — they are simply never
+   populated. SEA is untouched here, so sea level / land fraction / biomes are
+   identical to before; only which land points can host a settlement changes. */
+const LAND_LINK_MULT=1.40; // adjacency cutoff as a multiple of the lattice spacing (immediate ring)
+const LAND_LINK_N=4000;    // connectivity sample density — resolves real straits, ~10ms/worldgen
+function landComponent(n){
+  // flat typed arrays + inlined dot: the O(land·n) flood-fill runs once per worldgen
+  const xs=new Float64Array(n), ys=new Float64Array(n), zs=new Float64Array(n);
+  const land=new Uint8Array(n), dirs=new Array(n);
+  for(let i=0;i<n;i++){ const d=fibDir(i,n); dirs[i]=d; xs[i]=d.x; ys[i]=d.y; zs[i]=d.z; land[i]=elevation(d)>0?1:0; }
+  const cosR=Math.cos(3.8/Math.sqrt(n)*LAND_LINK_MULT); // ring-of-neighbours cutoff
+  const comp=new Int32Array(n).fill(-1);
+  let label=0, best=-1, bestSize=0;
+  for(let s=0;s<n;s++){
+    if(!land[s]||comp[s]!==-1) continue;
+    const stack=[s]; comp[s]=label; let size=0;         // flood-fill one component
+    while(stack.length){
+      const c=stack.pop(); size++;
+      const cx=xs[c], cy=ys[c], cz=zs[c];
+      for(let j=0;j<n;j++){
+        if(!land[j]||comp[j]!==-1) continue;
+        if(cx*xs[j]+cy*ys[j]+cz*zs[j]>cosR){ comp[j]=label; stack.push(j); }
+      }
+    }
+    if(size>bestSize){ bestSize=size; best=label; }
+    label++;
+  }
+  const out=[];
+  for(let i=0;i<n;i++) if(comp[i]===best) out.push(dirs[i]);
+  return out;
+}
+
 function genNames(n, a, b){
   const out=new Set();
   while(out.size<n) out.add(pick(a)+pick(b).toLowerCase());
@@ -1070,9 +1116,11 @@ function generate(seed){
   WARP = {x:rnd()*40-20, y:rnd()*40-20, z:rnd()*40-20};
   calibrateSea(0.32);
 
-  /* --- settlement sites: rejection-sampled on land --- */
-  const cand=[];
-  for(let i=0;i<1400;i++){const d=fibDir(i,1400); if(isLand(d)) cand.push(d);}
+  /* --- settlement sites: rejection-sampled on the single reachable landmass ---
+     #62: candidates are drawn ONLY from the largest connected land component, so
+     every settlement (and thus every road/adjacency edge below) lies on one
+     landmass and none straddles the open ocean between separate continents. */
+  const cand=landComponent(LAND_LINK_N);
   for(let i=cand.length-1;i>0;i--){const j=Math.floor(rnd()*(i+1));[cand[i],cand[j]]=[cand[j],cand[i]];}
   const sites=[];
   const MIN_D=0.985; // cos of min separation — bigger = closer allowed
