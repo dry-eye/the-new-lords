@@ -279,14 +279,8 @@
   клік — вибрати · тягни — обертати · колесо — зум (Ctrl+колесо — точний)<br>
   свій загін вибрано: ПКМ — рух · Shift+ПКМ — черга · утримай ПКМ — меню дій<br>
   стрілки — точне довертання · +/− — зум · пробіл — пауза<br>
-  наведи на іконку — підказка · наблизь впритул — вулиці, будинки й мешканці · гекс-тактика: G/B крок · V сітка
+  наведи на іконку — підказка · наблизь впритул — вулиці, будинки й мешканці
 </div>
-
-<div id="hexHud" style="position:fixed;left:50%;bottom:12px;transform:translateX(-50%);
-  display:none;z-index:40;pointer-events:none;font-size:11px;letter-spacing:.03em;
-  color:#E7D9B4;background:rgba(20,17,12,.72);border:1px solid rgba(200,155,60,.45);
-  border-radius:6px;padding:6px 12px;text-align:center;font-family:inherit;
-  box-shadow:0 2px 10px rgba(0,0,0,.4)"></div>
 
 <div id="graph">
   <canvas id="graphCanvas"></canvas>
@@ -3393,12 +3387,8 @@ function buildCity(st, maxResidents=48){
     else spawnWalker((st.id*131+k*9277+7)>>>0, null);   // stable per-slot cosmetic seed — no sim entity created
   }
 
-  // #43: the hex tactical layer materialises WITH the city geometry (rides the LOD
-  // hot-region boundary) and is torn down with it when the tile goes cold.
-  const hex = buildHexLayer(st, lots, {orient, dirOf, R, S1, group});
-
   root.add(group);
-  return {group, walkers, st, orient, dirOf, nextWaypoint, hex, R};   // #50: R = city surface radius, for head-aligned picks
+  return {group, walkers, st, orient, dirOf, nextWaypoint, R};   // #50: R = city surface radius, for head-aligned picks
 }
 /* advance one town's walking cat heads along the streets by one frame's worth of time */
 function stepWalkers(c, dtMs){
@@ -3422,289 +3412,6 @@ function stepWalkers(c, dtMs){
     w.r=(c.R!=null?c.R:1)+lift;   // #50: the head's exact shell radius (surface R + lift) for a head-aligned pick
   }
 }
-
-/* =====================================================================
-   HEX TACTICAL LAYER (#43) — the local, hot-region-only tactical grid.
-   Source of truth: docs/PATHFINDING_SPEC.md — «Tactical movement — the hex
-   grid», «Formations & team-based edge passability», «Mass / crowd movement»,
-   «Scale, performance & determinism».
-
-   Resolved design (issue #43):
-     • Graph↔hex hand-off rides the LOD hot-region boundary: the grid MATERIALISES
-       with a city's geometry (buildCity, when the tile goes hot) and COLLAPSES
-       with it (updateCityLOD removes the city group) — no separate persistence.
-       A unit entering snaps to the nearest free hex; leaving, it projects back to
-       the graph. (Snap-in is exercised by materialisation below; graph travel is
-       the existing walker layer.)
-     • One unit per hex. Buildings / impassable / the map edge block their hexes;
-       units never enter a blocked hex.
-     • Movement is perpendicular to hex edges — a step to an edge-adjacent
-       neighbour is, in a regular hex, exactly the centre→centre segment normal to
-       the shared edge.
-     • A "formation" is any contiguous cluster of same-team units. An edge is
-       friendly-threadable (and closed to other teams) iff BOTH hexes it divides
-       are held by the same team — an edge internal to one team's own cluster.
-     • Mass step: a whole selected crowd advances one hex simultaneously; blocked
-       units hold, the rest advance (never a whole-move cancel, never a re-path of
-       the mass).
-     • Determinism: the grid + its units are derived deterministically from the
-       region's authoritative state (seeded from the settlement id + world seed),
-       so the same seed always yields the same hex outcome — it is part of the
-       authoritative sim, not a cosmetic Math.random() layer like the wanderers.
-   ===================================================================== */
-// A tactical unit's radius, in a city's LOCAL (x,y) units — the city disk is
-// |xy|<1. Chosen so the grid reads legibly at the prototype's scale; the spec's
-// "minimum hex = 1.5 × unit radius" is then applied *exactly* on the next line.
-const TAC_UNIT_R  = 0.052;
-const HEX_INRADIUS = 1.5 * TAC_UNIT_R;             // spec: min cell = 1.5 × unit radius (centre→edge)
-const HEX_SIZE     = HEX_INRADIUS * 2/Math.sqrt(3);// circumradius (centre→vertex), pointy-top layout
-// pointy-top axial neighbour directions. A move to any of these is one straight
-// step perpendicular to the shared edge (spec: "perpendicular to hex edges").
-const HEX_DIRS = [ [1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1] ];
-const HEX_DIR_VEC = HEX_DIRS.map(([dq,dr])=>{      // unit displacement of each step, for aiming
-  const x=HEX_SIZE*Math.sqrt(3)*(dq+dr/2), y=HEX_SIZE*1.5*dr, L=Math.hypot(x,y);
-  return {x:x/L, y:y/L};
-});
-const hexKey=(q,r)=>q+','+r;
-function axialToXY(q,r){ return { x:HEX_SIZE*Math.sqrt(3)*(q+r/2), y:HEX_SIZE*1.5*r }; }
-// is local point (x,y) inside building lot L (a rotated rectangle), grown by margin?
-function pointInLot(x,y,L,margin){
-  const dx=x-L.x, dy=y-L.y, c=Math.cos(L.ang), s=Math.sin(L.ang);
-  const lx= dx*c + dy*s;                            // along the lot's width axis (ang)
-  const ly=-dx*s + dy*c;                            // along the lot's depth axis
-  return Math.abs(lx) <= L.w/2+margin && Math.abs(ly) <= L.d/2+margin;
-}
-const HEX_DISK_R = 0.97;                            // grid fills the city disk out to here
-const LINE_LIFT=0.00050, FILL_LIFT=0.00038, UNIT_H=0.0019;
-const UNIT_LIFT = 0.00050 + UNIT_H/2;
-
-/* Build the hex grid + its two demonstrator formations for one hot city.
-   ctx = { orient, dirOf, R, S1, group } from buildCity. Returns the layer API. */
-function buildHexLayer(st, lots, ctx){
-  // Seeded from the settlement + world seed → deterministic materialisation. This is
-  // a SEPARATE stream from the global sim RNG (never touched) and from the cosmetic
-  // Math.random() wanderers, so rebuilding a hot region reproduces it byte-for-byte.
-  const rng = mulberry32((st.id*2654435761 ^ S.seed*40503 ^ 0x9e3779b9) >>> 0);
-
-  // ---- 1. cells: every hex whose centre lies in the disk; blocked by buildings ----
-  const cells = new Map();
-  const qspan = Math.ceil(HEX_DISK_R/(HEX_SIZE*Math.sqrt(3))) + 2;
-  const rspan = Math.ceil(HEX_DISK_R/(HEX_SIZE*1.5)) + 2;
-  for(let r=-rspan; r<=rspan; r++) for(let q=-qspan; q<=qspan; q++){
-    const {x,y}=axialToXY(q,r);
-    if(Math.hypot(x,y) > HEX_DISK_R) continue;       // outside the disk → not part of the grid (map edge)
-    let blocked=false;
-    for(const L of lots){ if(pointInLot(x,y,L, TAC_UNIT_R*0.35)){ blocked=true; break; } }
-    cells.set(hexKey(q,r), {q,r,x,y,blocked,unit:null});
-  }
-  const cell=(q,r)=>cells.get(hexKey(q,r));
-  const neighbours=(q,r)=>HEX_DIRS.map(([dq,dr])=>cell(q+dq,r+dr));
-
-  // ---- 2. units: two contiguous same-team formations facing across the disk ----
-  const units=[]; const uById=new Map(); let nextUid=1;
-  const nearestFree=(tx,ty)=>{
-    let best=null,bd=1e9;
-    for(const c of cells.values()){ if(c.blocked||c.unit!=null) continue;
-      const d=Math.hypot(c.x-tx,c.y-ty); if(d<bd){bd=d;best=c;} }
-    return best;
-  };
-  const growFormation=(team,tx,ty,count)=>{          // packed BFS blob from the nearest free cell
-    const seed=nearestFree(tx,ty); if(!seed) return;
-    const seen=new Set([hexKey(seed.q,seed.r)]); const queue=[seed]; let placed=0;
-    while(queue.length && placed<count){
-      const c=queue.shift();
-      if(!c.blocked && c.unit==null){
-        const u={id:nextUid++, team, q:c.q, r:c.r, mesh:null};
-        c.unit=u.id; units.push(u); uById.set(u.id,u); placed++;
-      }
-      const dirs=HEX_DIRS.slice();                    // deterministic shuffle → slightly organic edge
-      for(let i=dirs.length-1;i>0;i--){ const j=Math.floor(rng()*(i+1)); const t=dirs[i]; dirs[i]=dirs[j]; dirs[j]=t; }
-      for(const [dq,dr] of dirs){
-        const nk=hexKey(c.q+dq,c.r+dr), nc=cells.get(nk);
-        if(nc && !nc.blocked && !seen.has(nk)){ seen.add(nk); queue.push(nc); }
-      }
-    }
-  };
-  const freeCount=[...cells.values()].filter(c=>!c.blocked).length;
-  const per=Math.max(8, Math.min(24, Math.round(freeCount*0.13)));
-  growFormation(0, -0.34, -0.05, per);               // team 0 = your crowd (left)
-  growFormation(1,  0.34,  0.05, per);               // team 1 = the other side (right)
-
-  // ---- 3. queries: formations & team-based edge passability ----
-  const teamOf=c=>(c && c.unit!=null) ? uById.get(c.unit).team : null;
-  // an edge (between adjacent cells a,b) belongs to team T iff BOTH sides are T's
-  // → friendly-threadable by T, closed to everyone else. Otherwise it's a plain
-  // contested boundary (a front line), threadable by nobody.
-  const edgeTeam=(a,b)=>{ const ta=teamOf(a), tb=teamOf(b); return (ta!=null && ta===tb)? ta : null; };
-  const edgeThreadable=(a,b,team)=>edgeTeam(a,b)===team;
-  const formations=()=>{
-    const seen=new Set(), out=[];
-    for(const c of cells.values()){
-      if(c.unit==null || seen.has(hexKey(c.q,c.r))) continue;
-      const team=uById.get(c.unit).team, comp=[], stack=[c]; seen.add(hexKey(c.q,c.r));
-      while(stack.length){ const x=stack.pop(); comp.push(x);
-        for(const nc of neighbours(x.q,x.r)){
-          if(!nc || nc.unit==null) continue; const nk=hexKey(nc.q,nc.r);
-          if(!seen.has(nk) && uById.get(nc.unit).team===team){ seen.add(nk); stack.push(nc); }
-        }
-      }
-      out.push({team, size:comp.length, cells:comp.map(x=>hexKey(x.q,x.r))});
-    }
-    return out;
-  };
-  const centroid=team=>{ let sx=0,sy=0,n=0; for(const u of units) if(u.team===team){ const p=axialToXY(u.q,u.r); sx+=p.x; sy+=p.y; n++; }
-    return n? {x:sx/n,y:sy/n,n} : null; };
-
-  // ---- 4. mass / crowd movement: whole team steps one hex; blocked hold, rest go ----
-  // A uniform hex translation is a bijection, so two movers never target the same
-  // cell; a mover is blocked only by the disk edge, a building, or a NON-moving
-  // occupant — and, transitively, by a blocked mover ahead of it in the column.
-  const massStep=(team, dirIndex)=>{
-    const [dq,dr]=HEX_DIRS[((dirIndex%6)+6)%6];
-    const movers=units.filter(u=>u.team===team);
-    const movingSet=new Set(movers.map(u=>u.id));
-    const target=new Map(), blocked=new Set();
-    for(const u of movers){
-      const t=cell(u.q+dq,u.r+dr); target.set(u.id,t);
-      if(!t || t.blocked){ blocked.add(u.id); continue; }       // map edge / building
-      if(t.unit!=null && !movingSet.has(t.unit)) blocked.add(u.id); // a stationary unit holds it
-    }
-    let changed=true;                                            // propagate the stall down the column
-    while(changed){ changed=false;
-      for(const u of movers){ if(blocked.has(u.id)) continue;
-        const t=target.get(u.id);
-        if(t.unit!=null && movingSet.has(t.unit) && blocked.has(t.unit)){ blocked.add(u.id); changed=true; }
-      }
-    }
-    const going=movers.filter(u=>!blocked.has(u.id));
-    for(const u of going) cell(u.q,u.r).unit=null;               // vacate (all sources distinct)
-    for(const u of going){ const t=target.get(u.id); u.q=t.q; u.r=t.r; }
-    for(const u of going) cell(u.q,u.r).unit=u.id;               // occupy (targets now free)
-    refresh();
-    return { moved:going.length, held:movers.length-going.length };
-  };
-  const stepForward=team=>{                                      // step a crowd toward the other side
-    const a=centroid(team), b=centroid(team^1);
-    let idx=2;                                                   // default: "north" if no foe
-    if(a && b){ const vx=b.x-a.x, vy=b.y-a.y, L=Math.hypot(vx,vy)||1;
-      let best=-2; HEX_DIR_VEC.forEach((d,i)=>{ const dot=(d.x*vx+d.y*vy)/L; if(dot>best){best=dot;idx=i;} }); }
-    return Object.assign({dir:idx}, massStep(team, idx));
-  };
-
-  // ---- 5. determinism probe: a stable hash of blocked cells + unit placements ----
-  const hash=()=>{
-    let h=2166136261>>>0; const bump=n=>{ h^=(n>>>0); h=Math.imul(h,16777619)>>>0; };
-    const bl=[...cells.values()].filter(c=>c.blocked).map(c=>(c.q+512)*1024+(c.r+512)).sort((a,b)=>a-b);
-    bump(bl.length); for(const v of bl) bump(v);
-    const us=units.map(u=>u.team*4194304 + (u.q+512)*1024 + (u.r+512)).sort((a,b)=>a-b);
-    bump(us.length); for(const v of us) bump(v);
-    return h>>>0;
-  };
-  const stats=()=>{ const f=formations();
-    return { cells:cells.size, blocked:[...cells.values()].filter(c=>c.blocked).length,
-             teamA:units.filter(u=>u.team===0).length, teamB:units.filter(u=>u.team===1).length,
-             formations:f.length, hash:hash() }; };
-
-  // ---- 6. render: grid outline + blocked fills + per-team unit cones ----
-  const vpos=(x,y,lift)=>ctx.dirOf(x,y).multiplyScalar(ctx.R+lift);
-  // grid outline (one LineSegments draw)
-  const lp=[];
-  for(const c of cells.values()){
-    const cor=[]; for(let i=0;i<6;i++){ const a=(60*i-30)*Math.PI/180;
-      cor.push(vpos(c.x+HEX_SIZE*Math.cos(a), c.y+HEX_SIZE*Math.sin(a), LINE_LIFT)); }
-    for(let i=0;i<6;i++){ const p=cor[i], q2=cor[(i+1)%6]; lp.push(p.x,p.y,p.z, q2.x,q2.y,q2.z); }
-  }
-  const lgeo=new THREE.BufferGeometry();
-  lgeo.setAttribute('position', new THREE.Float32BufferAttribute(lp,3));
-  const lineSeg=new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({
-    color:0xC89B3C, transparent:true, opacity:0.26, depthWrite:false }));
-  ctx.group.add(lineSeg);
-  // blocked-cell fills (one Mesh) — so "buildings block" reads at a glance
-  const fp=[];
-  for(const c of cells.values()){ if(!c.blocked) continue;
-    const cen=vpos(c.x,c.y,FILL_LIFT), cor=[];
-    for(let i=0;i<6;i++){ const a=(60*i-30)*Math.PI/180;
-      cor.push(vpos(c.x+HEX_SIZE*0.92*Math.cos(a), c.y+HEX_SIZE*0.92*Math.sin(a), FILL_LIFT)); }
-    for(let i=0;i<6;i++){ const p=cor[i], q2=cor[(i+1)%6];
-      fp.push(cen.x,cen.y,cen.z, p.x,p.y,p.z, q2.x,q2.y,q2.z); }
-  }
-  let fillMesh=null;
-  if(fp.length){ const fgeo=new THREE.BufferGeometry();
-    fgeo.setAttribute('position', new THREE.Float32BufferAttribute(fp,3));
-    fillMesh=new THREE.Mesh(fgeo, new THREE.MeshBasicMaterial({
-      color:0x51261f, transparent:true, opacity:0.5, side:THREE.DoubleSide, depthWrite:false }));
-    ctx.group.add(fillMesh);
-  }
-  // per-team unit cones
-  const pf=playerFactionId();
-  const teamMat=[
-    new THREE.MeshLambertMaterial({color:new THREE.Color(pf!=null?factionColor(pf):'#E3B23C')}),
-    new THREE.MeshLambertMaterial({color:new THREE.Color('#4F86C6')}),
-  ];
-  const rW=TAC_UNIT_R*ctx.S1*0.78;
-  const placeUnit=u=>{
-    const c=cell(u.q,u.r); if(!c) return;
-    const m=ctx.orient(c.x,c.y,0,UNIT_LIFT);
-    m.multiply(new THREE.Matrix4().makeScale(rW, UNIT_H, rW));
-    u.mesh.matrix.copy(m); u.mesh.matrixWorldNeedsUpdate=true;
-  };
-  for(const u of units){
-    const mesh=new THREE.Mesh(CONE, teamMat[u.team]);
-    mesh.matrixAutoUpdate=false; ctx.group.add(mesh); u.mesh=mesh; placeUnit(u);
-  }
-  function refresh(){ for(const u of units) if(u.mesh) placeUnit(u); }
-
-  let visible=true;
-  const setVisible=v=>{ visible=v; lineSeg.visible=v; if(fillMesh) fillMesh.visible=v;
-    for(const u of units) if(u.mesh) u.mesh.visible=v; };
-
-  return { st, cells, units, uById, cell, neighbours, teamOf, edgeTeam, edgeThreadable,
-           formations, centroid, massStep, stepForward, hash, stats, refresh,
-           setVisible, toggle:()=>setVisible(!visible), isVisible:()=>visible };
-}
-
-/* the hot city whose hex layer is "active" (nearest the camera axis) + helpers */
-function hexActiveCity(){
-  let best=null,bd=-2; const cd=cameraDir();
-  for(const c of cityCache.values()){ if(!c.hex) continue; const d=c.st.dir.dot(cd); if(d>bd){bd=d;best=c;} }
-  return best;
-}
-function hexActiveLayer(){ const c=hexActiveCity(); return c? c.hex : null; }
-function updateHexHud(){
-  const el=document.getElementById('hexHud'); if(!el) return;
-  const L=hexActiveLayer();
-  if(!L){ el.style.display='none'; return; }
-  const s=L.stats();
-  el.style.display='block';
-  el.innerHTML='ГЕКС-ТАКТИКА · '+s.cells+' клітин · '+s.blocked+' заблок. · загони: ваші '+s.teamA+
-    ' / ворог '+s.teamB+' · формацій '+s.formations+
-    '<br><span style="opacity:.66">G — крок вашого натовпу вперед · B — крок ворога · V — сітка вкл/викл</span>';
-}
-/* Rematerialise the active city's hex layer from its authoritative (seeded) state —
-   the same machinery going-cold→hot uses. Determinism probe: rebuild() must return the
-   layer's original fresh hash regardless of any mass-steps taken since. */
-function hexRebuildActive(){
-  const c=hexActiveCity(); if(!c) return null;
-  const st=c.st;
-  root.remove(c.group); cityCache.delete(st.id);
-  const nc=buildCity(st, Math.max(16, Math.round(180/Math.max(1,cityCache.size+1))));
-  cityCache.set(st.id, nc);
-  return nc.hex? nc.hex.hash() : null;
-}
-// Console / test surface for the hex tactical layer.
-window.__hex = {
-  active: hexActiveCity,
-  layer: hexActiveLayer,
-  stats: ()=>{ const L=hexActiveLayer(); return L? L.stats() : null; },
-  hash:  ()=>{ const L=hexActiveLayer(); return L? L.hash() : null; },
-  formations: ()=>{ const L=hexActiveLayer(); return L? L.formations() : null; },
-  massStep: (team,dir)=>{ const L=hexActiveLayer(); return L? L.massStep(team,dir) : null; },
-  stepForward: (team)=>{ const L=hexActiveLayer(); return L? L.stepForward(team) : null; },
-  edgeThreadable: (qa,ra,qb,rb,team)=>{ const L=hexActiveLayer(); if(!L) return null;
-    return L.edgeThreadable(L.cell(qa,ra), L.cell(qb,rb), team); },
-  rebuild: hexRebuildActive,
-  DIRS: HEX_DIRS,
-};
 
 /* =====================================================================
    HOT-REGION RENDER TRIGGER (#26) — detailed loading around the camera AND
@@ -3794,7 +3501,6 @@ function updateCityLOD(){
       else           picks.push({type:'resident', walker:w, settlementId:c.st.id, dir:w.dir, r:w.r, px:0.026});
     }
   }
-  updateHexHud();                                       // #43: tactical-layer readout for the active hot city
 }
 
 function updatePawns(){
@@ -4591,10 +4297,6 @@ addEventListener('keydown',e=>{
   if(e.key==='+'||e.key==='=') camAltTarget=Math.max(ALT_MIN,camAltTarget/1.18);
   if(e.key==='-'||e.key==='_') camAltTarget=Math.min(ALT_MAX,camAltTarget*1.18);
   if(e.key===' '){ e.preventDefault(); document.getElementById('btnPause').click(); }
-  // #43 hex tactical controls — act on the hot city under the camera
-  if(e.key==='g'||e.key==='G'){ const L=hexActiveLayer(); if(L){ L.stepForward(0); updateHexHud(); } }   // your crowd steps forward
-  if(e.key==='b'||e.key==='B'){ const L=hexActiveLayer(); if(L){ L.stepForward(1); updateHexHud(); } }   // the other side steps forward
-  if(e.key==='v'||e.key==='V'){ const L=hexActiveLayer(); if(L){ L.toggle(); } }                          // toggle the grid overlay
 });
 
 /* ---- screen-space picking & hover ---- */
