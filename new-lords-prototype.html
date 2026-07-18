@@ -2289,6 +2289,12 @@ function makeBracketTexture(){
    reproducible / region-local. Bigger tiers get a wider outline, and the whole
    enclosed area becomes the settlement's click / hover target (see pointInRing). */
 const FOOT_R = {camp:0.030, village:0.042, city:0.058, megalopolis:0.075};
+// Every screen-space marker, pawn, footprint ring and road used to hug a fixed 1.03–1.045
+// shell — so on a zoomed or limb-on view they visibly floated off the globe. They now all sit
+// on ONE low shell just above the surface. Picking (screenPos's default r) reads this SAME
+// value, so a hit target stays locked under its drawn icon at every zoom. Cat-head walkers are
+// the exception: they ride the real city surface at their own radius (handled in stepWalkers).
+const MARK_R = 1.005;
 let footMats=[];
 function footprintRing(st){
   const rr=cityRng(st);
@@ -2755,8 +2761,8 @@ function buildScene(){
   for(const [i,j] of S.roads){
     const a=S.settlements[i].dir, b=S.settlements[j].dir;
     for(let k=0;k<18;k++){
-      const p1=slerp(a,b,k/18).multiplyScalar(1.030);
-      const p2=slerp(a,b,(k+1)/18).multiplyScalar(1.030);
+      const p1=slerp(a,b,k/18).multiplyScalar(MARK_R);
+      const p2=slerp(a,b,(k+1)/18).multiplyScalar(MARK_R);
       rp.push(p1.x,p1.y,p1.z,p2.x,p2.y,p2.z);
     }
   }
@@ -2802,12 +2808,12 @@ function buildScene(){
   const TIER_PX={megalopolis:0.062, city:0.048, village:0.034, camp:0.026};
   for(const st of S.settlements){
     const spr=makeSprite(ICONS[st.tier], TIER_PX[st.tier]);
-    spr.position.copy(st.dir).multiplyScalar(1.012);
+    spr.position.copy(st.dir).multiplyScalar(MARK_R);
     markerGroup.add(spr);
     st._spr=spr; st._px=TIER_PX[st.tier];
     /* territory outline — an organic loop hugging the surface around the town */
     const ring=footprintRing(st); st._footRing=ring;
-    const pos=[]; for(const d of ring) pos.push(d.x*1.030, d.y*1.030, d.z*1.030);
+    const pos=[]; for(const d of ring) pos.push(d.x*MARK_R, d.y*MARK_R, d.z*MARK_R);
     const fg=new THREE.BufferGeometry();
     fg.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
     const foot=new THREE.LineLoop(fg, makeFootprintMat());
@@ -2828,7 +2834,7 @@ function buildScene(){
     const st=stl(e.settlementId);
     if(!e._dir) e._dir=placeOutdoorEnterprise(st, e);
     const spr=makeSprite(ICONS[e.kind], 0.026, 0xE8CE96);
-    spr.position.copy(e._dir).multiplyScalar(1.01);
+    spr.position.copy(e._dir).multiplyScalar(MARK_R);
     markerGroup.add(spr);
     e._spr=spr;
   }
@@ -2917,7 +2923,7 @@ function animateMarkers(){
   };
   for(const st of S.settlements){
     if(!st._spr) continue;
-    put(st._spr, st.dir, 1.035);
+    put(st._spr, st.dir, MARK_R);
     if(cityLive.has(st.id)){ st._spr.material.opacity *= 0.25; }
     if(st._label){
       const showLabel = st.tier==='megalopolis' || st.tier==='city' || camDist<2.4;
@@ -2926,24 +2932,24 @@ function animateMarkers(){
       st._label.material.opacity = st._spr.material.opacity*0.95;
     }
   }
-  for(const e of S.ents) if(e._spr) put(e._spr, e._dir, 1.032);
+  for(const e of S.ents) if(e._spr) put(e._spr, e._dir, MARK_R);
   // render position is the sim's last tick blended into its current one, by elapsed
   // tick fraction — motion is continuous, not a step per tick
   for(const sq of S.squads){
     const m=squadMeshes.get(sq.id); if(!m) continue;
     sq.rdir = sq.prevDir? slerp(sq.prevDir, sq.dir, tickAlpha) : sq.dir.clone();
-    put(m, sq.rdir, 1.042);
+    put(m, sq.rdir, MARK_R);
   }
   for(const cv of S.caravans){
     const m=caravanMeshes.get(cv.id); if(!m) continue;
     cv.rdir = cv.prevDir? slerp(cv.prevDir, cv.dir, tickAlpha) : cv.dir.clone();
-    put(m, cv.rdir, 1.038);
+    put(m, cv.rdir, MARK_R);
   }
   updateCityLOD();
   updatePawns();
-  for(const pp of pawnPositions) put(pp.spr, pp.dir, 1.030);
+  for(const pp of pawnPositions) put(pp.spr, pp.dir, MARK_R);
   for(const rec of squadPawnCache.values())
-    for(const p of rec.sprites) if(p.dir) put(p.spr, p.dir, 1.036);
+    for(const p of rec.sprites) if(p.dir) put(p.spr, p.dir, MARK_R);
   // A tile stays hot (built, walkers ticking) wherever an own squad sits, but only
   // DRAW its 3-D city while it's on the near hemisphere — a far-side city behind the
   // globe is never visible, so skip its render cost. Pure visibility cull; the hot-set
@@ -2966,7 +2972,7 @@ function animateMarkers(){
         selFrame.visible=t.spr.visible;
         selFrame.material.opacity=t.spr.material.opacity;
       } else {                                        // char/org (no dedicated marker): place from the on-sphere direction
-        selFrame.position.copy(t.dir).multiplyScalar(1.045);
+        selFrame.position.copy(t.dir).multiplyScalar(MARK_R);
         const z=t.dir.clone().applyQuaternion(q).dot(_camNrm);
         selFrame.visible = z > horizon - 0.02;
         selFrame.material.opacity=Math.min(1, Math.max(0,(z-horizon+0.02)/0.08));
@@ -3406,8 +3412,8 @@ function stepWalkers(c, dtMs){
       }
       w.phase+=dtMs*0.004*sp;
     }
-    const bob=Math.sin(w.phase)*(H*0.28);
-    const lift=H*0.85 + bob;
+    const bob=Math.abs(Math.sin(w.phase))*(H*0.15);   // hop UP off the pavement only — never dip the head below street level
+    const lift=H*0.30 + bob;                           // the head now sits ON the street (was H*0.85 — a head-height of empty air below it)
     w.mesh.matrix.copy(c.orient(w.x, w.y, w.face, lift));
     w.mesh.matrixWorldNeedsUpdate=true;
     w.dir=c.dirOf(w.x, w.y);
@@ -4304,13 +4310,13 @@ addEventListener('keydown',e=>{
 /* ---- screen-space picking & hover ---- */
 const projV=new THREE.Vector3();
 function screenPos(dir, r){
-  // r = the shell radius to project at. Icon markers are drawn on the r≈1.035 shell (the
+  // r = the shell radius to project at. Icon markers are drawn on the MARK_R shell (the
   // default), so their pick sits exactly under the drawn icon. #50: cat heads are drawn on
-  // the city surface (r≈1.005), NOT the icon shell — so a walker pick must project at the
+  // the city surface, NOT the icon shell — so a walker pick must project at the
   // head's OWN radius (p.r), or an off-centre head shows a growing pick↔head parallax gap
   // (two points on one ray at different radii project apart under perspective). p.dir stays
   // the unit head direction (moveToward reuses it as a squad target), only the radius varies.
-  projV.copy(dir).multiplyScalar(r||1.035).applyQuaternion(root.quaternion);
+  projV.copy(dir).multiplyScalar(r||MARK_R).applyQuaternion(root.quaternion);
   // limb test against the actual camera axis (not just +z) so it stays correct when tilted
   const behind = projV.dot(_camNrm) < 1/camDist - 0.02;
   projV.project(camera);
@@ -4333,7 +4339,7 @@ function nearest(cx,cy){
   let best=null,bd=1e9;
   const order={char:0, resident:0, caravan:1, squad:2, enterprise:3, settlement:4};   // #50: an anonymous head ranks with an identified one
   for(const p of picks){
-    const s=screenPos(p.dir, p.r);   // #50: walker picks carry the head's own shell radius (p.r); others default 1.035
+    const s=screenPos(p.dir, p.r);   // #50: walker picks carry the head's own shell radius (p.r); others default to MARK_R
     if(s.behind) continue;
     const rpx=p.px*innerHeight*0.62;
     const d=Math.hypot(s.x-cx, s.y-cy);
