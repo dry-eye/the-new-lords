@@ -119,7 +119,9 @@ function capture(st, sq){
   const conquerorFaction=sq.factionId;
   const realm=org(conquerorFaction) || so;
   const old=org(st.ownerOrgId);
-  // REPLACE: install a fresh political org subordinate to the conqueror
+  // REPLACE: install a fresh political org subordinate to the conqueror. Founding a brand-new
+  // subordinate is cycle-safe by construction (a new org has no descendants, so it can't be its
+  // own ancestor); a future method that re-parents an EXISTING org must route via reparentOrg (#71).
   const gov=makeOrg('political','Намісництво '+st.name,{
     parentId:realm.id, factionId:realm.factionId||realm.id,
     treasury:40, leadershipType: realm.leadershipType==='mercenary'?'warlord':'monarch', cause:'settlement-capture'});
