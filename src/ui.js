@@ -812,7 +812,10 @@ function nearest(cx,cy){
   let best=null,bd=1e9;
   const order={char:0, resident:0, caravan:1, squad:2, enterprise:3, settlement:4};   // #50: an anonymous head ranks with an identified one
   for(const p of picks){
-    const s=screenPos(p.dir, p.r);   // #50: walker picks carry the head's own shell radius (p.r); others default to MARK_R
+    // #68: a screen-docked tray glyph carries its own screen point (set each frame in
+    // animateMarkers); everything else projects from its on-sphere dir as before.
+    // #50: walker picks carry the head's own shell radius (p.r); others default to MARK_R.
+    const s=p.screen || screenPos(p.dir, p.r);
     if(s.behind) continue;
     const rpx=p.px*innerHeight*0.62;
     const d=Math.hypot(s.x-cx, s.y-cy);

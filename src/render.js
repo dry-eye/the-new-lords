@@ -3,7 +3,7 @@
 
 import { ENT, RES, S, byId, chr, ent, org, sqd, stl } from './state.js';
 import { NSEED, SEA, WARP, elevation, moistureAt, placeOutdoorEnterprise, tempAt, terrainColor, terrainColorTech } from './worldgen.js';
-import { slerp } from './squads.js';
+import { CAPTURE_COS, slerp } from './squads.js';
 import { buildCity, cityRng, frameDtMs, stepWalkers } from './citygen.js';
 import { tickAlpha } from './main.js';
 
@@ -299,6 +299,24 @@ const FOOT_R = {camp:0.030, village:0.042, city:0.058, megalopolis:0.075};
 // value, so a hit target stays locked under its drawn icon at every zoom. Cat-head walkers are
 // the exception: they ride the real city surface at their own radius (handled in stepWalkers).
 const MARK_R = 1.005;
+
+/* ---------- squad tray (#68) — squads present at a settlement dock in a compact
+   horizontal row below its marker instead of stacking on (and burying) the icon.
+   Presence reuses squads.js's CAPTURE_COS (DESIGN §633 "capture zone is a fixed
+   radius ... default 20 units"), so a squad is trayed on exactly the same test that
+   makes it count for capture/defence. The row is laid out in SCREEN SPACE below the
+   settlement's projected position (see animateMarkers), so a trayed squad's free
+   marker is suppressed and its pick carries the glyph's own screen point (see
+   picks[].screen + nearest()). The tray belongs to the far/strategic zoom where
+   squad markers live; it cross-fades out toward detail zoom
+   (HOT_PAWN_DIST..HOT_SQUAD_PAWN_DIST) as squads resolve into pawns. */
+const TRAY_GLYPH     = 0.034;    // uniform tray-glyph scale (screen units), matches pick px
+const TRAY_DOCK_PX   = 6;        // gap below the settlement icon before the first row
+const TRAY_GAP_PX    = 8;        // horizontal gap between glyphs
+const TRAY_ROW_GAP_PX= 5;        // vertical gap between wrapped rows
+const TRAY_MAX_ROW_PX= 260;      // cap a row's width; wrap to another row beyond it
+const _trayAnchor=new THREE.Vector3(), _trayPos=new THREE.Vector3(), _invRootQ=new THREE.Quaternion();
+
 let footMats=[];
 function footprintRing(st){
   const rr=cityRng(st);
@@ -347,7 +365,8 @@ function makeFootprintMat(){
 }
 
 /* ---------- pick registry: screen-space picking, exact and cheap ---------- */
-let picks=[];   // {type,id,dir,px,ring} — px is the icon radius, ring the footprint
+let picks=[];   // {type,id,dir,px,ring,screen} — px is the icon radius, ring the footprint;
+                // screen={x,y,behind} overrides dir-projection for screen-docked tray glyphs (#68)
 
 /* =====================================================================
    VECTOR GLOBE — analytic ray-cast planet (replaces texture-on-mesh).
@@ -886,6 +905,20 @@ function updateMarkers(){
     e._spr.scale.setScalar(0.026*(hov?1.15:1));   // #49 selection = frame; keep a subtle hover-only cue
     picks.push({type:'enterprise', id:e.id, dir:e._dir, px:0.026});
   }
+  // #68 — group squads present at a settlement (within the capture zone) into that
+  // settlement's tray. Both teams count, so a contested settlement lists both sides.
+  // Membership keys off sq.dir (the sim position, same test the capture logic uses);
+  // the screen-space layout happens per frame in animateMarkers().
+  for(const st of S.settlements) st._trayList=null;
+  for(const sq of S.squads){
+    for(const st of S.settlements){
+      if(st._spr && sq.dir.dot(st.dir) > CAPTURE_COS){
+        (st._trayList || (st._trayList=[])).push(sq); break;
+      }
+    }
+  }
+  for(const st of S.settlements) if(st._trayList) st._trayList.sort((a,b)=>a.id-b.id);
+
   const live=new Set();
   for(const sq of S.squads){
     live.add(sq.id);
@@ -895,7 +928,14 @@ function updateMarkers(){
     m.material.color.set(factionColor(sq.factionId));
     const hov=hover && hover.type==='squad' && hover.id===sq.id;
     m.scale.setScalar((0.026+Math.min(0.016, sq.strength/900))*(hov?1.15:1));   // #49 selection = frame; keep a subtle hover-only cue
-    picks.push({type:'squad', id:sq.id, dir:sq.rdir, px:0.034});
+    // Keep faction colour + hover cue whether the squad is free or trayed. animateMarkers
+    // repositions trayed glyphs and fills in pick.screen each frame; but picks are rebuilt
+    // here on UI paths too (hoverAt/select/pickAt, between frames), so carry the last tray
+    // screen forward onto the new pick — else nearest() would momentarily hit-test the
+    // squad at its buried on-map rdir (under the icon) until the next frame refreshes it (#68).
+    const pk={type:'squad', id:sq.id, dir:sq.rdir, px:0.034};
+    if(sq._trayed && sq._pick && sq._pick.screen) pk.screen=sq._pick.screen;
+    sq._pick=pk; picks.push(pk);
   }
   for(const [id,m] of squadMeshes) if(!live.has(id)){ markerGroup.remove(m); squadMeshes.delete(id); }
 
@@ -942,7 +982,55 @@ function animateMarkers(){
   for(const sq of S.squads){
     const m=squadMeshes.get(sq.id); if(!m) continue;
     sq.rdir = sq.prevDir? slerp(sq.prevDir, sq.dir, tickAlpha) : sq.dir.clone();
+  }
+  // #68 — SQUAD TRAY. Squads present at a settlement (grouped in updateMarkers) dock in a
+  // screen-space row below its marker, dropping their free map markers so they don't bury
+  // the icon. The tray is a strategic-zoom overlay: it cross-fades out across the detail
+  // band (HOT_PAWN_DIST..HOT_SQUAD_PAWN_DIST). Below that band the tray is OFF and every
+  // present squad simply resumes its ordinary free marker — the free marker is suppressed
+  // ONLY while its tray glyph is actually shown, so a squad is never left with no marker
+  // at all (pawns only materialise inside the hot camera cone, not across the whole cap).
+  const trayFade = Math.min(1, Math.max(0, (camDist-HOT_PAWN_DIST)/(HOT_SQUAD_PAWN_DIST-HOT_PAWN_DIST)));
+  const trayOn = trayFade > 0.02;                    // tray active at all only above the fade floor
+  const present=new Set();                            // squads whose free marker is suppressed this frame
+  if(trayOn){
+    _invRootQ.copy(q).invert();
+    for(const st of S.settlements){
+      const L=st._trayList; if(!L || !L.length || !st._spr) continue;
+      // project the settlement marker to screen; the tray hangs just below its icon
+      _trayAnchor.copy(st.dir).multiplyScalar(MARK_R).applyQuaternion(q);
+      if(_trayAnchor.dot(_camNrm) < horizon - 0.02) continue;   // settlement behind the globe → no tray; squads fall to (limb-culled) free markers
+      _trayAnchor.project(camera);
+      const ndcZ=_trayAnchor.z;
+      const aX=(_trayAnchor.x*0.5+0.5)*innerWidth, aY=(-_trayAnchor.y*0.5+0.5)*innerHeight;
+      const iconR=st._px*innerHeight*0.62;           // settlement icon on-screen radius (nearest()'s convention)
+      const gR=TRAY_GLYPH*innerHeight*0.62;          // glyph on-screen radius
+      const cell=gR*2+TRAY_GAP_PX;
+      const perRow=Math.max(1, Math.min(L.length, Math.floor((TRAY_MAX_ROW_PX+TRAY_GAP_PX)/cell)));
+      const topY=aY+iconR+TRAY_DOCK_PX+gR;           // first row centre, clear of the icon (below in screen space)
+      for(let i=0;i<L.length;i++){
+        const sq=L[i], m=squadMeshes.get(sq.id); if(!m) continue;
+        present.add(sq.id);
+        const r=Math.floor(i/perRow), c=i%perRow;
+        const n=Math.min(perRow, L.length-r*perRow);
+        const gx=aX-((n-1)*cell)/2 + c*cell;
+        const gy=topY + r*(gR*2+TRAY_ROW_GAP_PX);
+        _trayPos.set(gx/innerWidth*2-1, -(gy/innerHeight*2-1), ndcZ).unproject(camera).applyQuaternion(_invRootQ);
+        m.position.copy(_trayPos);
+        const hov=hover && hover.type==='squad' && hover.id===sq.id;
+        m.scale.setScalar(TRAY_GLYPH*(hov?1.14:1));
+        m.visible=true;
+        m.material.opacity=trayFade;                 // cross-fades out toward the detail band
+        if(sq._pick) sq._pick.screen={x:gx, y:gy, behind:false};   // pick tests against the docked glyph, not sq.dir
+        sq._trayed=true;
+      }
+    }
+  }
+  for(const sq of S.squads){                         // free markers for every squad NOT currently trayed
+    const m=squadMeshes.get(sq.id); if(!m || present.has(sq.id)) continue;
     put(m, sq.rdir, MARK_R);
+    if(sq._pick) sq._pick.screen=null;               // pick falls back to sq.rdir projection
+    sq._trayed=false;
   }
   for(const cv of S.caravans){
     const m=caravanMeshes.get(cv.id); if(!m) continue;
