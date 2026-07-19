@@ -1,0 +1,35 @@
+# Guards the generated bundle: new-lords-prototype.html is built from src/*.js by
+# build-bundle.mjs. git merges per-file and has no idea the HTML is *derived* from
+# src/, so a PR that changes src/ without re-running the build (or an older bundle
+# landing over newer src/ via parallel merges) can silently ship a stale HTML — the
+# game then opens but shows old code. This job rebuilds from src/ and fails if the
+# committed HTML differs, so a stale bundle cannot be merged.
+#
+# To make this actually BLOCK a merge (not just show red), make it a required check:
+# repo Settings → Branches → add/edit a protection rule for `main` →
+# "Require status checks to pass before merging" → select "bundle in sync".
+name: bundle-check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  bundle-in-sync:
+    name: bundle in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Rebuild the bundle from src/
+        run: node build-bundle.mjs
+      - name: Fail if the committed HTML is out of date with src/
+        run: |
+          if ! git diff --ignore-cr-at-eol --exit-code -- new-lords-prototype.html; then
+            echo "::error file=new-lords-prototype.html::Bundle is stale — new-lords-prototype.html does not match src/. Run 'node build-bundle.mjs' and commit the regenerated HTML."
+            exit 1
+          fi
+          echo "Bundle matches src/. ✓"
