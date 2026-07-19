@@ -377,6 +377,7 @@ let drag=false,px=0,py=0;
 canvas.addEventListener('pointerdown',e=>{
   if(e.button===1){e.preventDefault();drag=true;px=e.clientX;py=e.clientY;}          // MMB = orbit
   else if(e.button===0){ selBox={x0:e.clientX,y0:e.clientY,x1:e.clientX,y1:e.clientY,shift:e.shiftKey,moved:0}; }  // LMB = RTS box-select
+  else if(e.button===2){ e.preventDefault(); const p=screenToPoly(e.clientX,e.clientY); if(p) issueMove(p.x,p.y); }   // RMB = move the selected group
 });
 addEventListener('pointermove',e=>{
   if(drag){ camTheta-=(e.clientX-px)*0.005; camPhi=Math.max(0.15,Math.min(1.45,camPhi-(e.clientY-py)*0.005)); px=e.clientX; py=e.clientY; updateCam(); return; }
@@ -391,12 +392,17 @@ addEventListener('pointerup',e=>{
   }
 });
 canvas.addEventListener('wheel',e=>{e.preventDefault();camR=Math.max(300,Math.min(4000,camR*(1+Math.sign(e.deltaY)*0.1)));updateCam();},{passive:false});
+canvas.addEventListener('contextmenu',e=>e.preventDefault());   // RMB is a move order, not the browser menu
 function resize(){camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);}
 addEventListener('resize',resize);resize();updateCam();
 let lastW=0,lastH=0;
-(function loop(){requestAnimationFrame(loop);
+let _lt=0;
+function loop(t){requestAnimationFrame(loop);
+  const dt=_lt?Math.min(0.05,(t-_lt)/1000):0.016; _lt=t;
   if(innerWidth!==lastW||innerHeight!==lastH){lastW=innerWidth;lastH=innerHeight;resize();} // sync late/odd sizing (in-app preview)
-  renderer.render(scene,camera);})();
+  if(units.length) stepUnits(dt);        // #20: advance ordered cats along their flow field
+  renderer.render(scene,camera);}
+requestAnimationFrame(loop);             // async first tick — runs after units[] below is declared
 
 /* ==================== UNITS (cats) + RTS BOX-SELECT (#20) ==================== */
 let UNIT_COUNT=40;
@@ -447,6 +453,75 @@ function selectInBox(){
     if(sx>=minx&&sx<=maxx&&sy>=miny&&sy<=maxy) u.selected=true;
   }
   applySel();
+}
+
+/* ---- pathfinding (flow field over free hexes) + move orders ---- */
+const HEX_DIRS=[[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
+let SPEED=60;                                     // cat speed, metres/second
+function axialRound(qf,rf){
+  let x=qf, z=rf, y=-x-z, rx=Math.round(x), ry=Math.round(y), rz=Math.round(z);
+  const dx=Math.abs(rx-x),dy=Math.abs(ry-y),dz=Math.abs(rz-z);
+  if(dx>dy&&dx>dz) rx=-ry-rz; else if(dy>dz) ry=-rx-rz; else rz=-rx-ry;
+  return [rx,rz];
+}
+function nearestFree(grid,q,r){
+  const c0=grid.cells.get(q+','+r); if(c0&&!c0.blocked) return c0;
+  for(let rad=1;rad<30;rad++) for(let dq=-rad;dq<=rad;dq++) for(let dr=-rad;dr<=rad;dr++){
+    if(Math.max(Math.abs(dq),Math.abs(dr),Math.abs(dq+dr))!==rad) continue;
+    const c=grid.cells.get((q+dq)+','+(r+dr)); if(c&&!c.blocked) return c;
+  }
+  return null;
+}
+function cellAtPoly(grid,px,py){
+  const s=grid.size, rf=py/(s*1.5), qf=px/(s*Math.sqrt(3))-rf/2, a=axialRound(qf,rf);
+  return nearestFree(grid,a[0],a[1]);
+}
+// BFS from the goal over free cells -> steps-to-goal map (one solve serves the whole group)
+function buildFlow(grid,goal){
+  const dist=new Map(); dist.set(goal.q+','+goal.r,0); let frontier=[goal];
+  while(frontier.length){ const next=[];
+    for(const c of frontier){ const d=dist.get(c.q+','+c.r);
+      for(const dir of HEX_DIRS){ const nk=(c.q+dir[0])+','+(c.r+dir[1]);
+        if(dist.has(nk)) continue; const nc=grid.cells.get(nk);
+        if(nc&&!nc.blocked){ dist.set(nk,d+1); next.push(nc); } } }
+    frontier=next; }
+  return dist;
+}
+let targetMarker=null;
+function showTarget(cell){
+  if(!targetMarker){ targetMarker=new THREE.Mesh(new THREE.RingGeometry(6,9,26),
+    new THREE.MeshBasicMaterial({color:0xffcc44,side:THREE.DoubleSide,transparent:true,opacity:0.9}));
+    targetMarker.rotation.x=-Math.PI/2; scene.add(targetMarker); }
+  targetMarker.position.set(cell.x,1.2,-cell.y); targetMarker.visible=true;
+}
+function issueMove(px,py){
+  const target=cellAtPoly(navGrid,px,py); if(!target) return 0;
+  const flow=buildFlow(navGrid,target); let n=0;
+  for(const u of units){ if(u.selected){ u.flow=flow; n++; } }
+  if(n) showTarget(target);
+  return n;
+}
+// advance every ordered cat one frame along its flow field toward the goal
+function stepUnits(dt){
+  for(const u of units){
+    if(!u.flow) continue;
+    const curD=u.flow.get(u.q+','+u.r);
+    if(curD===undefined||curD===0){ u.flow=null; continue; }          // arrived or stranded
+    let bestK=null, bd=curD;
+    for(const dir of HEX_DIRS){ const nk=(u.q+dir[0])+','+(u.r+dir[1]); const d=u.flow.get(nk); if(d!==undefined&&d<bd){bd=d;bestK=nk;} }
+    if(bestK===null){ u.flow=null; continue; }
+    const tc=navGrid.cells.get(bestK), dx=tc.x-u.x, dy=tc.y-u.y, dd=Math.hypot(dx,dy)||1, mv=SPEED*dt;
+    if(dd<=mv){ u.x=tc.x; u.y=tc.y; u.q=tc.q; u.r=tc.r; }              // reached the next cell centre
+    else { u.x+=dx/dd*mv; u.y+=dy/dd*mv; }
+    u.mesh.position.set(u.x,6,-u.y);
+  }
+}
+// screen -> ground plane -> poly (x,y)
+const _ray=new THREE.Raycaster(), _plane=new THREE.Plane(new THREE.Vector3(0,1,0),0), _hit=new THREE.Vector3();
+function screenToPoly(sx,sy){
+  _ray.setFromCamera({x:(sx/innerWidth)*2-1, y:-(sy/innerHeight)*2+1}, camera);
+  if(!_ray.ray.intersectPlane(_plane,_hit)) return null;
+  return {x:_hit.x, y:-_hit.z};                                        // world.z = -poly.y
 }
 
 /* ---- UI ---- */
