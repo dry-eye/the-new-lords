@@ -379,6 +379,26 @@ zone-tessellation, road-network, and settlement-placement pipeline below is othe
 runs entirely within that one landmass's bounds, just projected onto a curved surface instead of an unbounded
 flat plane.
 
+**Single-landmass constraint, refined.** "A single reachable landmass" means one *genuinely land-connected*
+continent: the connectivity test that selects it must follow real land adjacency (a chain of touching land),
+never bridging a narrow ocean strait between two separate continents just because their samples fall close
+together — otherwise settlements scatter across several landmasses that only look joined. Every settlement site
+is constrained to that one continent.
+
+Roads and adjacency then connect only settlements reachable **over land**: a link whose great-circle arc would
+run out across open ocean is not created — settlements connect through land-staying neighbours instead, so the
+road graph hugs the continent rather than arcing across the sea between distant coasts (a straight
+nearest-neighbour link on a non-convex, C-shaped continent would otherwise cut straight across open water with
+land only at its two ends). Crossing a narrow inlet within the continent is acceptable; arcing across open
+ocean is not. This is a worldgen placement rule, not a change to ocean's nature — ocean stays a non-blocking
+visual backdrop (above); the rule only keeps worldgen from laying roads out over open sea. Extra continents
+remain unpopulated, unreachable backdrop, as above.
+
+**Deferred refinements:** biasing worldgen toward a single *compact* continent (so straight links rarely reach
+water at all), and true coast-following curved roads that hug the shoreline, are both possible later polish —
+neither is required for v1, which only needs one genuinely-connected continent and a road graph that stays on
+land.
+
 ### Foundational content
 
 Some worldgen output is fixed up front as the base the rest of the system builds on:
