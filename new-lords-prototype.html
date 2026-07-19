@@ -3217,15 +3217,31 @@ function generatePCGTown(st){
   for(const p of parks) for(const t of pcgScatter(p,prof.treeDens,rnd)) trees.push(t);
   // explicit local STREET GRAPH — nodes sit in the road ring just outside every lot (metres)
   let graph = buildStreetGraph(lots, prof.roadLocal, off);
-  // hard guarantee (#64): drop any street node that lands inside a building box (a handful
-  // at irregular district seams), rewiring adjacency — a cat waypoint is NEVER in a building.
+  // hard guarantee (#64): a cat hops node -> ADJACENT node in a STRAIGHT LINE, so both the
+  // nodes AND the edges between them must clear the buildings. Node-only filtering left ~1-9%
+  // of edges clipping a house corner (cats cut through a building between waypoints), so:
+  //   (a) drop any node inside a building box; (b) drop any surviving EDGE whose segment
+  // crosses a building box. Both passes rewire adjacency — a walked path is NEVER in a house.
   {
     const inBox=p=>buildings.some(b=>{ const dx=p.x-b.cx,dy=p.y-b.cy,c=Math.cos(b.ang),s=Math.sin(b.ang);
       const u=dx*c+dy*s, v=-dx*s+dy*c; return Math.abs(u)<=b.w/2 && Math.abs(v)<=b.d/2; });
+    // exact segment vs oriented-box overlap (Liang–Barsky slab clip in box-local space)
+    const segHitsBox=(p,q,b)=>{ const c=Math.cos(b.ang),s=Math.sin(b.ang);
+      const au=(p.x-b.cx)*c+(p.y-b.cy)*s, av=-(p.x-b.cx)*s+(p.y-b.cy)*c;
+      const du=((q.x-b.cx)*c+(q.y-b.cy)*s)-au, dv=(-(q.x-b.cx)*s+(q.y-b.cy)*c)-av, hw=b.w/2, hd=b.d/2;
+      let t0=0,t1=1;
+      const clip=(pp,qq)=>{ if(Math.abs(pp)<1e-9) return qq>=0; const r=qq/pp;
+        if(pp<0){ if(r>t1) return false; if(r>t0) t0=r; } else { if(r<t0) return false; if(r<t1) t1=r; } return true; };
+      if(!clip(-du,au+hw)||!clip(du,hw-au)||!clip(-dv,av+hd)||!clip(dv,hd-av)) return false;
+      return t0<=t1; };
+    const edgeClear=(p,q)=>!buildings.some(b=>segHitsBox(p,q,b));
     const remap=new Array(graph.nodes.length).fill(-1), keep=[];
-    graph.nodes.forEach((p,i)=>{ if(!inBox(p)){ remap[i]=keep.length; keep.push(i); } });
+    graph.nodes.forEach((p,i)=>{ if(!inBox(p)){ remap[i]=keep.length; keep.push(i); } });      // (a)
     const nodes=keep.map(i=>graph.nodes[i]);
-    const adj=keep.map(i=>graph.adj[i].map(j=>remap[j]).filter(j=>j>=0));
+    const pruned=keep.map(i=>graph.adj[i].map(j=>remap[j]).filter(j=>j>=0));
+    const adj=nodes.map(()=>[]);
+    for(let i=0;i<nodes.length;i++) for(const j of pruned[i]){ if(j<=i) continue;              // (b)
+      if(edgeClear(nodes[i],nodes[j])){ adj[i].push(j); adj[j].push(i); } }
     graph = nodes.length ? {nodes, adj} : {nodes:[{x:0,y:0}], adj:[[]]};
   }
 
@@ -3494,7 +3510,11 @@ function buildCity(st, maxResidents=48){
   const nextWaypoint=(w)=>{
     const n=NODES.length; if(!n) return {x:0,y:0};
     const a=(w && w.node!=null) ? G.adj[w.node] : null;
-    let ni = (a && a.length) ? a[(Math.random()*a.length)|0] : (Math.random()*n)|0;
+    // hop to an ADJACENT node (a building-free graph edge). If the current node is isolated
+    // (its edges were pruned as building-crossing), IDLE on it — never teleport to a random
+    // far node, which would draw a straight line across town THROUGH buildings (#64).
+    let ni = (a && a.length) ? a[(Math.random()*a.length)|0]
+           : (w && w.node!=null ? w.node : (Math.random()*n)|0);
     if(w) w.node=ni;
     const p=NODES[ni]; return {x:p.x, y:p.y};
   };
@@ -3534,7 +3554,7 @@ function stepWalkers(c, dtMs){
   for(const w of c.walkers){
     if(sp>0){
       const dx=w.tgt.x-w.x, dy=w.tgt.y-w.y, d=Math.hypot(dx,dy);
-      if(d<0.02){ w.tgt=c.nextWaypoint(w); }        // reached the node -> hop to an adjacent one (graph edge)
+      if(d<0.006){ w.x=w.tgt.x; w.y=w.tgt.y; w.tgt=c.nextWaypoint(w); }   // SNAP exactly onto the node, then hop to an adjacent one — the walked path stays ON the (building-free) graph edges and never cuts a corner into a house (#64)
       else{
         const mv=Math.min(d, w.spd*dtMs*0.001*sp);
         w.x+=dx/d*mv; w.y+=dy/d*mv; w.face=Math.atan2(dy,dx);
