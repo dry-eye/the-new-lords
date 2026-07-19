@@ -1,7 +1,7 @@
 // New Lords — main.js — bootstrap + wiring: tick orchestration, main loop, window test surface
 // Auto-split from new-lords-prototype.html (#65). Entry module; THREE is the global r128.
 
-import { S, STEP } from './state.js';
+import { EXPERIENCES, FLAGS, S, STEP, applyExperience, flag } from './state.js';
 import { caravanStep, economyStep, teleTick } from './economy.js';
 import { generate } from './worldgen.js';
 import { orgStep } from './orgs.js';
@@ -79,6 +79,9 @@ requestAnimationFrame(()=>setTimeout(()=>{
 // so re-expose every module's exports on window to preserve that surface exactly.
 Object.assign(window, _state, _economy, _worldgen, _orgs, _squads, _citygen, _render, _ui);
 Object.assign(window, { tick, frame });
+// Experience framework surface — explicit so page-eval verification and future tasks can reach it
+// (also covered by the _state spread above; kept explicit to document the public API).
+Object.assign(window, { applyExperience, flag, FLAGS, EXPERIENCES });
 
 export {
   acc, frame, last, tick, tickAlpha,

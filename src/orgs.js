@@ -1,7 +1,7 @@
 // New Lords — orgs.js — organization utility AI, slots, loyalty, succession, org-graph layout
 // Auto-split from new-lords-prototype.html (#65). THREE is the global from the classic r128 script.
 
-import { EKEYS, ENT, S, TIER, TIER_SCALE, chance, chr, ent, logEvent, org, pick, rint, rnd, stl } from './state.js';
+import { EKEYS, ENT, S, TIER, TIER_SCALE, chance, chr, ent, flag, logEvent, org, pick, rint, rnd, stl } from './state.js';
 import { teleEvent } from './economy.js';
 import { createEnterprise, makeChar, makeEdge, orgUtility, setLeader, spawnCaravan, spawnSquad } from './worldgen.js';
 
@@ -29,6 +29,7 @@ function orgManagement(o){
   return (L?L.skills.management:0) + (A? Math.round(A.skills.management*0.5):0);
 }
 function orgStep(){
+  if(!flag('orgs')) return;   // Experience gate: orgs off ⇒ no org utility-AI / salaries / upkeep / succession / revolt
   const byFrom=new Map();
   for(const e of S.edges){
     if(!['control','influence','investment'].includes(e.kind)) continue;

@@ -1,7 +1,7 @@
 // New Lords — economy.js — production, trade, caravans, balance telemetry
 // Auto-split from new-lords-prototype.html (#65). THREE is the global from the classic r128 script.
 
-import { ENT, FOOD_PER_1K, LEADERSHIP, RES, RKEYS, S, SKILLS, SQUAD_FOOD, SQUAD_WEAPONS, STEP, TIER, TIER_SCALE, TOOL_WEAR, TRAITS, chance, chr, ent, logEvent, org } from './state.js';
+import { ENT, FOOD_PER_1K, LEADERSHIP, RES, RKEYS, S, SKILLS, SQUAD_FOOD, SQUAD_WEAPONS, STEP, TIER, TIER_SCALE, TOOL_WEAR, TRAITS, chance, chr, ent, flag, logEvent, org } from './state.js';
 import { spawnCaravan } from './worldgen.js';
 import { orgPower } from './orgs.js';
 import { hostile, slerp } from './squads.js';
@@ -543,6 +543,7 @@ function priceOf(st,r){
 }
 
 function economyStep(){
+  if(!flag('economy')) return;   // Experience gate: economy off ⇒ no production / consumption / prices / tax
   for(const st of S.settlements){
     recomputeTargets(st);
     for(const r of RKEYS){ st.net[r]=0; st.gross[r]=[0,0]; }
@@ -690,6 +691,7 @@ function bestTrade(cv, house){
   return best;
 }
 function caravanStep(){
+  if(!flag('trade')) return;   // Experience gate: trade off ⇒ no caravan arbitrage / movement / trade-house growth
   for(const cv of S.caravans){
     const house=org(cv.orgId);
     if(!house){cv.dead=true;continue;}

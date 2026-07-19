@@ -82,6 +82,7 @@ const S = {
   settlements:[], orgs:[], chars:[], squads:[], caravans:[], ents:[], edges:[],
   roads:[], adj:[], factions:[], events:[],
   playerCharId:null, selection:null,
+  experience:null, experienceTuning:{},   // active Experience (null = none chosen = full game)
   nextId:1,
 };
 const uid = ()=>S.nextId++;
@@ -91,6 +92,48 @@ const chr = id=>byId(S.chars,id);
 const stl = id=>byId(S.settlements,id);
 const sqd = id=>byId(S.squads,id);
 const ent = id=>byId(S.ents,id);
+
+/* =====================================================================
+   FEATURE FLAGS & EXPERIENCES — DESIGN.md → "Experience-driven architecture"
+   Every gated feature is a named flag; an Experience is a named flag-set (plus
+   an optional scenario, player role, and tuning overrides). "No Experience
+   chosen" = every flag on = the full game, so gating with all flags on must be
+   byte-identical to no framework at all (a hard invariant — verified by contrast).
+
+   Bounded first pass (#74): only the observable canaries are flagged —
+   economy / orgs / trade. Squads / combat / movement stay ungated (always on).
+   Flagging the remaining features is deferred incremental follow-up, not this task.
+   ===================================================================== */
+const FLAG_DEFAULTS = { economy:true, orgs:true, trade:true };
+const FLAGS = Object.assign({}, FLAG_DEFAULTS);   // live flag-set, mutated only by applyExperience()
+// Fail-open to the full game: a flag that is unset (or not explicitly false) reads as ON.
+const flag = name => FLAGS[name] !== false;
+
+const EXPERIENCES = {
+  // The full game: every flag on. Behaves identically to choosing no Experience.
+  default: {
+    label:'Повна гра', scenario:null, playerRole:null, tuning:{},
+    flags:{ economy:true, orgs:true, trade:true },
+  },
+  // Minimal verification fixture — a squads-only slice. Economy / orgs / trade OFF;
+  // squads / combat / movement are ungated, so they keep running in this Experience too.
+  skirmish: {
+    label:'Сутичка — лише загони', scenario:'squads-only', playerRole:'squad', tuning:{},
+    flags:{ economy:false, orgs:false, trade:false },
+  },
+};
+
+// Set the active flag-set from an Experience. Unknown / blank name ⇒ the default
+// (full game). Pure state assignment — consumes no RNG and touches no world state —
+// so applying an Experience never perturbs worldgen.
+function applyExperience(name){
+  const exp = EXPERIENCES[name] || EXPERIENCES.default;
+  for(const k in FLAG_DEFAULTS) FLAGS[k] = FLAG_DEFAULTS[k];   // reset every flag to the full game
+  for(const k in exp.flags)     FLAGS[k] = exp.flags[k];       // then apply this Experience's overrides
+  S.experience = EXPERIENCES[name] ? name : 'default';
+  S.experienceTuning = exp.tuning || {};
+  return S.experience;
+}
 
 function logEvent(html){
   S.events.unshift({t:S.tick,html});
@@ -108,8 +151,8 @@ const STEP=420;                       // one simulation step, in ms of game time
 export function reseedRNG(seed){ RNG=mulberry32(seed>>>0); }
 
 export {
-  EKEYS, ENT, FOOD_PER_1K, KIND_LABEL, LEADERSHIP, LT_LABEL, NAME_A, NAME_B, ORG_A, PER_A, PER_B, RES,
+  EKEYS, ENT, EXPERIENCES, FLAGS, FLAG_DEFAULTS, FOOD_PER_1K, KIND_LABEL, LEADERSHIP, LT_LABEL, NAME_A, NAME_B, ORG_A, PER_A, PER_B, RES,
   RKEYS, RNG, S, SKILLS, SKILL_LABEL, SQUAD_FOOD, SQUAD_WEAPONS, STEP, TIER, TIER_SCALE, TOOL_WEAR, TRAITS,
-  TRAIT_UTIL, ZONE, byId, chance, chr, ent, logEvent, mulberry32, org, pick, renderLog, rint,
+  TRAIT_UTIL, ZONE, applyExperience, byId, chance, chr, ent, flag, logEvent, mulberry32, org, pick, renderLog, rint,
   rnd, sqd, stl, uid,
 };
