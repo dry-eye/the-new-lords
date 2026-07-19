@@ -1959,8 +1959,7 @@ function decide(o){
     }
     case 'SeekIndependence': {
       const p=org(o.parentId);
-      S.edges=S.edges.filter(e=>!(e.kind==='hierarchy'&&e.to===o.id));
-      o.parentId=null; o.factionId=o.id;
+      reparentOrg(o, null); o.factionId=o.id;          // guarded re-parent to independent (#71)
       if(!S.factions.find(f=>f.id===o.id)) S.factions.push({id:o.id, orgId:o.id, color:'#9AA7C0'});
       logEvent('⚑ <span class="link" data-sel="org:'+o.id+'">'+o.name+'</span> проголосив незалежність від <b>'+(p?p.name:'?')+'</b>.');
       // telemetry: political event — a secession attempt (this path always succeeds) + became independent
@@ -1983,6 +1982,38 @@ function decide(o){
   }
 }
 
+/* =====================================================================
+   HIERARCHY RE-PARENT GUARD (#71)
+   The org-parent hierarchy is a pure acyclic containment tree (DESIGN §22).
+   Any op that reassigns an org's parentId — secession, throne-seizure/claimant,
+   kind mutation, founding a subordinate — must route through reparentOrg so an
+   org can never become its own ancestor; a cycle would otherwise recurse forever
+   in the org-graph layout (radialTreePlace) and crash it.
+   ===================================================================== */
+// Would setting o.parentId=newParentId make o its own ancestor (i.e. close a cycle)?
+// Walk up the target's ancestry via parentId; refuse if it reaches o. null never cycles.
+function reparentWouldCycle(o, newParentId){
+  if(newParentId==null) return false;                   // becoming independent can't cycle
+  if(newParentId===o.id) return true;                   // an org cannot be its own parent
+  let cur=org(newParentId), guard=0;
+  while(cur && guard++<100000){
+    if(cur.id===o.id) return true;                      // o sits above the target → would loop
+    cur = cur.parentId!=null ? org(cur.parentId) : null;
+  }
+  return false;
+}
+// Re-parent o under newParentId (null = independent), keeping the mirrored hierarchy edge
+// in sync. Refuses (returns false, mutates nothing) any change that would make the hierarchy
+// cyclic. Callers keep their own faction/telemetry/log bookkeeping for the event they model.
+function reparentOrg(o, newParentId){
+  if(!o) return false;
+  if(reparentWouldCycle(o, newParentId)) return false;
+  o.parentId = newParentId;
+  S.edges = S.edges.filter(e=>!(e.kind==='hierarchy' && e.to===o.id));
+  if(newParentId!=null) makeEdge('hierarchy', newParentId, o.id);
+  return true;
+}
+
 function successionAndRevolt(){
   for(const c of S.chars){
     if(!c.alive || !c.ledOrgId) continue;
@@ -2003,8 +2034,7 @@ function successionAndRevolt(){
         const legit = (heir.skills.management+heir.skills.social)/24;
         const p = 0.10 + (100-sub.loyalty)/300 - legit*0.25;
         if(chance(Math.max(0,p))){
-          sub.parentId=null; sub.factionId=sub.id;
-          S.edges=S.edges.filter(e=>!(e.kind==='hierarchy'&&e.to===sub.id));
+          reparentOrg(sub, null); sub.factionId=sub.id;   // guarded re-parent to independent (#71)
           if(!S.factions.find(f=>f.id===sub.id)) S.factions.push({id:sub.id, orgId:sub.id, color:'#9AA7C0'});
           logEvent('⚔ Криза спадкоємства: <b>'+sub.name+'</b> відколовся від <b>'+o.name+'</b>.');
           // telemetry: political event — succession crisis (successor type + legitimacy score)
@@ -2036,8 +2066,7 @@ function successionAndRevolt(){
     o.loyalty=Math.max(0,Math.min(100,o.loyalty));
     if(o.loyalty<12 && chance(0.02)){
       const fromId=p.id;
-      o.parentId=null; o.factionId=o.id;
-      S.edges=S.edges.filter(e=>!(e.kind==='hierarchy'&&e.to===o.id));
+      reparentOrg(o, null); o.factionId=o.id;          // guarded re-parent to independent (#71)
       if(!S.factions.find(f=>f.id===o.id)) S.factions.push({id:o.id, orgId:o.id, color:'#9AA7C0'});
       logEvent('⚑ <b>'+o.name+'</b> вийшов з-під <b>'+p.name+'</b> — лояльність вичерпана.');
       // telemetry: political event — secession driven by exhausted loyalty (always succeeds here)
@@ -2048,15 +2077,37 @@ function successionAndRevolt(){
 }
 
 /* radial tree layout of one cluster: root at its centre, children fanned by subtree
-   size so the hierarchy edges of a faction never cross each other. Fills `homes`. */
+   size so the hierarchy edges of a faction never cross each other. Fills `homes`.
+   Cycle-safe (#71): the org-parent hierarchy is meant to be an acyclic containment tree
+   (DESIGN §22), but a buggy re-parent can make an org transitively its own descendant.
+   Both walks below break such a back-edge instead of recursing forever — `leaves` treats
+   an in-progress id as a leaf, and `place` positions each id once. `leaves` is memoized
+   (id→count), so subtree sizes are O(n) rather than the old exponential per-node recompute.
+   For a well-formed acyclic tree these guards never fire, so the layout is unchanged. */
 function radialTreePlace(root, memberSet, childrenOf, cx, cy, homes){
   const RING=44;
   const kids=id=>(childrenOf.get(id)||[]).filter(c=>memberSet.has(c));
-  const leaves=id=>{ const ch=kids(id); if(!ch.length) return 1; let s=0; for(const c of ch) s+=leaves(c); return s; };
+  // leaf-count of a subtree; `inStack` cuts a cycle (a back-edge counts as one leaf),
+  // `leafCache` memoizes so each subtree is summed once.
+  const leafCache=new Map(), inStack=new Set();
+  const leaves=id=>{
+    const cached=leafCache.get(id); if(cached!==undefined) return cached;
+    if(inStack.has(id)) return 1;                       // cycle back-edge → treat as a leaf
+    inStack.add(id);
+    const ch=kids(id);
+    let s=0; if(!ch.length) s=1; else for(const c of ch) s+=leaves(c);
+    inStack.delete(id);
+    leafCache.set(id, s);
+    return s;
+  };
+  // position each id exactly once; a child already placed is a cycle back-edge → skip it.
+  const placed=new Set();
   const place=(id, depth, a0, a1)=>{
+    if(placed.has(id)) return;
+    placed.add(id);
     const ang=(a0+a1)/2, r=depth*RING;
     homes.set(id, {x:cx+Math.cos(ang)*r, y:cy+Math.sin(ang)*r, depth, ang});
-    const ch=kids(id); if(!ch.length) return;
+    const ch=kids(id).filter(c=>!placed.has(c)); if(!ch.length) return;
     const tot=ch.reduce((s,c)=>s+leaves(c),0)||1;
     let a=a0;
     for(const c of ch){ const na=a+(a1-a0)*(leaves(c)/tot); place(c, depth+1, a, na); a=na; }
@@ -2073,6 +2124,12 @@ function radialTreePlace(root, memberSet, childrenOf, cx, cy, homes){
 // New Lords — squads.js — combat, movement, capture
 // Auto-split from new-lords-prototype.html (#65). THREE is the global from the classic r128 script.
 
+
+// A squad is "at" a settlement when within its capture zone — a fixed radius around the
+// site (DESIGN §633, default 20 units). On the unit sphere that is dir·dir > this cos.
+// Shared so the settlement squad-tray (#68, render.js) groups on exactly the same test
+// the capture/defence logic uses here — presence and capture never disagree.
+const CAPTURE_COS = 0.9997;
 
 /* =====================================================================
    SQUADS — movement, minimal combat, capture
@@ -2115,9 +2172,9 @@ function squadStep(){
     const so=org(sq.orgId); if(!so) continue;
     if(sq.mode==='manual' && sq.order!=='move') { /* manual squads wait for orders */ }
     // capture progress
-    const here=S.settlements.find(s=>s.dir.dot(sq.dir)>0.9997);
+    const here=S.settlements.find(s=>s.dir.dot(sq.dir)>CAPTURE_COS);
     if(here && hostile(sq.factionId, org(here.ownerOrgId)?.factionId)){
-      const defenders=S.squads.filter(s=>s!==sq && s.dir.dot(here.dir)>0.9997 &&
+      const defenders=S.squads.filter(s=>s!==sq && s.dir.dot(here.dir)>CAPTURE_COS &&
         !hostile(s.factionId, org(here.ownerOrgId)?.factionId));
       if(!defenders.length){
         here.contest++;
@@ -2137,7 +2194,7 @@ function squadStep(){
     const cands=S.settlements.map(st=>{
       const own=org(st.ownerOrgId);
       if(!own || !hostile(sq.factionId, own.factionId)) return null;
-      const def=S.squads.filter(s=>s.dir.dot(st.dir)>0.9997 && !hostile(s.factionId, own.factionId))
+      const def=S.squads.filter(s=>s.dir.dot(st.dir)>CAPTURE_COS && !hostile(s.factionId, own.factionId))
         .reduce((a,s)=>a+s.strength,0);
       if(def >= sq.strength) return null;   // veto: never attack when weaker
       const d=1-sq.dir.dot(st.dir);
@@ -2149,7 +2206,7 @@ function squadStep(){
       sq.targetName=cands[0].st.name;
     } else {
       const home=stl(sq.homeId);
-      if(home && sq.dir.dot(home.dir)<0.9997){ sq.target=home.dir.clone(); sq.order='return'; }
+      if(home && sq.dir.dot(home.dir)<CAPTURE_COS){ sq.target=home.dir.clone(); sq.order='return'; }
       else { sq.order='garrison'; sq.garrisonId=sq.homeId; }
     }
   }
@@ -2187,7 +2244,9 @@ function capture(st, sq){
   const conquerorFaction=sq.factionId;
   const realm=org(conquerorFaction) || so;
   const old=org(st.ownerOrgId);
-  // REPLACE: install a fresh political org subordinate to the conqueror
+  // REPLACE: install a fresh political org subordinate to the conqueror. Founding a brand-new
+  // subordinate is cycle-safe by construction (a new org has no descendants, so it can't be its
+  // own ancestor); a future method that re-parents an EXISTING org must route via reparentOrg (#71).
   const gov=makeOrg('political','Намісництво '+st.name,{
     parentId:realm.id, factionId:realm.factionId||realm.id,
     treasury:40, leadershipType: realm.leadershipType==='mercenary'?'warlord':'monarch', cause:'settlement-capture'});
@@ -3103,6 +3162,24 @@ const FOOT_R = {camp:0.030, village:0.042, city:0.058, megalopolis:0.075};
 // value, so a hit target stays locked under its drawn icon at every zoom. Cat-head walkers are
 // the exception: they ride the real city surface at their own radius (handled in stepWalkers).
 const MARK_R = 1.005;
+
+/* ---------- squad tray (#68) — squads present at a settlement dock in a compact
+   horizontal row below its marker instead of stacking on (and burying) the icon.
+   Presence reuses squads.js's CAPTURE_COS (DESIGN §633 "capture zone is a fixed
+   radius ... default 20 units"), so a squad is trayed on exactly the same test that
+   makes it count for capture/defence. The row is laid out in SCREEN SPACE below the
+   settlement's projected position (see animateMarkers), so a trayed squad's free
+   marker is suppressed and its pick carries the glyph's own screen point (see
+   picks[].screen + nearest()). The tray belongs to the far/strategic zoom where
+   squad markers live; it cross-fades out toward detail zoom
+   (HOT_PAWN_DIST..HOT_SQUAD_PAWN_DIST) as squads resolve into pawns. */
+const TRAY_GLYPH     = 0.034;    // uniform tray-glyph scale (screen units), matches pick px
+const TRAY_DOCK_PX   = 6;        // gap below the settlement icon before the first row
+const TRAY_GAP_PX    = 8;        // horizontal gap between glyphs
+const TRAY_ROW_GAP_PX= 5;        // vertical gap between wrapped rows
+const TRAY_MAX_ROW_PX= 260;      // cap a row's width; wrap to another row beyond it
+const _trayAnchor=new THREE.Vector3(), _trayPos=new THREE.Vector3(), _invRootQ=new THREE.Quaternion();
+
 let footMats=[];
 function footprintRing(st){
   const rr=cityRng(st);
@@ -3151,7 +3228,8 @@ function makeFootprintMat(){
 }
 
 /* ---------- pick registry: screen-space picking, exact and cheap ---------- */
-let picks=[];   // {type,id,dir,px,ring} — px is the icon radius, ring the footprint
+let picks=[];   // {type,id,dir,px,ring,screen} — px is the icon radius, ring the footprint;
+                // screen={x,y,behind} overrides dir-projection for screen-docked tray glyphs (#68)
 
 /* =====================================================================
    VECTOR GLOBE — analytic ray-cast planet (replaces texture-on-mesh).
@@ -3690,6 +3768,20 @@ function updateMarkers(){
     e._spr.scale.setScalar(0.026*(hov?1.15:1));   // #49 selection = frame; keep a subtle hover-only cue
     picks.push({type:'enterprise', id:e.id, dir:e._dir, px:0.026});
   }
+  // #68 — group squads present at a settlement (within the capture zone) into that
+  // settlement's tray. Both teams count, so a contested settlement lists both sides.
+  // Membership keys off sq.dir (the sim position, same test the capture logic uses);
+  // the screen-space layout happens per frame in animateMarkers().
+  for(const st of S.settlements) st._trayList=null;
+  for(const sq of S.squads){
+    for(const st of S.settlements){
+      if(st._spr && sq.dir.dot(st.dir) > CAPTURE_COS){
+        (st._trayList || (st._trayList=[])).push(sq); break;
+      }
+    }
+  }
+  for(const st of S.settlements) if(st._trayList) st._trayList.sort((a,b)=>a.id-b.id);
+
   const live=new Set();
   for(const sq of S.squads){
     live.add(sq.id);
@@ -3699,7 +3791,14 @@ function updateMarkers(){
     m.material.color.set(factionColor(sq.factionId));
     const hov=hover && hover.type==='squad' && hover.id===sq.id;
     m.scale.setScalar((0.026+Math.min(0.016, sq.strength/900))*(hov?1.15:1));   // #49 selection = frame; keep a subtle hover-only cue
-    picks.push({type:'squad', id:sq.id, dir:sq.rdir, px:0.034});
+    // Keep faction colour + hover cue whether the squad is free or trayed. animateMarkers
+    // repositions trayed glyphs and fills in pick.screen each frame; but picks are rebuilt
+    // here on UI paths too (hoverAt/select/pickAt, between frames), so carry the last tray
+    // screen forward onto the new pick — else nearest() would momentarily hit-test the
+    // squad at its buried on-map rdir (under the icon) until the next frame refreshes it (#68).
+    const pk={type:'squad', id:sq.id, dir:sq.rdir, px:0.034};
+    if(sq._trayed && sq._pick && sq._pick.screen) pk.screen=sq._pick.screen;
+    sq._pick=pk; picks.push(pk);
   }
   for(const [id,m] of squadMeshes) if(!live.has(id)){ markerGroup.remove(m); squadMeshes.delete(id); }
 
@@ -3746,7 +3845,55 @@ function animateMarkers(){
   for(const sq of S.squads){
     const m=squadMeshes.get(sq.id); if(!m) continue;
     sq.rdir = sq.prevDir? slerp(sq.prevDir, sq.dir, tickAlpha) : sq.dir.clone();
+  }
+  // #68 — SQUAD TRAY. Squads present at a settlement (grouped in updateMarkers) dock in a
+  // screen-space row below its marker, dropping their free map markers so they don't bury
+  // the icon. The tray is a strategic-zoom overlay: it cross-fades out across the detail
+  // band (HOT_PAWN_DIST..HOT_SQUAD_PAWN_DIST). Below that band the tray is OFF and every
+  // present squad simply resumes its ordinary free marker — the free marker is suppressed
+  // ONLY while its tray glyph is actually shown, so a squad is never left with no marker
+  // at all (pawns only materialise inside the hot camera cone, not across the whole cap).
+  const trayFade = Math.min(1, Math.max(0, (camDist-HOT_PAWN_DIST)/(HOT_SQUAD_PAWN_DIST-HOT_PAWN_DIST)));
+  const trayOn = trayFade > 0.02;                    // tray active at all only above the fade floor
+  const present=new Set();                            // squads whose free marker is suppressed this frame
+  if(trayOn){
+    _invRootQ.copy(q).invert();
+    for(const st of S.settlements){
+      const L=st._trayList; if(!L || !L.length || !st._spr) continue;
+      // project the settlement marker to screen; the tray hangs just below its icon
+      _trayAnchor.copy(st.dir).multiplyScalar(MARK_R).applyQuaternion(q);
+      if(_trayAnchor.dot(_camNrm) < horizon - 0.02) continue;   // settlement behind the globe → no tray; squads fall to (limb-culled) free markers
+      _trayAnchor.project(camera);
+      const ndcZ=_trayAnchor.z;
+      const aX=(_trayAnchor.x*0.5+0.5)*innerWidth, aY=(-_trayAnchor.y*0.5+0.5)*innerHeight;
+      const iconR=st._px*innerHeight*0.62;           // settlement icon on-screen radius (nearest()'s convention)
+      const gR=TRAY_GLYPH*innerHeight*0.62;          // glyph on-screen radius
+      const cell=gR*2+TRAY_GAP_PX;
+      const perRow=Math.max(1, Math.min(L.length, Math.floor((TRAY_MAX_ROW_PX+TRAY_GAP_PX)/cell)));
+      const topY=aY+iconR+TRAY_DOCK_PX+gR;           // first row centre, clear of the icon (below in screen space)
+      for(let i=0;i<L.length;i++){
+        const sq=L[i], m=squadMeshes.get(sq.id); if(!m) continue;
+        present.add(sq.id);
+        const r=Math.floor(i/perRow), c=i%perRow;
+        const n=Math.min(perRow, L.length-r*perRow);
+        const gx=aX-((n-1)*cell)/2 + c*cell;
+        const gy=topY + r*(gR*2+TRAY_ROW_GAP_PX);
+        _trayPos.set(gx/innerWidth*2-1, -(gy/innerHeight*2-1), ndcZ).unproject(camera).applyQuaternion(_invRootQ);
+        m.position.copy(_trayPos);
+        const hov=hover && hover.type==='squad' && hover.id===sq.id;
+        m.scale.setScalar(TRAY_GLYPH*(hov?1.14:1));
+        m.visible=true;
+        m.material.opacity=trayFade;                 // cross-fades out toward the detail band
+        if(sq._pick) sq._pick.screen={x:gx, y:gy, behind:false};   // pick tests against the docked glyph, not sq.dir
+        sq._trayed=true;
+      }
+    }
+  }
+  for(const sq of S.squads){                         // free markers for every squad NOT currently trayed
+    const m=squadMeshes.get(sq.id); if(!m || present.has(sq.id)) continue;
     put(m, sq.rdir, MARK_R);
+    if(sq._pick) sq._pick.screen=null;               // pick falls back to sq.rdir projection
+    sq._trayed=false;
   }
   for(const cv of S.caravans){
     const m=caravanMeshes.get(cv.id); if(!m) continue;
@@ -4123,7 +4270,7 @@ addEventListener('pointerup',e=>{
   if(e.pointerType==='touch') return;             // touch handled by touch* listeners below
   if(rmb){                                        // resolve the RMB order gesture (#24)
     if(rmb.timer){ clearTimeout(rmb.timer); rmb.timer=null; }
-    const sq=selectedPlayerSquad();
+    const sq=selectedCommandableSquad();            // stance-gated (#70): God ⇒ any squad, Player ⇒ own, Spectator ⇒ none
     if(rmb.opened){
       // menu already open: with quick-cast ON, releasing over an enabled row applies it;
       // otherwise the release does nothing and the menu waits for a left-click.
@@ -4193,7 +4340,57 @@ let quickCastOrders=false;        // "quick-cast" toggle (default off)
 let curOpts=[];                   // options currently rendered (for click/quick-cast dispatch)
 const optMenuEl=document.getElementById('optMenu');
 
-// The selected actor is a controllable SQUAD only if it's YOUR OWN squad.
+/* =====================================================================
+   OBSERVER STANCE — Spectator · God Mode · Player (#70, supersedes #25)
+   Source of truth: DESIGN.md → "Spectator, God Mode, and Player — three stances".
+   The three differ ONLY in what the player may act on — NOTHING in the simulation
+   changes between them:
+     • spectator — observe / inspect only; no orders, no interventions
+     • god       — the observer DEFAULT: command ANY unit / org, no ownership gate
+                   (a normal shipped mode, not a debug affordance — supersedes #25)
+     • player    — command only your own units (play-as-character; S.playerCharId)
+   Player is implicit in S.playerCharId (entered by picking a character — existing
+   behaviour, unchanged). The spectator↔god choice is a pure UI preference, so it is
+   a module var deliberately kept OUT of S — toggling it mutates no world state. ===================================================================== */
+let observerStance='god';                         // observer default = God Mode (#70)
+// Effective stance: playing a character ⇒ Player; otherwise the observer preference.
+function stance(){ return S.playerCharId ? 'player' : observerStance; }
+// Set the observer stance (spectator|god). 'player' is entered by picking a character
+// (setAvatar), never here — a request for it is ignored. Returns the effective stance.
+function setStance(s){
+  if(s==='spectator'||s==='god') observerStance=s;
+  updateStanceBtn();
+  return stance();
+}
+function toggleStance(){ return setStance(observerStance==='god'?'spectator':'god'); }
+// Is org `o` commandable right now, per the current stance? God ⇒ ANY org; Player ⇒
+// only the played character's own org-subtree (unchanged); Spectator ⇒ nothing.
+function orgCommandable(o){
+  if(!o) return false;
+  const st=stance();
+  if(st==='spectator') return false;
+  if(st==='god') return true;
+  return isPlayerOrg(o);                           // player — unchanged gate
+}
+// Garrison targets a FRIENDLY settlement. Player ⇒ your own org-subtree (unchanged);
+// God ⇒ any settlement of the squad's OWN faction (garrison is occupy-friendly, not
+// capture). Spectator never reaches here (the squad menu doesn't open).
+function commanderOwnsSettlement(sq, st){
+  const o=st && org(st.ownerOrgId); if(!o) return false;
+  return stance()==='god' ? (o.factionId!=null && o.factionId===sq.factionId) : isPlayerOrg(o);
+}
+// Reflect the current stance on the topbar toggle button (label + accent + hint).
+function updateStanceBtn(){
+  const b=document.getElementById('btnStance'); if(!b) return;
+  const st=stance();
+  b.textContent='Стійка: '+{spectator:'Спостерігач',god:'God Mode',player:'Гравець'}[st];
+  b.classList.toggle('on', st==='god');
+  b.title = st==='player'
+    ? 'Гра за персонажа — керуєш лише своїми загонами. G перемикає Спостерігач↔God поза грою за персонажа.'
+    : 'Стійка спостерігача (G): God Mode — командуй будь-ким · Спостерігач — лише огляд';
+}
+
+// The selected actor is a PLAYER-OWNED squad (used by the Player-stance gate).
 function selectedPlayerSquad(){
   const s=S.selection;
   if(!s || s.type!=='squad') return null;
@@ -4201,14 +4398,28 @@ function selectedPlayerSquad(){
   const o=org(sq.orgId);
   return (o && isPlayerOrg(o)) ? sq : null;
 }
-// Is the current selection a controllable actor that CAN own an options window? — a
-// player squad, a player-controlled org, or (Player Mode) a character leading such an
-// org. Mirrors optionsFor's branching; the RMB gesture only arms for these. (#52)
+// The selected squad IF the current stance lets you command it — God ⇒ ANY selected
+// squad, Player ⇒ only your own, Spectator ⇒ none. This is the gate the plain-RMB
+// MOVE / queue order (#36) resolves through.
+function selectedCommandableSquad(){
+  const s=S.selection;
+  if(!s || s.type!=='squad') return null;
+  const sq=sqd(s.id); if(!sq) return null;
+  const st=stance();
+  if(st==='spectator') return null;
+  if(st==='god') return sq;
+  return selectedPlayerSquad();
+}
+// Is the current selection a controllable actor that CAN own an options window and
+// arm the RMB gesture? Gated by stance (#70): Spectator ⇒ never; God ⇒ any squad /
+// org / led-org character; Player ⇒ only your own (mirrors optionsFor's branching). (#52)
 function selectedControllable(){
   const s=S.selection; if(!s) return false;
-  if(s.type==='squad') return !!selectedPlayerSquad();
-  if(s.type==='org'){ const o=org(s.id); return !!(o && isPlayerOrg(o)); }
-  if(s.type==='char'){ const c=chr(s.id); const led=c&&c.alive?org(c.ledOrgId):null; return !!(led && isPlayerOrg(led)); }
+  if(stance()==='spectator') return false;         // observe / inspect only
+  if(s.type==='squad'){ const sq=sqd(s.id); if(!sq) return false;
+    return stance()==='god' ? true : orgCommandable(org(sq.orgId)); }
+  if(s.type==='org') return orgCommandable(org(s.id));
+  if(s.type==='char'){ const c=chr(s.id); const led=c&&c.alive?org(c.ledOrgId):null; return !!(led && orgCommandable(led)); }
   return false;
 }
 
@@ -4316,7 +4527,7 @@ function squadOptions(sq, target, pointDir){
   // GARRISON — needs one of YOUR OWN settlements; toggles to stand-down if already
   // garrisoning that very settlement.
   const st  = target && target.type==='settlement' ? stl(target.id) : null;
-  const own = st && org(st.ownerOrgId) && isPlayerOrg(org(st.ownerOrgId));
+  const own = st && commanderOwnsSettlement(sq, st);   // stance-aware (#70): Player ⇒ your own, God ⇒ squad's own faction
   const here= st && sq.garrisonId===st.id;
   opts.push({key:'garrison',
     label: here ? 'Зняти гарнізон' : ('Гарнізон'+(st?' → '+st.name:'')),
@@ -4501,13 +4712,13 @@ function optionsFor(sel, target, pointDir){
   if(!sel) return null;
   if(sel.type==='squad'){
     const sq=sqd(sel.id);
-    if(!sq || !(org(sq.orgId) && isPlayerOrg(org(sq.orgId)))) return null;
+    if(!sq || !(stance()==='god' || orgCommandable(org(sq.orgId)))) return null;   // #70: God ⇒ any squad
     return { title:'Загін #'+sq.id, targetLabel: pickLabel(target)||'точка',
              opts: squadOptions(sq, target, pointDir) };
   }
   if(sel.type==='org'){
     const o=org(sel.id);
-    if(!o || !isPlayerOrg(o)) return null;             // only an org YOU control
+    if(!orgCommandable(o)) return null;                // #70: God ⇒ any org · Player ⇒ only an org YOU control
     return orgSpec(o, target);
   }
   if(sel.type==='char'){
@@ -4516,7 +4727,7 @@ function optionsFor(sel, target, pointDir){
     // through the character's leadership"). Self-directed char/org decisions stay off it.
     const c=chr(sel.id);
     const led = c && c.alive ? org(c.ledOrgId) : null;
-    if(!led || !isPlayerOrg(led)) return null;
+    if(!led || !orgCommandable(led)) return null;      // #70: God ⇒ any led org · Player ⇒ only yours
     return orgSpec(led, target);
   }
   return null;
@@ -4713,6 +4924,9 @@ addEventListener('keydown',e=>{
   if(e.key==='+'||e.key==='=') camAltTarget=Math.max(ALT_MIN,camAltTarget/1.18);
   if(e.key==='-'||e.key==='_') camAltTarget=Math.min(ALT_MAX,camAltTarget*1.18);
   if(e.key===' '){ e.preventDefault(); document.getElementById('btnPause').click(); }
+  // G — toggle the observer stance Spectator↔God (#70). No effect while playing a
+  // character (that's the Player stance, entered/left by picking a character).
+  if((e.key==='g'||e.key==='G') && !S.playerCharId) toggleStance();
 });
 
 /* ---- screen-space picking & hover ---- */
@@ -4747,7 +4961,10 @@ function nearest(cx,cy){
   let best=null,bd=1e9;
   const order={char:0, resident:0, caravan:1, squad:2, enterprise:3, settlement:4};   // #50: an anonymous head ranks with an identified one
   for(const p of picks){
-    const s=screenPos(p.dir, p.r);   // #50: walker picks carry the head's own shell radius (p.r); others default to MARK_R
+    // #68: a screen-docked tray glyph carries its own screen point (set each frame in
+    // animateMarkers); everything else projects from its on-sphere dir as before.
+    // #50: walker picks carry the head's own shell radius (p.r); others default to MARK_R.
+    const s=p.screen || screenPos(p.dir, p.r);
     if(s.behind) continue;
     const rpx=p.px*innerHeight*0.62;
     const d=Math.hypot(s.x-cx, s.y-cy);
@@ -5303,6 +5520,7 @@ function setAvatar(charId){
   }
   invalidatePawns();
   document.getElementById('start').style.display='none';
+  updateStanceBtn();                    // now Player stance (#70) — reflect on the toggle
   rebuildViewpointOptions();
 }
 
@@ -5791,6 +6009,11 @@ function updateHUD(){
 document.getElementById('btnPause').onclick=e=>{
   S.paused=!S.paused; e.target.textContent=S.paused?'▶':'▮▮';
 };
+// Stance toggle (#70): flip Spectator↔God while an observer. Inert while playing a
+// character (Player stance) — that's left only by picking/dropping a character.
+{ const b=document.getElementById('btnStance');
+  if(b) b.onclick=()=>{ if(!S.playerCharId) toggleStance(); };
+  updateStanceBtn(); }
 for(const [id,v] of [['spd1',1],['spd3',3],['spd8',8]]){
   document.getElementById(id).onclick=()=>{
     S.speed=v;
@@ -5932,9 +6155,12 @@ Object.assign(window, { tick, frame });
 // Experience framework surface — explicit so page-eval verification and future tasks can reach it
 // (also covered by the _state spread above; kept explicit to document the public API).
 Object.assign(window, { applyExperience, flag, FLAGS, EXPERIENCES });
+// Observer-stance surface (#70) — the God/Spectator/Player stance + toggle, explicit so page-eval
+// verification can drive it by bare name (also covered by the _ui spread above; documented API).
+Object.assign(window, { stance, setStance, toggleStance });
 
 /* ===== window test/debug surface (bundled) ===== */
-Object.assign(window, { ALT_MAX, ALT_MIN, BOX, CAN_HOVER, CITY_BUILD_PER_FRAME, CONE, DISK, EDGE_STYLE, EKEYS, ENT, EXPERIENCES, FLAGS, FLAG_DEFAULTS, FOOD_PER_1K, FOOT_R, GRAPH_KINDS, HOLD_RMB_MS, HOT_GEOM_COS, HOT_GEOM_DIST, HOT_PAWN_COS, HOT_PAWN_DIST, HOT_SQUAD_COS, HOT_SQUAD_PAWN_DIST, ICONS, ICON_URL, KIND_LABEL, L, LEADERSHIP, LONG_PRESS_MS, LT_LABEL, MARK_R, MeshAcc, NAME_A, NAME_B, NSEED, ORG_A, PATHS, PCITY, PER_A, PER_B, PITCH_MAX, POWER, POWER_TICK, REASSIGNABLE_KINDS, RES, RKEYS, RNG, S, SEA, SKILLS, SKILL_LABEL, SPH, SQUAD_FOOD, SQUAD_WEAPONS, STEP, T, TELE, TELE_BUILD_ID, TELE_SLOT_KINDS, TERMS, THEME, THEMES, THEME_NAME, TIER, TIER_SCALE, TILT_ALT_MAX, TILT_PITCH_PER_PX, TILT_YAW_PER_PX, TOOL_WEAR, TRAITS, TRAIT_UTIL, VGLOBE_FS, VGLOBE_VS, WARP, ZONE, _camNrm, _gKey, _hitV, _invQ, _m3, _rc, _sph, _tri, acc, accFlatPoly, accGeo, accMesh, allianceCap, allianceEdge, animateMarkers, applyExperience, applyOrder, applyTheme, arrive, assignPost, atmoMesh, bestTrade, bfsPath, bgMesh, bracketTex, breakAlliance, breakSlot, buildCity, buildIconLegend, buildIcons, buildScene, buildStartScreen, buildStreetGraph, buildVectorGlobe, byId, calibrateSea, camAlt, camAltTarget, camDist, camPitch, camYaw, camera, cameraDir, cancelTermLP, canvas, capture, caravanMeshes, caravanStep, chance, chr, cityCache, cityLive, cityRng, clearLP, closeOptMenu, computePower, controlSlotCap, createEnterprise, curOpts, decide, drag, dragScale, drawGraph, economyStep, edgeVisible, elevation, ent, f1, factionColor, fade, fbm, fibDir, flag, flyQ, flyT, flyTo, footMats, footprintRing, frame, frameDtMs, gBigOnly, gCam, gCanvas, gDrag, gFocus, gH, gHideKinds, gHover, gLastOrgCount, gNodes, gPick, gShowProp, gSize, gTip, gViewpoint, gW, gWrap, gctx, genNames, generate, generatePCGTown, globeDirty, globeRT, globeScene, graphClusterId, graphEdges, graphOpen, hadTouch, hash3, head, heldAlliances, heldSlots, hidePin, hostile, hotSquads, hover, hoverAt, iconTexture, insp, inspCaravan, inspChar, inspEnterprise, inspOrg, inspSettlement, inspSquad, intelReport, invalidatePawns, isLand, isPlayerOrg, issueAttack, issueGarrison, issueMove, killSquad, labelTexture, last, layoutGraph, logEvent, lpFired, lpTimer, makeBracketTexture, makeCatHead, makeChar, makeEdge, makeFootprintMat, makeOrg, makeSlot, makeSprite, markerGroup, materializeResident, maybeDismissPin, moistureAt, moveToward, mulberry32, nearest, nodeColor, nodeRadius, num, offsetDir, openOptMenu, optMenuEl, optMenuOpen, optionsFor, orderClusters, org, orgManagement, orgOptions, orgPower, orgSpec, orgStep, orgUtility, orgVisible, outline, ownSideSquads, pathBetween, pathKey, pawnBuiltFor, pawnPositions, pawnSprites, pcgArea, pcgArea2, pcgArtery, pcgBbox, pcgBuildingsForLot, pcgCcw, pcgCentroid, pcgClipHalf, pcgContract, pcgFilterBySize, pcgFilterRandom, pcgHash2, pcgOBB, pcgOBBCorners, pcgPointInPoly, pcgRecursiveSplit, pcgScatter, pcgShape, pcgSplitByLine, pcgSplitWithGap, pcgSubdivideBySplines, pcgSubdivideGrid, pcgVnoise, personName, pick, pickAt, pickLabel, picks, pinTip, pinnedShown, placeOutdoorEnterprise, placeTip, planet, playerFactionId, pointInRing, precomputePaths, priceOf, projV, proposeAlliance, queueMove, quickCastOrders, radialTreePlace, randDir, reachable, reassignLeader, rebuildDynamicMarkers, rebuildKindFilter, rebuildViewpointOptions, recomputeTargets, regenerate, relax, removePost, renderEcon, renderGlobeCache, renderInspector, renderLog, renderOptMenu, renderer, reseedRNG, ridge, rint, rmb, rnd, roadLines, roadMat, root, row, runOpt, sabotage, scene, screenPos, screenToDir, selFrame, select, selectedControllable, selectedPlayerSquad, selectionDir, selectionFrameTarget, setAvatar, setCamDist, setFrameDt, setHover, setLeader, showPin, slerp, slotEdge, smooth01, spawnCaravan, spawnSquad, spin, sqd, squadMeshes, squadOptions, squadPawnCache, squadPawnCount, squadStep, standDown, stepCamera, stepFly, stepWalkers, stl, successionAndRevolt, sun, tDist, tMidX, tMidY, tangentBasis, targetFaction, targetOrg, teleBelligerentFactions, teleBump, teleCSV, teleCloneCounters, teleDetectSidePairs, teleDist, teleDownload, teleEvent, teleExport, teleExportCSV, teleFreshCounters, teleHousing, teleOrgCreated, teleOrgDestroyed, telePowerParts, teleReset, teleSnapshot, teleTick, tempAt, termHTML, termLPtimer, termTip, terrainColor, terrainColorTech, tick, tickAlpha, tip, tipHTML, tmpQ, tmpV, toScreen, toggleTheme, touchG, touchRotate, uid, updateCamera, updateCityLOD, updateGlobeUniforms, updateHUD, updateMarkers, updatePawns, updateResidentPawns, updateSquadPawns, v3, vGlobe, vnoise, zoneAt });
+Object.assign(window, { ALT_MAX, ALT_MIN, BOX, CAN_HOVER, CAPTURE_COS, CITY_BUILD_PER_FRAME, CONE, DISK, EDGE_STYLE, EKEYS, ENT, EXPERIENCES, FLAGS, FLAG_DEFAULTS, FOOD_PER_1K, FOOT_R, GRAPH_KINDS, HOLD_RMB_MS, HOT_GEOM_COS, HOT_GEOM_DIST, HOT_PAWN_COS, HOT_PAWN_DIST, HOT_SQUAD_COS, HOT_SQUAD_PAWN_DIST, ICONS, ICON_URL, KIND_LABEL, L, LEADERSHIP, LONG_PRESS_MS, LT_LABEL, MARK_R, MeshAcc, NAME_A, NAME_B, NSEED, ORG_A, PATHS, PCITY, PER_A, PER_B, PITCH_MAX, POWER, POWER_TICK, REASSIGNABLE_KINDS, RES, RKEYS, RNG, S, SEA, SKILLS, SKILL_LABEL, SPH, SQUAD_FOOD, SQUAD_WEAPONS, STEP, T, TELE, TELE_BUILD_ID, TELE_SLOT_KINDS, TERMS, THEME, THEMES, THEME_NAME, TIER, TIER_SCALE, TILT_ALT_MAX, TILT_PITCH_PER_PX, TILT_YAW_PER_PX, TOOL_WEAR, TRAITS, TRAIT_UTIL, VGLOBE_FS, VGLOBE_VS, WARP, ZONE, _camNrm, _gKey, _hitV, _invQ, _m3, _rc, _sph, _tri, acc, accFlatPoly, accGeo, accMesh, allianceCap, allianceEdge, animateMarkers, applyExperience, applyOrder, applyTheme, arrive, assignPost, atmoMesh, bestTrade, bfsPath, bgMesh, bracketTex, breakAlliance, breakSlot, buildCity, buildIconLegend, buildIcons, buildScene, buildStartScreen, buildStreetGraph, buildVectorGlobe, byId, calibrateSea, camAlt, camAltTarget, camDist, camPitch, camYaw, camera, cameraDir, cancelTermLP, canvas, capture, caravanMeshes, caravanStep, chance, chr, cityCache, cityLive, cityRng, clearLP, closeOptMenu, commanderOwnsSettlement, computePower, controlSlotCap, createEnterprise, curOpts, decide, drag, dragScale, drawGraph, economyStep, edgeVisible, elevation, ent, f1, factionColor, fade, fbm, fibDir, flag, flyQ, flyT, flyTo, footMats, footprintRing, frame, frameDtMs, gBigOnly, gCam, gCanvas, gDrag, gFocus, gH, gHideKinds, gHover, gLastOrgCount, gNodes, gPick, gShowProp, gSize, gTip, gViewpoint, gW, gWrap, gctx, genNames, generate, generatePCGTown, globeDirty, globeRT, globeScene, graphClusterId, graphEdges, graphOpen, hadTouch, hash3, head, heldAlliances, heldSlots, hidePin, hostile, hotSquads, hover, hoverAt, iconTexture, insp, inspCaravan, inspChar, inspEnterprise, inspOrg, inspSettlement, inspSquad, intelReport, invalidatePawns, isLand, isPlayerOrg, issueAttack, issueGarrison, issueMove, killSquad, labelTexture, last, layoutGraph, logEvent, lpFired, lpTimer, makeBracketTexture, makeCatHead, makeChar, makeEdge, makeFootprintMat, makeOrg, makeSlot, makeSprite, markerGroup, materializeResident, maybeDismissPin, moistureAt, moveToward, mulberry32, nearest, nodeColor, nodeRadius, num, offsetDir, openOptMenu, optMenuEl, optMenuOpen, optionsFor, orderClusters, org, orgCommandable, orgManagement, orgOptions, orgPower, orgSpec, orgStep, orgUtility, orgVisible, outline, ownSideSquads, pathBetween, pathKey, pawnBuiltFor, pawnPositions, pawnSprites, pcgArea, pcgArea2, pcgArtery, pcgBbox, pcgBuildingsForLot, pcgCcw, pcgCentroid, pcgClipHalf, pcgContract, pcgFilterBySize, pcgFilterRandom, pcgHash2, pcgOBB, pcgOBBCorners, pcgPointInPoly, pcgRecursiveSplit, pcgScatter, pcgShape, pcgSplitByLine, pcgSplitWithGap, pcgSubdivideBySplines, pcgSubdivideGrid, pcgVnoise, personName, pick, pickAt, pickLabel, picks, pinTip, pinnedShown, placeOutdoorEnterprise, placeTip, planet, playerFactionId, pointInRing, precomputePaths, priceOf, projV, proposeAlliance, queueMove, quickCastOrders, radialTreePlace, randDir, reachable, reassignLeader, rebuildDynamicMarkers, rebuildKindFilter, rebuildViewpointOptions, recomputeTargets, regenerate, relax, removePost, renderEcon, renderGlobeCache, renderInspector, renderLog, renderOptMenu, renderer, reparentOrg, reparentWouldCycle, reseedRNG, ridge, rint, rmb, rnd, roadLines, roadMat, root, row, runOpt, sabotage, scene, screenPos, screenToDir, selFrame, select, selectedCommandableSquad, selectedControllable, selectedPlayerSquad, selectionDir, selectionFrameTarget, setAvatar, setCamDist, setFrameDt, setHover, setLeader, setStance, showPin, slerp, slotEdge, smooth01, spawnCaravan, spawnSquad, spin, sqd, squadMeshes, squadOptions, squadPawnCache, squadPawnCount, squadStep, stance, standDown, stepCamera, stepFly, stepWalkers, stl, successionAndRevolt, sun, tDist, tMidX, tMidY, tangentBasis, targetFaction, targetOrg, teleBelligerentFactions, teleBump, teleCSV, teleCloneCounters, teleDetectSidePairs, teleDist, teleDownload, teleEvent, teleExport, teleExportCSV, teleFreshCounters, teleHousing, teleOrgCreated, teleOrgDestroyed, telePowerParts, teleReset, teleSnapshot, teleTick, tempAt, termHTML, termLPtimer, termTip, terrainColor, terrainColorTech, tick, tickAlpha, tip, tipHTML, tmpQ, tmpV, toScreen, toggleStance, toggleTheme, touchG, touchRotate, uid, updateCamera, updateCityLOD, updateGlobeUniforms, updateHUD, updateMarkers, updatePawns, updateResidentPawns, updateSquadPawns, updateStanceBtn, v3, vGlobe, vnoise, zoneAt });
 </script>
 <!-- /NEWLORDS:BUNDLE -->
 </body>
