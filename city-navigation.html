@@ -40,7 +40,8 @@
   <button id="gen">Regenerate</button>
 </div>
 <div id="stat"></div>
-<div id="hint">LMB = select · MMB drag = orbit · wheel = zoom</div>
+<div id="selhud" style="position:fixed;top:10px;left:50%;transform:translateX(-50%);color:#35e0a0;font-size:12px;background:#161b22cc;padding:5px 10px;border-radius:6px"></div>
+<div id="hint">LMB drag = select · shift = add · MMB drag = orbit · wheel = zoom</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
@@ -361,6 +362,7 @@ function buildScene(data){
   // navigation hex grid (#20): compute walkable cells + draw the overlay
   navGrid=buildNavGrid(data, HEX_INR);
   world.add(buildGridMesh(navGrid));
+  spawnUnits(navGrid, UNIT_COUNT);         // #20: drop the test cats onto free cells
   document.getElementById('stat').textContent=
     `${data.buildings.length} buildings · ${navGrid.nFree} free / ${navGrid.nBlocked} blocked cells · hex ${HEX_INR}m · seed ${curSeed}`;
 }
@@ -373,10 +375,21 @@ function updateCam(){camera.position.set(
   target.z+camR*Math.sin(camPhi)*Math.sin(camTheta));camera.lookAt(target);}
 let drag=false,px=0,py=0;
 canvas.addEventListener('pointerdown',e=>{
-  if(e.button===1){e.preventDefault();drag=true;px=e.clientX;py=e.clientY;}   // MMB = orbit (LMB reserved for RTS box-select, next step)
+  if(e.button===1){e.preventDefault();drag=true;px=e.clientX;py=e.clientY;}          // MMB = orbit
+  else if(e.button===0){ selBox={x0:e.clientX,y0:e.clientY,x1:e.clientX,y1:e.clientY,shift:e.shiftKey,moved:0}; }  // LMB = RTS box-select
 });
-addEventListener('pointerup',()=>drag=false);
-addEventListener('pointermove',e=>{if(!drag)return;camTheta-=(e.clientX-px)*0.005;camPhi=Math.max(0.15,Math.min(1.45,camPhi-(e.clientY-py)*0.005));px=e.clientX;py=e.clientY;updateCam();});
+addEventListener('pointermove',e=>{
+  if(drag){ camTheta-=(e.clientX-px)*0.005; camPhi=Math.max(0.15,Math.min(1.45,camPhi-(e.clientY-py)*0.005)); px=e.clientX; py=e.clientY; updateCam(); return; }
+  if(selBox){ selBox.moved+=Math.abs(e.clientX-selBox.x1)+Math.abs(e.clientY-selBox.y1); selBox.x1=e.clientX; selBox.y1=e.clientY; drawSelDiv(); }
+});
+addEventListener('pointerup',e=>{
+  drag=false;
+  if(selBox){
+    if(selBox.moved<5){ if(!selBox.shift) clearSelection(); }              // a click clears (unless shift held)
+    else { if(!selBox.shift) clearSelection(); selectInBox(); }            // a drag selects the enclosed cats
+    selBox=null; selDiv.style.display='none';
+  }
+});
 canvas.addEventListener('wheel',e=>{e.preventDefault();camR=Math.max(300,Math.min(4000,camR*(1+Math.sign(e.deltaY)*0.1)));updateCam();},{passive:false});
 function resize(){camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);}
 addEventListener('resize',resize);resize();updateCam();
@@ -384,6 +397,57 @@ let lastW=0,lastH=0;
 (function loop(){requestAnimationFrame(loop);
   if(innerWidth!==lastW||innerHeight!==lastH){lastW=innerWidth;lastH=innerHeight;resize();} // sync late/odd sizing (in-app preview)
   renderer.render(scene,camera);})();
+
+/* ==================== UNITS (cats) + RTS BOX-SELECT (#20) ==================== */
+let UNIT_COUNT=40;
+let units=[];
+function catMesh(){
+  const g=new THREE.Group();
+  const fur=new THREE.MeshLambertMaterial({color:0xE0B84C});
+  const head=new THREE.Mesh(new THREE.SphereGeometry(4,14,12),fur); head.castShadow=true; g.add(head);
+  const ear=new THREE.ConeGeometry(1.7,3.4,5);
+  [-2.2,2.2].forEach(dx=>{const e=new THREE.Mesh(ear,fur); e.position.set(dx,3.2,0); e.castShadow=true; g.add(e);});
+  const ring=new THREE.Mesh(new THREE.RingGeometry(5.2,6.8,22),
+    new THREE.MeshBasicMaterial({color:0x35e0a0,side:THREE.DoubleSide,transparent:true,opacity:0.95}));
+  ring.rotation.x=-Math.PI/2; ring.position.y=-5.4; ring.visible=false; g.add(ring); g.userData.ring=ring;
+  return g;
+}
+function spawnUnits(grid,n){
+  units=[];
+  const free=[...grid.cells.values()].filter(c=>!c.blocked);
+  for(let i=0;i<n && free.length;i++){
+    const c=free.splice(Math.floor(rnd()*free.length),1)[0];
+    const m=catMesh(); m.position.set(c.x,6,-c.y); world.add(m);   // world: poly (x,y) -> (x, lift, -y)
+    units.push({q:c.q,r:c.r,x:c.x,y:c.y,mesh:m,selected:false});
+  }
+}
+function applySel(){
+  for(const u of units) u.mesh.userData.ring.visible=u.selected;
+  const n=units.filter(u=>u.selected).length;
+  document.getElementById('selhud').textContent = n? (n+' cat'+(n>1?'s':'')+' selected') : '';
+}
+function clearSelection(){ for(const u of units) u.selected=false; applySel(); }
+
+const selDiv=document.createElement('div'); selDiv.id='selbox';
+selDiv.style.cssText='position:fixed;border:1px solid #35e0a0;background:rgba(53,224,160,.12);pointer-events:none;display:none;z-index:20';
+document.body.appendChild(selDiv);
+let selBox=null;
+function drawSelDiv(){ if(!selBox) return;
+  const x=Math.min(selBox.x0,selBox.x1),y=Math.min(selBox.y0,selBox.y1),w=Math.abs(selBox.x1-selBox.x0),h=Math.abs(selBox.y1-selBox.y0);
+  selDiv.style.display='block'; selDiv.style.left=x+'px'; selDiv.style.top=y+'px'; selDiv.style.width=w+'px'; selDiv.style.height=h+'px';
+}
+function selectInBox(){
+  const minx=Math.min(selBox.x0,selBox.x1),maxx=Math.max(selBox.x0,selBox.x1),
+        miny=Math.min(selBox.y0,selBox.y1),maxy=Math.max(selBox.y0,selBox.y1);
+  const v=new THREE.Vector3();
+  for(const u of units){
+    v.copy(u.mesh.position).project(camera);
+    if(v.z>1) continue;                                       // behind the camera
+    const sx=(v.x*0.5+0.5)*innerWidth, sy=(-v.y*0.5+0.5)*innerHeight;
+    if(sx>=minx&&sx<=maxx&&sy>=miny&&sy<=maxy) u.selected=true;
+  }
+  applySel();
+}
 
 /* ---- UI ---- */
 let P={blockW:120,blockL:60,roadLocal:19,roadCollector:26,roadArtery:40,buildingGap:6,maxH:60,buildable:90,parkPct:16},curSeed=7;
