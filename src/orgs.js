@@ -153,8 +153,7 @@ function decide(o){
     }
     case 'SeekIndependence': {
       const p=org(o.parentId);
-      S.edges=S.edges.filter(e=>!(e.kind==='hierarchy'&&e.to===o.id));
-      o.parentId=null; o.factionId=o.id;
+      reparentOrg(o, null); o.factionId=o.id;          // guarded re-parent to independent (#71)
       if(!S.factions.find(f=>f.id===o.id)) S.factions.push({id:o.id, orgId:o.id, color:'#9AA7C0'});
       logEvent('⚑ <span class="link" data-sel="org:'+o.id+'">'+o.name+'</span> проголосив незалежність від <b>'+(p?p.name:'?')+'</b>.');
       // telemetry: political event — a secession attempt (this path always succeeds) + became independent
@@ -177,6 +176,38 @@ function decide(o){
   }
 }
 
+/* =====================================================================
+   HIERARCHY RE-PARENT GUARD (#71)
+   The org-parent hierarchy is a pure acyclic containment tree (DESIGN §22).
+   Any op that reassigns an org's parentId — secession, throne-seizure/claimant,
+   kind mutation, founding a subordinate — must route through reparentOrg so an
+   org can never become its own ancestor; a cycle would otherwise recurse forever
+   in the org-graph layout (radialTreePlace) and crash it.
+   ===================================================================== */
+// Would setting o.parentId=newParentId make o its own ancestor (i.e. close a cycle)?
+// Walk up the target's ancestry via parentId; refuse if it reaches o. null never cycles.
+function reparentWouldCycle(o, newParentId){
+  if(newParentId==null) return false;                   // becoming independent can't cycle
+  if(newParentId===o.id) return true;                   // an org cannot be its own parent
+  let cur=org(newParentId), guard=0;
+  while(cur && guard++<100000){
+    if(cur.id===o.id) return true;                      // o sits above the target → would loop
+    cur = cur.parentId!=null ? org(cur.parentId) : null;
+  }
+  return false;
+}
+// Re-parent o under newParentId (null = independent), keeping the mirrored hierarchy edge
+// in sync. Refuses (returns false, mutates nothing) any change that would make the hierarchy
+// cyclic. Callers keep their own faction/telemetry/log bookkeeping for the event they model.
+function reparentOrg(o, newParentId){
+  if(!o) return false;
+  if(reparentWouldCycle(o, newParentId)) return false;
+  o.parentId = newParentId;
+  S.edges = S.edges.filter(e=>!(e.kind==='hierarchy' && e.to===o.id));
+  if(newParentId!=null) makeEdge('hierarchy', newParentId, o.id);
+  return true;
+}
+
 function successionAndRevolt(){
   for(const c of S.chars){
     if(!c.alive || !c.ledOrgId) continue;
@@ -197,8 +228,7 @@ function successionAndRevolt(){
         const legit = (heir.skills.management+heir.skills.social)/24;
         const p = 0.10 + (100-sub.loyalty)/300 - legit*0.25;
         if(chance(Math.max(0,p))){
-          sub.parentId=null; sub.factionId=sub.id;
-          S.edges=S.edges.filter(e=>!(e.kind==='hierarchy'&&e.to===sub.id));
+          reparentOrg(sub, null); sub.factionId=sub.id;   // guarded re-parent to independent (#71)
           if(!S.factions.find(f=>f.id===sub.id)) S.factions.push({id:sub.id, orgId:sub.id, color:'#9AA7C0'});
           logEvent('⚔ Криза спадкоємства: <b>'+sub.name+'</b> відколовся від <b>'+o.name+'</b>.');
           // telemetry: political event — succession crisis (successor type + legitimacy score)
@@ -230,8 +260,7 @@ function successionAndRevolt(){
     o.loyalty=Math.max(0,Math.min(100,o.loyalty));
     if(o.loyalty<12 && chance(0.02)){
       const fromId=p.id;
-      o.parentId=null; o.factionId=o.id;
-      S.edges=S.edges.filter(e=>!(e.kind==='hierarchy'&&e.to===o.id));
+      reparentOrg(o, null); o.factionId=o.id;          // guarded re-parent to independent (#71)
       if(!S.factions.find(f=>f.id===o.id)) S.factions.push({id:o.id, orgId:o.id, color:'#9AA7C0'});
       logEvent('⚑ <b>'+o.name+'</b> вийшов з-під <b>'+p.name+'</b> — лояльність вичерпана.');
       // telemetry: political event — secession driven by exhausted loyalty (always succeeds here)
@@ -242,15 +271,37 @@ function successionAndRevolt(){
 }
 
 /* radial tree layout of one cluster: root at its centre, children fanned by subtree
-   size so the hierarchy edges of a faction never cross each other. Fills `homes`. */
+   size so the hierarchy edges of a faction never cross each other. Fills `homes`.
+   Cycle-safe (#71): the org-parent hierarchy is meant to be an acyclic containment tree
+   (DESIGN §22), but a buggy re-parent can make an org transitively its own descendant.
+   Both walks below break such a back-edge instead of recursing forever — `leaves` treats
+   an in-progress id as a leaf, and `place` positions each id once. `leaves` is memoized
+   (id→count), so subtree sizes are O(n) rather than the old exponential per-node recompute.
+   For a well-formed acyclic tree these guards never fire, so the layout is unchanged. */
 function radialTreePlace(root, memberSet, childrenOf, cx, cy, homes){
   const RING=44;
   const kids=id=>(childrenOf.get(id)||[]).filter(c=>memberSet.has(c));
-  const leaves=id=>{ const ch=kids(id); if(!ch.length) return 1; let s=0; for(const c of ch) s+=leaves(c); return s; };
+  // leaf-count of a subtree; `inStack` cuts a cycle (a back-edge counts as one leaf),
+  // `leafCache` memoizes so each subtree is summed once.
+  const leafCache=new Map(), inStack=new Set();
+  const leaves=id=>{
+    const cached=leafCache.get(id); if(cached!==undefined) return cached;
+    if(inStack.has(id)) return 1;                       // cycle back-edge → treat as a leaf
+    inStack.add(id);
+    const ch=kids(id);
+    let s=0; if(!ch.length) s=1; else for(const c of ch) s+=leaves(c);
+    inStack.delete(id);
+    leafCache.set(id, s);
+    return s;
+  };
+  // position each id exactly once; a child already placed is a cycle back-edge → skip it.
+  const placed=new Set();
   const place=(id, depth, a0, a1)=>{
+    if(placed.has(id)) return;
+    placed.add(id);
     const ang=(a0+a1)/2, r=depth*RING;
     homes.set(id, {x:cx+Math.cos(ang)*r, y:cy+Math.sin(ang)*r, depth, ang});
-    const ch=kids(id); if(!ch.length) return;
+    const ch=kids(id).filter(c=>!placed.has(c)); if(!ch.length) return;
     const tot=ch.reduce((s,c)=>s+leaves(c),0)||1;
     let a=a0;
     for(const c of ch){ const na=a+(a1-a0)*(leaves(c)/tot); place(c, depth+1, a, na); a=na; }
@@ -264,5 +315,6 @@ function radialTreePlace(root, memberSet, childrenOf, cx, cy, homes){
    springs — sets the shape, and edges cross far less than the old central hairball. */
 
 export {
-  POWER, POWER_TICK, computePower, decide, orgManagement, orgPower, orgStep, radialTreePlace, successionAndRevolt,
+  POWER, POWER_TICK, computePower, decide, orgManagement, orgPower, orgStep, radialTreePlace,
+  reparentOrg, reparentWouldCycle, successionAndRevolt,
 };
