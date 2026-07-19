@@ -8,7 +8,7 @@ import { orgStep } from './orgs.js';
 import { squadStep } from './squads.js';
 import { setFrameDt } from './citygen.js';
 import { animateMarkers, camera, renderGlobeCache, renderer, scene, updateMarkers } from './render.js';
-import { drawGraph, gNodes, gSize, graphOpen, renderEcon, renderInspector, stepCamera, stepFly, updateCamera, updateHUD } from './ui.js';
+import { drawGraph, gNodes, gSize, graphOpen, renderEcon, renderInspector, setStance, stance, stepCamera, stepFly, toggleStance, updateCamera, updateHUD } from './ui.js';
 import * as _state from './state.js';
 import * as _economy from './economy.js';
 import * as _worldgen from './worldgen.js';
@@ -82,6 +82,9 @@ Object.assign(window, { tick, frame });
 // Experience framework surface — explicit so page-eval verification and future tasks can reach it
 // (also covered by the _state spread above; kept explicit to document the public API).
 Object.assign(window, { applyExperience, flag, FLAGS, EXPERIENCES });
+// Observer-stance surface (#70) — the God/Spectator/Player stance + toggle, explicit so page-eval
+// verification can drive it by bare name (also covered by the _ui spread above; documented API).
+Object.assign(window, { stance, setStance, toggleStance });
 
 export {
   acc, frame, last, tick, tickAlpha,

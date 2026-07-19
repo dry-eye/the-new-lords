@@ -121,7 +121,7 @@ addEventListener('pointerup',e=>{
   if(e.pointerType==='touch') return;             // touch handled by touch* listeners below
   if(rmb){                                        // resolve the RMB order gesture (#24)
     if(rmb.timer){ clearTimeout(rmb.timer); rmb.timer=null; }
-    const sq=selectedPlayerSquad();
+    const sq=selectedCommandableSquad();            // stance-gated (#70): God ⇒ any squad, Player ⇒ own, Spectator ⇒ none
     if(rmb.opened){
       // menu already open: with quick-cast ON, releasing over an enabled row applies it;
       // otherwise the release does nothing and the menu waits for a left-click.
@@ -191,7 +191,57 @@ let quickCastOrders=false;        // "quick-cast" toggle (default off)
 let curOpts=[];                   // options currently rendered (for click/quick-cast dispatch)
 const optMenuEl=document.getElementById('optMenu');
 
-// The selected actor is a controllable SQUAD only if it's YOUR OWN squad.
+/* =====================================================================
+   OBSERVER STANCE — Spectator · God Mode · Player (#70, supersedes #25)
+   Source of truth: DESIGN.md → "Spectator, God Mode, and Player — three stances".
+   The three differ ONLY in what the player may act on — NOTHING in the simulation
+   changes between them:
+     • spectator — observe / inspect only; no orders, no interventions
+     • god       — the observer DEFAULT: command ANY unit / org, no ownership gate
+                   (a normal shipped mode, not a debug affordance — supersedes #25)
+     • player    — command only your own units (play-as-character; S.playerCharId)
+   Player is implicit in S.playerCharId (entered by picking a character — existing
+   behaviour, unchanged). The spectator↔god choice is a pure UI preference, so it is
+   a module var deliberately kept OUT of S — toggling it mutates no world state. ===================================================================== */
+let observerStance='god';                         // observer default = God Mode (#70)
+// Effective stance: playing a character ⇒ Player; otherwise the observer preference.
+function stance(){ return S.playerCharId ? 'player' : observerStance; }
+// Set the observer stance (spectator|god). 'player' is entered by picking a character
+// (setAvatar), never here — a request for it is ignored. Returns the effective stance.
+function setStance(s){
+  if(s==='spectator'||s==='god') observerStance=s;
+  updateStanceBtn();
+  return stance();
+}
+function toggleStance(){ return setStance(observerStance==='god'?'spectator':'god'); }
+// Is org `o` commandable right now, per the current stance? God ⇒ ANY org; Player ⇒
+// only the played character's own org-subtree (unchanged); Spectator ⇒ nothing.
+function orgCommandable(o){
+  if(!o) return false;
+  const st=stance();
+  if(st==='spectator') return false;
+  if(st==='god') return true;
+  return isPlayerOrg(o);                           // player — unchanged gate
+}
+// Garrison targets a FRIENDLY settlement. Player ⇒ your own org-subtree (unchanged);
+// God ⇒ any settlement of the squad's OWN faction (garrison is occupy-friendly, not
+// capture). Spectator never reaches here (the squad menu doesn't open).
+function commanderOwnsSettlement(sq, st){
+  const o=st && org(st.ownerOrgId); if(!o) return false;
+  return stance()==='god' ? (o.factionId!=null && o.factionId===sq.factionId) : isPlayerOrg(o);
+}
+// Reflect the current stance on the topbar toggle button (label + accent + hint).
+function updateStanceBtn(){
+  const b=document.getElementById('btnStance'); if(!b) return;
+  const st=stance();
+  b.textContent='Стійка: '+{spectator:'Спостерігач',god:'God Mode',player:'Гравець'}[st];
+  b.classList.toggle('on', st==='god');
+  b.title = st==='player'
+    ? 'Гра за персонажа — керуєш лише своїми загонами. G перемикає Спостерігач↔God поза грою за персонажа.'
+    : 'Стійка спостерігача (G): God Mode — командуй будь-ким · Спостерігач — лише огляд';
+}
+
+// The selected actor is a PLAYER-OWNED squad (used by the Player-stance gate).
 function selectedPlayerSquad(){
   const s=S.selection;
   if(!s || s.type!=='squad') return null;
@@ -199,14 +249,28 @@ function selectedPlayerSquad(){
   const o=org(sq.orgId);
   return (o && isPlayerOrg(o)) ? sq : null;
 }
-// Is the current selection a controllable actor that CAN own an options window? — a
-// player squad, a player-controlled org, or (Player Mode) a character leading such an
-// org. Mirrors optionsFor's branching; the RMB gesture only arms for these. (#52)
+// The selected squad IF the current stance lets you command it — God ⇒ ANY selected
+// squad, Player ⇒ only your own, Spectator ⇒ none. This is the gate the plain-RMB
+// MOVE / queue order (#36) resolves through.
+function selectedCommandableSquad(){
+  const s=S.selection;
+  if(!s || s.type!=='squad') return null;
+  const sq=sqd(s.id); if(!sq) return null;
+  const st=stance();
+  if(st==='spectator') return null;
+  if(st==='god') return sq;
+  return selectedPlayerSquad();
+}
+// Is the current selection a controllable actor that CAN own an options window and
+// arm the RMB gesture? Gated by stance (#70): Spectator ⇒ never; God ⇒ any squad /
+// org / led-org character; Player ⇒ only your own (mirrors optionsFor's branching). (#52)
 function selectedControllable(){
   const s=S.selection; if(!s) return false;
-  if(s.type==='squad') return !!selectedPlayerSquad();
-  if(s.type==='org'){ const o=org(s.id); return !!(o && isPlayerOrg(o)); }
-  if(s.type==='char'){ const c=chr(s.id); const led=c&&c.alive?org(c.ledOrgId):null; return !!(led && isPlayerOrg(led)); }
+  if(stance()==='spectator') return false;         // observe / inspect only
+  if(s.type==='squad'){ const sq=sqd(s.id); if(!sq) return false;
+    return stance()==='god' ? true : orgCommandable(org(sq.orgId)); }
+  if(s.type==='org') return orgCommandable(org(s.id));
+  if(s.type==='char'){ const c=chr(s.id); const led=c&&c.alive?org(c.ledOrgId):null; return !!(led && orgCommandable(led)); }
   return false;
 }
 
@@ -314,7 +378,7 @@ function squadOptions(sq, target, pointDir){
   // GARRISON — needs one of YOUR OWN settlements; toggles to stand-down if already
   // garrisoning that very settlement.
   const st  = target && target.type==='settlement' ? stl(target.id) : null;
-  const own = st && org(st.ownerOrgId) && isPlayerOrg(org(st.ownerOrgId));
+  const own = st && commanderOwnsSettlement(sq, st);   // stance-aware (#70): Player ⇒ your own, God ⇒ squad's own faction
   const here= st && sq.garrisonId===st.id;
   opts.push({key:'garrison',
     label: here ? 'Зняти гарнізон' : ('Гарнізон'+(st?' → '+st.name:'')),
@@ -499,13 +563,13 @@ function optionsFor(sel, target, pointDir){
   if(!sel) return null;
   if(sel.type==='squad'){
     const sq=sqd(sel.id);
-    if(!sq || !(org(sq.orgId) && isPlayerOrg(org(sq.orgId)))) return null;
+    if(!sq || !(stance()==='god' || orgCommandable(org(sq.orgId)))) return null;   // #70: God ⇒ any squad
     return { title:'Загін #'+sq.id, targetLabel: pickLabel(target)||'точка',
              opts: squadOptions(sq, target, pointDir) };
   }
   if(sel.type==='org'){
     const o=org(sel.id);
-    if(!o || !isPlayerOrg(o)) return null;             // only an org YOU control
+    if(!orgCommandable(o)) return null;                // #70: God ⇒ any org · Player ⇒ only an org YOU control
     return orgSpec(o, target);
   }
   if(sel.type==='char'){
@@ -514,7 +578,7 @@ function optionsFor(sel, target, pointDir){
     // through the character's leadership"). Self-directed char/org decisions stay off it.
     const c=chr(sel.id);
     const led = c && c.alive ? org(c.ledOrgId) : null;
-    if(!led || !isPlayerOrg(led)) return null;
+    if(!led || !orgCommandable(led)) return null;      // #70: God ⇒ any led org · Player ⇒ only yours
     return orgSpec(led, target);
   }
   return null;
@@ -711,6 +775,9 @@ addEventListener('keydown',e=>{
   if(e.key==='+'||e.key==='=') camAltTarget=Math.max(ALT_MIN,camAltTarget/1.18);
   if(e.key==='-'||e.key==='_') camAltTarget=Math.min(ALT_MAX,camAltTarget*1.18);
   if(e.key===' '){ e.preventDefault(); document.getElementById('btnPause').click(); }
+  // G — toggle the observer stance Spectator↔God (#70). No effect while playing a
+  // character (that's the Player stance, entered/left by picking a character).
+  if((e.key==='g'||e.key==='G') && !S.playerCharId) toggleStance();
 });
 
 /* ---- screen-space picking & hover ---- */
@@ -1301,6 +1368,7 @@ function setAvatar(charId){
   }
   invalidatePawns();
   document.getElementById('start').style.display='none';
+  updateStanceBtn();                    // now Player stance (#70) — reflect on the toggle
   rebuildViewpointOptions();
 }
 
@@ -1789,6 +1857,11 @@ function updateHUD(){
 document.getElementById('btnPause').onclick=e=>{
   S.paused=!S.paused; e.target.textContent=S.paused?'▶':'▮▮';
 };
+// Stance toggle (#70): flip Spectator↔God while an observer. Inert while playing a
+// character (Player stance) — that's left only by picking/dropping a character.
+{ const b=document.getElementById('btnStance');
+  if(b) b.onclick=()=>{ if(!S.playerCharId) toggleStance(); };
+  updateStanceBtn(); }
 for(const [id,v] of [['spd1',1],['spd3',3],['spd8',8]]){
   document.getElementById(id).onclick=()=>{
     S.speed=v;
@@ -1874,7 +1947,8 @@ export {
   lpTimer, makeSlot, materializeResident, maybeDismissPin, nearest, nodeColor, nodeRadius, num, openOptMenu, optMenuEl, optMenuOpen, optionsFor,
   orderClusters, orgOptions, orgSpec, orgVisible, pickAt, pickLabel, pinTip, pinnedShown, placeTip, pointInRing, projV, proposeAlliance,
   queueMove, quickCastOrders, reachable, reassignLeader, rebuildKindFilter, rebuildViewpointOptions, regenerate, relax, removePost, renderEcon, renderInspector, renderOptMenu,
-  rmb, row, runOpt, sabotage, screenPos, screenToDir, select, selectedControllable, selectedPlayerSquad, setAvatar, showPin, slotEdge,
+  rmb, row, runOpt, sabotage, screenPos, screenToDir, select, selectedCommandableSquad, selectedControllable, selectedPlayerSquad, setAvatar, showPin, slotEdge,
   spin, squadOptions, standDown, stepCamera, stepFly, tDist, tMidX, tMidY, targetFaction, targetOrg, termHTML, termLPtimer,
   termTip, tip, tipHTML, tmpQ, tmpV, toScreen, touchG, touchRotate, updateCamera, updateHUD,
+  stance, setStance, toggleStance, orgCommandable, commanderOwnsSettlement, updateStanceBtn,
 };
