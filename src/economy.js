@@ -27,6 +27,10 @@ import { hostile, slerp } from './squads.js';
    The journal gains a TradeExecuted row per completed haul (src→dst, qty,
    margin, profit, deliveredFrac<1 ⇒ buyer ran short) and a CaravanNoDeal row
    when a caravan can find no profitable deal from its node.
+   world.trade.reach answers SPATIAL coverage — how many settlements caravans
+   ever touch (coveredEver / deliveredEver / neverTouched), how concentrated
+   the fleet sits now (presenceHHI → effectiveNodes), and per-trade-house
+   reach; per-settlement rows carry caravansNow / caravanVisits / lastCaravanTick.
    Both are sampled at a fixed point in the tick order (end of tick()),
    driven only by the seeded sim RNG and by reading existing state — the
    sim never reads telemetry back — so a replay from the same seed yields
@@ -67,6 +71,10 @@ const TELE = {
   _deadOrgs: {},             // org id -> true once OrgDestroyed emitted (no double-report)
   _imports: {},              // (v2) settlement id -> {resource: units delivered by caravans since last snapshot}
   _deficitStreak: {},        // (v2) settlement id -> consecutive snapshots spent in deficit (chronic-underserved)
+  _cvVisits: {},             // (v2 coverage) settlement id -> # snapshots it hosted >=1 caravan (cumulative reach)
+  _cvLastVisit: {},          // (v2 coverage) settlement id -> last tick a caravan was present
+  _cvDeliveredEver: {},      // (v2 coverage) settlement id -> cumulative units ever delivered to it
+  _houseReach: {},           // (v2 coverage) trade-house id -> {destination settlement id: true} (distinct reach)
 };
 
 function teleFreshCounters(){
@@ -116,6 +124,7 @@ function teleReset(seed){
   TELE.counters=teleFreshCounters();
   TELE._prevPop={}; TELE._sidePair={}; TELE._sidePairSeeded=false; TELE._deadOrgs={};
   TELE._imports={}; TELE._deficitStreak={};
+  TELE._cvVisits={}; TELE._cvLastVisit={}; TELE._cvDeliveredEver={}; TELE._houseReach={};
   TELE.phase='worldgen';
   TELE.meta={
     schema:'new-lords-telemetry/v2',
@@ -225,6 +234,10 @@ function teleSnapshot(){
   };
   const priceSamples={}; for(const r of RKEYS){ world.economy.resources[r]={stock:0, net:0, priceMean:0, priceStd:0}; priceSamples[r]=[]; }
 
+  // (v2 coverage) where caravans sit RIGHT NOW, by settlement id — drives per-settlement counts + presence HHI
+  const cvCountById={}; let cvTotalNow=0;
+  for(const cv of S.caravans){ const cst=S.settlements[cv.atIdx]; if(cst){ cvCountById[cst.id]=(cvCountById[cst.id]||0)+1; cvTotalNow++; } }
+
   const settlementRows=[];
   for(const st of S.settlements){
     const owner=org(st.ownerOrgId);
@@ -267,6 +280,9 @@ function teleSnapshot(){
     if(impRec) for(const r of RKEYS) impSum+=impRec[r]||0;
     let defUnits=0; for(const r of RKEYS){ const dd=(st.target[r]||1)*0.95-(st.stock[r]||0); if(dd>0) defUnits+=dd; }
     TELE._deficitStreak[st.id]= defUnits>=2 ? (TELE._deficitStreak[st.id]||0)+1 : 0;
+    // (v2 coverage) this settlement's caravan reach: current count + cumulative visit tally + last-seen tick
+    const cvNow=cvCountById[st.id]||0;
+    if(cvNow>0){ TELE._cvVisits[st.id]=(TELE._cvVisits[st.id]||0)+1; TELE._cvLastVisit[st.id]=tick; }
     settlementRows.push({
       tick, id:st.id, name:st.name, tier:st.tier, ownerOrgId:st.ownerOrgId, faction:fid,
       area:st.area, pop:st.pop, popRate: st.pop-(TELE._prevPop[st.id]!=null?TELE._prevPop[st.id]:st.pop),
@@ -274,6 +290,7 @@ function teleSnapshot(){
       income:{ base:incBase, territoryTax:incTax, taxRate: owner?owner.taxRate:0 },
       enterprises:{running, idle}, abandoned, contested: st.contest>0,
       imported:+impSum.toFixed(2), deficitUnits:+defUnits.toFixed(1), deficitStreak:TELE._deficitStreak[st.id],
+      caravansNow:cvNow, caravanVisits:TELE._cvVisits[st.id]||0, lastCaravanTick:(TELE._cvLastVisit[st.id]!=null?TELE._cvLastVisit[st.id]:null),
     });
     TELE._prevPop[st.id]=st.pop;
   }
@@ -398,11 +415,24 @@ function teleSnapshot(){
         brokeDefCities:broke, medHopsToSurplus: hopsN?+(hopsSum/hopsN).toFixed(2):null, unreachableDefCities:unreach,
         deliveredSinceSnap:+deliv.toFixed(1) };
     }
+    // (v2 coverage) spatial reach across the whole run + how concentrated the fleet sits right now.
+    // Answers "how much of the world do caravans actually touch, and do they cluster in one region?"
+    let coveredEver=0, deliveredEver=0, neverTouched=0;
+    for(const st of S.settlements){
+      const visited=(TELE._cvVisits[st.id]||0)>0, gotGoods=(TELE._cvDeliveredEver[st.id]||0)>0;
+      if(visited) coveredEver++; if(gotGoods) deliveredEver++;
+      if(!visited && !gotGoods) neverTouched++;
+    }
+    let presenceHHI=0; if(cvTotalNow>0) for(const id in cvCountById){ const f=cvCountById[id]/cvTotalNow; presenceHHI+=f*f; }
+    const reachSizes=houses.map(h=>Object.keys(TELE._houseReach[h.id]||{}).length);
     world.trade={ caravans:S.caravans.length, idle:cvIdle, hauling:cvHaul,
       meanLoadFactor: loadN?+(loadSum/loadN).toFixed(3):0,
       houses:houses.length, houseCapTotal:houses.reduce((a,h)=>a+(h.caravanCap||0),0),
       tradesLifetime:TELE.counters.tradesExecuted, volumeLifetime:+TELE.counters.tradeVolume.toFixed(1),
       profitLifetime:+TELE.counters.tradeProfit.toFixed(1), deliveredShortLifetime:TELE.counters.tradeDeliveredShort,
+      reach:{ settlements:S.settlements.length, coveredEver, deliveredEver, neverTouched,
+        placedNow:Object.keys(cvCountById).length, presenceHHI:+presenceHHI.toFixed(3),
+        effectiveNodes: presenceHHI>0?+(1/presenceHHI).toFixed(1):0, houseReach:teleDist(reachSizes) },
       coverage };
   }
 
@@ -740,6 +770,10 @@ function arrive(cv, house){
       if(!TELE._imports[dst.id]) TELE._imports[dst.id]={};
       TELE._imports[dst.id][cv.cargo]=(TELE._imports[dst.id][cv.cargo]||0)+delivered;
       const tc=TELE.counters; tc.tradesExecuted++; tc.tradeVolume+=delivered; tc.tradeProfit+=profit; if(deliveredFrac<0.999) tc.tradeDeliveredShort++;
+      // (v2 coverage) cumulative "who did caravans ever reach"
+      TELE._cvDeliveredEver[dst.id]=(TELE._cvDeliveredEver[dst.id]||0)+delivered;
+      if(!TELE._houseReach[house.id]) TELE._houseReach[house.id]={};
+      TELE._houseReach[house.id][dst.id]=true;
     }
     cv.cargo=null; cv.qty=0;
   }
