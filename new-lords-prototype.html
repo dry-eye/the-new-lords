@@ -418,6 +418,17 @@ function logEvent(html){
         aggregates for all + full series for a bounded watched set);
      • an append-only EVENT JOURNAL, tick-stamped — "when & from what cause
        did a step-change happen".
+   (v2) CARAVAN / TRADE layer: each snapshot carries a world.trade block —
+   fleet state (idle vs hauling, mean load factor), trade-house counts, and a
+   per-resource deficit-coverage landscape that separates three failure modes
+   the raw "deficit" number conflates:
+     • PRODUCTION gap   — productionShortUnits (deficit beyond ALL surplus);
+     • LOGISTICS gap    — servableUnits (deficit existing surplus could cover)
+                          vs deliveredSinceSnap (what caravans actually moved);
+     • AFFORDABILITY gap— brokeDefCities (deficit cities whose owner can't pay).
+   The journal gains a TradeExecuted row per completed haul (src→dst, qty,
+   margin, profit, deliveredFrac<1 ⇒ buyer ran short) and a CaravanNoDeal row
+   when a caravan can find no profitable deal from its node.
    Both are sampled at a fixed point in the tick order (end of tick()),
    driven only by the seeded sim RNG and by reading existing state — the
    sim never reads telemetry back — so a replay from the same seed yields
@@ -431,7 +442,7 @@ function logEvent(html){
    "EXTENSION POINT" below — the collector shape is ready for them, they
    just have no backing state to read yet.
    ===================================================================== */
-const TELE_BUILD_ID = 'nl-proto-telemetry-v1';   // fixed id (NOT a timestamp) → determinism
+const TELE_BUILD_ID = 'nl-proto-telemetry-v2';   // fixed id (NOT a timestamp) → determinism  (v2: caravan / trade instrumentation)
 const TELE_SLOT_KINDS = ['control','influence','investment'];
 
 const TELE = {
@@ -456,6 +467,8 @@ const TELE = {
   _sidePair: {},             // "a:b" -> 'war'|'peace'|'neutral' (war/peace transition detection)
   _sidePairSeeded: false,
   _deadOrgs: {},             // org id -> true once OrgDestroyed emitted (no double-report)
+  _imports: {},              // (v2) settlement id -> {resource: units delivered by caravans since last snapshot}
+  _deficitStreak: {},        // (v2) settlement id -> consecutive snapshots spent in deficit (chronic-underserved)
 };
 
 function teleFreshCounters(){
@@ -463,6 +476,8 @@ function teleFreshCounters(){
     orgCreated:   {total:0, byKind:{}, byCause:{}},
     orgDestroyed: {total:0, byKind:{}, byCause:{}},
     settlementCaptured:0, squadRecruited:0, squadDisbanded:0,
+    // caravan trade ledger (v2): lifetime tallies of completed hauls
+    tradesExecuted:0, tradeVolume:0, tradeProfit:0, tradeDeliveredShort:0,
   };
 }
 function teleBump(obj, key){ obj[key]=(obj[key]||0)+1; }
@@ -472,6 +487,7 @@ function teleCloneCounters(){   // per-snapshot value of the lifetime tallies (a
     orgCreated:{total:c.orgCreated.total, byKind:Object.assign({},c.orgCreated.byKind), byCause:Object.assign({},c.orgCreated.byCause)},
     orgDestroyed:{total:c.orgDestroyed.total, byKind:Object.assign({},c.orgDestroyed.byKind), byCause:Object.assign({},c.orgDestroyed.byCause)},
     settlementCaptured:c.settlementCaptured, squadRecruited:c.squadRecruited, squadDisbanded:c.squadDisbanded,
+    tradesExecuted:c.tradesExecuted, tradeVolume:c.tradeVolume, tradeProfit:c.tradeProfit, tradeDeliveredShort:c.tradeDeliveredShort,
   };
 }
 
@@ -501,9 +517,10 @@ function teleReset(seed){
   TELE.journal.length=0;
   TELE.counters=teleFreshCounters();
   TELE._prevPop={}; TELE._sidePair={}; TELE._sidePairSeeded=false; TELE._deadOrgs={};
+  TELE._imports={}; TELE._deficitStreak={};
   TELE.phase='worldgen';
   TELE.meta={
-    schema:'new-lords-telemetry/v1',
+    schema:'new-lords-telemetry/v2',
     buildId:TELE_BUILD_ID,
     seed:seed>>>0,
     // worldgen params — kept in sync with generate() by hand (no param registry in the prototype yet)
@@ -647,12 +664,18 @@ function teleSnapshot(){
       fr.housing.total+=house; fr.housing.shortfall+=shortfall;
       fr.enterprises.running+=running; fr.enterprises.idle+=idle;
     }
+    // (v2) caravan coverage per settlement: units imported since last snapshot, current deficit, chronic-deficit streak
+    let impSum=0; const impRec=TELE._imports[st.id];
+    if(impRec) for(const r of RKEYS) impSum+=impRec[r]||0;
+    let defUnits=0; for(const r of RKEYS){ const dd=(st.target[r]||1)*0.95-(st.stock[r]||0); if(dd>0) defUnits+=dd; }
+    TELE._deficitStreak[st.id]= defUnits>=2 ? (TELE._deficitStreak[st.id]||0)+1 : 0;
     settlementRows.push({
       tick, id:st.id, name:st.name, tier:st.tier, ownerOrgId:st.ownerOrgId, faction:fid,
       area:st.area, pop:st.pop, popRate: st.pop-(TELE._prevPop[st.id]!=null?TELE._prevPop[st.id]:st.pop),
       housing:house, shortfall, resources:resRow,
       income:{ base:incBase, territoryTax:incTax, taxRate: owner?owner.taxRate:0 },
       enterprises:{running, idle}, abandoned, contested: st.contest>0,
+      imported:+impSum.toFixed(2), deficitUnits:+defUnits.toFixed(1), deficitStreak:TELE._deficitStreak[st.id],
     });
     TELE._prevPop[st.id]=st.pop;
   }
@@ -746,6 +769,45 @@ function teleSnapshot(){
     };
   });
 
+  /* ---- (v2) caravan / trade fleet + per-resource deficit-coverage landscape ----
+     Separates the three failure modes the raw "deficit" number conflates:
+       • unservableUnits — deficit in a good with NO surplus anywhere → a PRODUCTION gap, not a caravan one;
+       • servableUnits   — deficit where surplus exists elsewhere → a LOGISTICS gap (reach / throughput);
+       • brokeDefCities  — deficit cities whose owner can't afford imports → an AFFORDABILITY gap.
+     deliveredSinceSnap is the caravan through-flow per resource in the window since the last snapshot. */
+  {
+    let cvIdle=0, cvHaul=0, loadN=0, loadSum=0;
+    for(const cv of S.caravans){ if(cv.phase==='hauling'){ cvHaul++; if(cv.capacity){ loadSum+=(cv.qty||0)/cv.capacity; loadN++; } } else cvIdle++; }
+    const houses=S.orgs.filter(o=>o.trade);
+    const coverage={};
+    for(const r of RKEYS){
+      let defC=0, defU=0, surC=0, surU=0, broke=0; const defIdx=[], surIdx=[];
+      S.settlements.forEach((st,i)=>{
+        const tgt=st.target[r]||1, s=st.stock[r]||0, d=tgt*0.95-s, su=s-tgt*0.95;
+        if(d>=2){ defC++; defU+=d; defIdx.push(i);
+          const ow=org(st.ownerOrgId); if(ow && ow.treasury < Math.min(55,d)*priceOf(st,r)) broke++; }
+        if(su>=2){ surC++; surU+=su; surIdx.push(i); }
+      });
+      let hopsN=0, hopsSum=0, unreach=0;
+      if(surIdx.length) for(const di of defIdx){ let best=null;
+        for(const si of surIdx){ const p=pathBetween(di,si); const h=p?p.length-1:null; if(h!=null && (best==null||h<best)) best=h; }
+        if(best==null) unreach++; else { hopsN++; hopsSum+=best; } }
+      let deliv=0; for(const sid in TELE._imports) deliv+=TELE._imports[sid][r]||0;
+      coverage[r]={ defCities:defC, defUnits:+defU.toFixed(1), surCities:surC, surUnits:+surU.toFixed(1),
+        movable:surC>0,
+        servableUnits:+Math.min(defU,surU).toFixed(1),           // deficit that existing surplus COULD cover — logistics-addressable
+        productionShortUnits:+Math.max(0,defU-surU).toFixed(1),  // deficit beyond all surplus → a PRODUCTION gap, not a caravan one
+        brokeDefCities:broke, medHopsToSurplus: hopsN?+(hopsSum/hopsN).toFixed(2):null, unreachableDefCities:unreach,
+        deliveredSinceSnap:+deliv.toFixed(1) };
+    }
+    world.trade={ caravans:S.caravans.length, idle:cvIdle, hauling:cvHaul,
+      meanLoadFactor: loadN?+(loadSum/loadN).toFixed(3):0,
+      houses:houses.length, houseCapTotal:houses.reduce((a,h)=>a+(h.caravanCap||0),0),
+      tradesLifetime:TELE.counters.tradesExecuted, volumeLifetime:+TELE.counters.tradeVolume.toFixed(1),
+      profitLifetime:+TELE.counters.tradeProfit.toFixed(1), deliveredShortLifetime:TELE.counters.tradeDeliveredShort,
+      coverage };
+  }
+
   const factionsOut=Object.keys(facMap).map(Number).sort((a,b)=>a-b).map(k=>facMap[k]);
 
   TELE.snapshots.push({
@@ -757,6 +819,7 @@ function teleSnapshot(){
       watched:watchedRows,
     },
   });
+  TELE._imports={};   // (v2) reset per-window import accumulator after both settlement rows and coverage have read it
 
   // EXTENSION POINT (retention): if thinPerEntityKeepEvery is set, down-sample the oldest
   // per-entity rows of already-stored snapshots here. Left as a no-op (keep everything) by default.
@@ -1555,7 +1618,12 @@ function caravanStep(){
     if(!house){cv.dead=true;continue;}
     if(cv.phase==='idle'){
       const deal=bestTrade(cv, house);
-      if(!deal){ cv.phase='idle'; continue; }
+      if(!deal){
+        cv.phase='idle';
+        // (v2) edge-triggered: journal the first tick a caravan finds NO profitable deal from its node ("stuck")
+        if(TELE.cfg.enabled && !cv.stuck){ cv.stuck=true; teleEvent('CaravanNoDeal',{caravanId:cv.id, atSettlement:S.settlements[cv.atIdx].id}); }
+        continue;
+      }
       const here=S.settlements[cv.atIdx];
       const cost=deal.qty*deal.buy;
       if(house.treasury<cost) continue;
@@ -1563,6 +1631,7 @@ function caravanStep(){
       here.stock[deal.r]-=deal.qty;
       const srcOwner=org(here.ownerOrgId); if(srcOwner) srcOwner.treasury+=cost;
       cv.cargo=deal.r; cv.qty=deal.qty; cv.buyPrice=deal.buy;
+      cv.srcIdx=cv.atIdx; cv.dealHops=deal.path.length-1; cv.stuck=false;   // (v2) trade-ledger provenance
       cv.path=deal.path; cv.step=0; cv.prog=0; cv.phase='hauling'; cv.dest=deal.j;
       continue;
     }
@@ -1613,6 +1682,18 @@ function arrive(cv, house){
     if(delivered>1 && chance(0.35))
       logEvent('Караван <b>'+house.name+'</b>: '+Math.round(delivered)+' '+RES[cv.cargo].label.toLowerCase()+
         ' → <span class="link" data-sel="settlement:'+dst.id+'">'+dst.name+'</span> ('+(profit>=0?'+':'')+Math.round(profit)+'💰)');
+    // (v2) trade ledger: one journal row per completed haul — the raw material for a math model of caravan behavior
+    if(TELE.cfg.enabled){
+      const deliveredFrac = pay>0 ? afford/pay : 0;   // <1 ⇒ buyer ran out of money (affordability loss)
+      const srcId = (cv.srcIdx!=null && S.settlements[cv.srcIdx]) ? S.settlements[cv.srcIdx].id : null;
+      teleEvent('TradeExecuted',{houseId:house.id, resource:cv.cargo, qtyBought:cv.qty, delivered:+delivered.toFixed(2),
+        src:srcId, dst:dst.id, buyPrice:+cv.buyPrice.toFixed(2), sellPrice:+sell.toFixed(2),
+        margin:+(sell-cv.buyPrice).toFixed(2), distHops:(cv.dealHops!=null?cv.dealHops:null),
+        profit:+profit.toFixed(2), deliveredFrac:+deliveredFrac.toFixed(3)});
+      if(!TELE._imports[dst.id]) TELE._imports[dst.id]={};
+      TELE._imports[dst.id][cv.cargo]=(TELE._imports[dst.id][cv.cargo]||0)+delivered;
+      const tc=TELE.counters; tc.tradesExecuted++; tc.tradeVolume+=delivered; tc.tradeProfit+=profit; if(deliveredFrac<0.999) tc.tradeDeliveredShort++;
+    }
     cv.cargo=null; cv.qty=0;
   }
   cv.phase='idle'; cv.path=null; cv.step=0; cv.prog=0; cv.dir=dst.dir.clone();
