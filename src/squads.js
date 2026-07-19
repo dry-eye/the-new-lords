@@ -6,6 +6,12 @@ import { TELE, teleEvent, teleOrgDestroyed } from './economy.js';
 import { makeChar, makeEdge, makeOrg, setLeader } from './worldgen.js';
 import { applyOrder } from './ui.js';
 
+// A squad is "at" a settlement when within its capture zone — a fixed radius around the
+// site (DESIGN §633, default 20 units). On the unit sphere that is dir·dir > this cos.
+// Shared so the settlement squad-tray (#68, render.js) groups on exactly the same test
+// the capture/defence logic uses here — presence and capture never disagree.
+const CAPTURE_COS = 0.9997;
+
 /* =====================================================================
    SQUADS — movement, minimal combat, capture
    ===================================================================== */
@@ -47,9 +53,9 @@ function squadStep(){
     const so=org(sq.orgId); if(!so) continue;
     if(sq.mode==='manual' && sq.order!=='move') { /* manual squads wait for orders */ }
     // capture progress
-    const here=S.settlements.find(s=>s.dir.dot(sq.dir)>0.9997);
+    const here=S.settlements.find(s=>s.dir.dot(sq.dir)>CAPTURE_COS);
     if(here && hostile(sq.factionId, org(here.ownerOrgId)?.factionId)){
-      const defenders=S.squads.filter(s=>s!==sq && s.dir.dot(here.dir)>0.9997 &&
+      const defenders=S.squads.filter(s=>s!==sq && s.dir.dot(here.dir)>CAPTURE_COS &&
         !hostile(s.factionId, org(here.ownerOrgId)?.factionId));
       if(!defenders.length){
         here.contest++;
@@ -69,7 +75,7 @@ function squadStep(){
     const cands=S.settlements.map(st=>{
       const own=org(st.ownerOrgId);
       if(!own || !hostile(sq.factionId, own.factionId)) return null;
-      const def=S.squads.filter(s=>s.dir.dot(st.dir)>0.9997 && !hostile(s.factionId, own.factionId))
+      const def=S.squads.filter(s=>s.dir.dot(st.dir)>CAPTURE_COS && !hostile(s.factionId, own.factionId))
         .reduce((a,s)=>a+s.strength,0);
       if(def >= sq.strength) return null;   // veto: never attack when weaker
       const d=1-sq.dir.dot(st.dir);
@@ -81,7 +87,7 @@ function squadStep(){
       sq.targetName=cands[0].st.name;
     } else {
       const home=stl(sq.homeId);
-      if(home && sq.dir.dot(home.dir)<0.9997){ sq.target=home.dir.clone(); sq.order='return'; }
+      if(home && sq.dir.dot(home.dir)<CAPTURE_COS){ sq.target=home.dir.clone(); sq.order='return'; }
       else { sq.order='garrison'; sq.garrisonId=sq.homeId; }
     }
   }
@@ -143,5 +149,5 @@ function capture(st, sq){
 
 
 export {
-  capture, hostile, killSquad, moveToward, slerp, squadStep,
+  CAPTURE_COS, capture, hostile, killSquad, moveToward, slerp, squadStep,
 };
