@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New Lords — PCG City Navigation (#20)</title>
+<style>
+  html,body{margin:0;height:100%;background:#0d1117;color:#c9d1d9;font:13px/1.4 system-ui,sans-serif;overflow:hidden}
+  #c{position:fixed;inset:0;display:block}
+  #ui{position:fixed;top:10px;left:10px;width:250px;background:#161b22ee;border:1px solid #30363d;border-radius:8px;padding:12px 14px;backdrop-filter:blur(4px)}
+  #ui h1{font-size:13px;margin:0 0 8px;color:#e6edf3}
+  #ui .sub{color:#8b949e;font-size:11px;margin:-4px 0 10px}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:6px 0}
+  .row label{color:#8b949e;flex:1}
+  .row input[type=range]{flex:1;min-width:0}
+  .row .v{width:44px;text-align:right;color:#e6edf3;font-variant-numeric:tabular-nums}
+  #ui input[type=number]{width:80px;background:#0d1117;border:1px solid #30363d;color:#e6edf3;border-radius:5px;padding:3px 6px}
+  #ui button{width:100%;margin-top:10px;background:#238636;border:0;color:#fff;padding:7px;border-radius:6px;cursor:pointer;font-weight:600}
+  #ui button:hover{background:#2ea043}
+  #stat{position:fixed;bottom:10px;left:10px;color:#8b949e;font-size:11px;background:#161b22cc;padding:6px 9px;border-radius:6px}
+  #hint{position:fixed;bottom:10px;right:10px;color:#6e7681;font-size:11px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h1>PCG City Navigation</h1>
+  <div class="sub">pathfinding testbed · #20</div>
+  <div class="row"><label>seed</label><input id="seed" type="number" value="7"></div>
+  <div class="row"><label>block width (m)</label><input class="sl" id="blockW" type="range" min="40" max="200" value="120"><span class="v" data-for="blockW"></span></div>
+  <div class="row"><label>block length (m)</label><input class="sl" id="blockL" type="range" min="30" max="140" value="60"><span class="v" data-for="blockL"></span></div>
+  <div class="row"><label>local road (m)</label><input class="sl" id="roadLocal" type="range" min="4" max="40" value="19"><span class="v" data-for="roadLocal"></span></div>
+  <div class="row"><label>district road (m)</label><input class="sl" id="roadCollector" type="range" min="6" max="60" value="26"><span class="v" data-for="roadCollector"></span></div>
+  <div class="row"><label>artery road (m)</label><input class="sl" id="roadArtery" type="range" min="10" max="120" value="40"><span class="v" data-for="roadArtery"></span></div>
+  <div class="row"><label>building gap (m)</label><input class="sl" id="buildingGap" type="range" min="0" max="30" value="6"><span class="v" data-for="buildingGap"></span></div>
+  <div class="row"><label>max height (m)</label><input class="sl" id="maxH" type="range" min="10" max="120" value="60"><span class="v" data-for="maxH"></span></div>
+  <div class="row"><label>buildable %</label><input class="sl" id="buildable" type="range" min="40" max="100" value="90"><span class="v" data-for="buildable"></span></div>
+  <div class="row"><label>parks %</label><input class="sl" id="parkPct" type="range" min="0" max="45" value="16"><span class="v" data-for="parkPct"></span></div>
+  <div class="row"><label>hex size (m)</label><input class="sl" id="hexInr" type="range" min="4" max="30" value="9"><span class="v" data-for="hexInr"></span></div>
+  <button id="gen">Regenerate</button>
+</div>
+<div id="stat"></div>
+<div id="hint">LMB = select · MMB drag = orbit · wheel = zoom</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ============================================================================
+   New Lords — PCG City, a text-graph reimplementation of Epic's PCGPrimitives
+   /Examples/City/City_Circular_1km_2_arteries_NoAssetLibrary (extracted read-only
+   via Unreal MCP GetGraphStructure — see docs/pcg/city_generator.graph.json).
+
+   Everything is a 2D area/spline pipeline: sample -> filter -> transform -> spawn,
+   exactly the PCG model. Units are metres (UE uu / 100). Deterministic per seed.
+   ============================================================================ */
+
+/* ---- deterministic RNG + value noise ---- */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+let RNG=mulberry32(7);
+const rnd=()=>RNG();
+function hash2(x,y){let h=Math.sin(x*127.1+y*311.7)*43758.5453;return h-Math.floor(h);}
+function vnoise(x,y){ // value noise in [0,1]
+  const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi;
+  const u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf);
+  const a=hash2(xi,yi),b=hash2(xi+1,yi),c=hash2(xi,yi+1),d=hash2(xi+1,yi+1);
+  return a*(1-u)*(1-v)+b*u*(1-v)+c*(1-u)*v+d*u*v;
+}
+
+/* ---- polygon helpers (poly = [{x,y}...], CCW) ---- */
+const area2=p=>{let s=0;for(let i=0,n=p.length;i<n;i++){const a=p[i],b=p[(i+1)%n];s+=a.x*b.y-b.x*a.y;}return s/2;};
+const area=p=>Math.abs(area2(p));
+function ccw(p){return area2(p)<0?p.slice().reverse():p;}
+const centroid=p=>{let x=0,y=0;for(const q of p){x+=q.x;y+=q.y;}return{x:x/p.length,y:y/p.length};};
+function bbox(p){let a=1e9,b=1e9,c=-1e9,d=-1e9;for(const q of p){a=Math.min(a,q.x);b=Math.min(b,q.y);c=Math.max(c,q.x);d=Math.max(d,q.y);}return{minx:a,miny:b,maxx:c,maxy:d};}
+function minAngle(poly){let m=Math.PI;const n=poly.length;
+  for(let i=0;i<n;i++){const a=poly[(i-1+n)%n],b=poly[i],c=poly[(i+1)%n];
+    const u1x=a.x-b.x,u1y=a.y-b.y,u2x=c.x-b.x,u2y=c.y-b.y;
+    const d=(u1x*u2x+u1y*u2y)/((Math.hypot(u1x,u1y)||1)*(Math.hypot(u2x,u2y)||1));
+    m=Math.min(m,Math.acos(Math.max(-1,Math.min(1,d))));}
+  return m;}
+const isSliver=poly=>poly.length<3||minAngle(poly)<0.55; // corner < ~31deg -> unrealistic wedge -> сквер
+// sports grounds, largest that fits the green area (metres): football, small pitch, tennis
+const SPORTS=[{type:'football',w:100,l:64},{type:'fivepitch',w:42,l:26},{type:'tennis',w:24,l:11}];
+function fitField(poly,maxFootball){
+  const bb=bbox(poly),W=bb.maxx-bb.minx,H=bb.maxy-bb.miny,long=Math.max(W,H),short=Math.min(W,H);
+  const angle=W>=H?0:Math.PI/2;
+  for(const s of SPORTS){
+    if(s.type==='football'&&maxFootball<=0)continue;
+    if(long>=s.w+6&&short>=s.l+6)return {type:s.type,cx:(bb.minx+bb.maxx)/2,cy:(bb.miny+bb.maxy)/2,w:s.w,l:s.l,angle};
+  }
+  return null;
+}
+
+// Sutherland–Hodgman: keep the half-plane left of directed line a->b
+function clipHalf(poly,a,b){
+  const out=[];const n=poly.length;const side=p=>(b.x-a.x)*(p.y-a.y)-(b.y-a.y)*(p.x-a.x);
+  for(let i=0;i<n;i++){
+    const cur=poly[i],nxt=poly[(i+1)%n];const sc=side(cur),sn=side(nxt);
+    if(sc>=0)out.push(cur);
+    if((sc>=0)!==(sn>=0)){const t=sc/(sc-sn);out.push({x:cur.x+t*(nxt.x-cur.x),y:cur.y+t*(nxt.y-cur.y)});}
+  }
+  return out.length>=3?out:null;
+}
+// split poly into two halves by line a->b
+function splitByLine(poly,a,b){
+  const L=clipHalf(poly,a,b);const R=clipHalf(poly,b,a);
+  return [L,R].filter(p=>p&&area(p)>1);
+}
+// like splitByLine, but carve a real road corridor of width `gap` centred on the cut
+function splitWithGap(poly,a,b,gap){
+  if(!gap)return splitByLine(poly,a,b);
+  let dx=b.x-a.x,dy=b.y-a.y;const L=Math.hypot(dx,dy)||1;const nx=-dy/L*gap/2,ny=dx/L*gap/2;
+  const left =clipHalf(poly,{x:a.x+nx,y:a.y+ny},{x:b.x+nx,y:b.y+ny});
+  const right=clipHalf(poly,{x:b.x-nx,y:b.y-ny},{x:a.x-nx,y:a.y-ny});
+  return [left,right].filter(p=>p&&area(p)>1);
+}
+
+/* ---- PCG primitives (each: (inputs, params) -> outputs) ---- */
+
+// Create_Spline_Shape (ngon) + organic jitter of the corners
+function createShape(radius,ngon){
+  const p=[],N=Math.max(ngon,16),ph1=rnd()*6.28,ph2=rnd()*6.28;
+  for(let i=0;i<N;i++){const a=Math.PI*2*i/N;
+    const r=radius*(0.9+0.06*Math.sin(a*3+ph1)+0.05*Math.sin(a*5+ph2)); // seamless organic wobble
+    p.push({x:Math.cos(a)*r*1.08,y:Math.sin(a)*r});}                    // slight ellipse
+  return ccw(p);
+}
+// Create_Spline_line (straight arterial: 2 endpoints, so the carved corridor and drawn ribbon align)
+function createArtery(len,angle,offset){
+  const dx=Math.cos(angle),dy=Math.sin(angle),cx=-dy*offset,cy=dx*offset;
+  return [{x:cx-dx*len/2,y:cy-dy*len/2},{x:cx+dx*len/2,y:cy+dy*len/2}];
+}
+// Subdivide_Areas_withSpline: cut area by each artery, carving a corridor of width `gap`
+function subdivideBySplines(areas,splines,gap){
+  let cur=areas;
+  for(const s of splines){const a=s[0],b=s[s.length-1];
+    const next=[];for(const poly of cur)next.push(...splitWithGap(poly,a,b,gap));cur=next;}
+  return cur;
+}
+// Subdivide_Areas_WithRecursiveSplit: binary split along the long axis, N iterations, carving `gap`-wide roads
+function recursiveSplit(poly,iters,maxOff,gap){
+  if(iters<=0||area(poly)<20)return[poly];
+  const bb=bbox(poly),c=centroid(poly);
+  const horiz=(bb.maxx-bb.minx)>=(bb.maxy-bb.miny); // split perpendicular to longer side
+  const off=(rnd()-.5)*2*maxOff;
+  let a,b;
+  if(horiz){const x=c.x+off*(bb.maxx-bb.minx);a={x,y:bb.miny-9};b={x,y:bb.maxy+9};}
+  else{const y=c.y+off*(bb.maxy-bb.miny);a={x:bb.minx-9,y};b={x:bb.maxx+9,y};}
+  const halves=splitWithGap(poly,a,b,gap);
+  if(halves.length<2)return[poly];
+  return halves.flatMap(h=>recursiveSplit(h,iters-1,maxOff,gap));
+}
+// Subdivide_Areas_withGrid: clip area against an axis-aligned grid -> blocks
+function subdivideGrid(poly,gw,gl){
+  const bb=bbox(poly),blocks=[];
+  for(let x=bb.minx;x<bb.maxx;x+=gw)for(let y=bb.miny;y<bb.maxy;y+=gl){
+    let cell=poly;
+    cell=clipHalf(cell,{x,y:1},{x,y:0});            if(!cell)continue; // keep x' >= x
+    cell=clipHalf(cell,{x:x+gw,y:0},{x:x+gw,y:1});  if(!cell)continue; // keep x' <= x+gw
+    cell=clipHalf(cell,{x:0,y},{x:1,y});            if(!cell)continue; // keep y' >= y
+    cell=clipHalf(cell,{x:1,y:y+gl},{x:0,y:y+gl});  if(!cell)continue; // keep y' <= y+gl
+    if(area(cell)>30)blocks.push(cell);
+  }
+  return blocks;
+}
+// Filter_Areas_BySize -> {selected, unselected}
+function filterBySize(areas,size,lesser){
+  const sel=[],un=[];for(const p of areas){const keep=lesser?area(p)<size:area(p)>=size;(keep?sel:un).push(p);}return{sel,un};
+}
+// Filter_RandomChoice -> {selected (ratio), unselected}
+function filterRandom(areas,ratio){
+  const sel=[],un=[];for(const p of areas)(rnd()<ratio?sel:un).push(p);return{sel,un};
+}
+// Transform_Areas_Contract: inward offset by d (metres); null if it collapses
+function contract(poly,d){
+  const p=ccw(poly),n=p.length,lines=[];
+  for(let i=0;i<n;i++){const a=p[i],b=p[(i+1)%n];
+    let ex=b.x-a.x,ey=b.y-a.y;const L=Math.hypot(ex,ey)||1;ex/=L;ey/=L;
+    const nx=-ey,ny=ex; // inward normal for CCW
+    lines.push({px:a.x+nx*d,py:a.y+ny*d,dx:ex,dy:ey});
+  }
+  const out=[];
+  for(let i=0;i<n;i++){const l1=lines[(i-1+n)%n],l2=lines[i];
+    const den=l1.dx*l2.dy-l1.dy*l2.dx;if(Math.abs(den)<1e-6)return null;
+    const t=((l2.px-l1.px)*l2.dy-(l2.py-l1.py)*l2.dx)/den;
+    out.push({x:l1.px+l1.dx*t,y:l1.py+l1.dy*t});
+  }
+  return area(out)>10&&area2(ccw(out))!==0?out:null;
+}
+// scatter points inside a polygon (Fill_Areas_Randomly)
+function pointInPoly(pt,poly){let inside=false;for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+  const a=poly[i],b=poly[j];if(((a.y>pt.y)!==(b.y>pt.y))&&(pt.x<(b.x-a.x)*(pt.y-a.y)/(b.y-a.y)+a.x))inside=!inside;}return inside;}
+function scatter(poly,perM2){
+  const bb=bbox(poly),count=Math.max(1,Math.round(area(poly)*perM2)),pts=[];
+  let tries=0;while(pts.length<count&&tries<count*8){tries++;
+    const p={x:bb.minx+rnd()*(bb.maxx-bb.minx),y:bb.miny+rnd()*(bb.maxy-bb.miny)};
+    if(pointInPoly(p,poly))pts.push(p);}
+  return pts;
+}
+
+/* ---- the graph, compiled: City_Circular_1km_2_arteries ---- */
+function generateCity(seed,P){
+  RNG=mulberry32(seed>>>0);
+  const R=500;
+  // [A] city outline (Create_Spline_Shape ngon -> organic wobble)
+  const city=createShape(R,16);
+  // [S] two arteries (Create_Spline_line x2, 2nd @120deg)
+  const arteries=[createArtery(2*R,rnd()*Math.PI,0),
+                  createArtery(2*R,rnd()*Math.PI+Math.PI*120/180,90)];
+  // districts carved by arteries (corridor = P.roadArtery); sub-districts split by collector roads (P.roadCollector)
+  let districts=subdivideBySplines([city],arteries,P.roadArtery);
+  let sub=districts.flatMap(d=>recursiveSplit(d,1,0.2,P.roadCollector));
+  // dividable (big) -> blocks ; undividable (small) -> reserved green
+  const {sel:dividable,un:green}=filterBySize(sub,32000,false);
+  const blocks=dividable.flatMap(d=>subdivideGrid(d,P.blockW,P.blockL));
+  // lots = block contracted by half local-road width (the gap reads as street)
+  const lots=blocks.map(b=>contract(b,P.roadLocal/2)).filter(Boolean);
+  // 10% of lots -> plazas
+  const {sel:buildableLots,un:plazas}=filterRandom(lots,P.buildable/100);
+  // buildable lots 2000..8000 m^2 -> footprints ; oversized -> parks
+  const buildings=[],parks=[...green],squares=[];
+  // sharp/sliver footprints (near the diagonal artery/collector cuts) become green сквери, not buildings
+  const place=f=>{ if(area(f)<300)return; if(isSliver(f)){squares.push(f);return;} buildings.push(footprintToBuilding(f,P)); };
+  for(const lot of buildableLots){
+    const A=area(lot);
+    if(A>8000){parks.push(lot);continue;}
+    if(isSliver(lot)){squares.push(lot);continue;} // acute wedge lot at a diagonal road -> сквер, not sharp buildings
+    if(rnd()*100<P.parkPct){parks.push(lot);continue;} // scatter neighbourhood parks through the whole city
+    if(A<2000){ place(lot); continue; }
+    recursiveSplit(lot,3,0.18,P.buildingGap).forEach(place); // buildingGap = adjustable spacing between buildings
+  }
+  // sports grounds inside green areas: up to 2 football pitches, plus smaller pitches / tennis courts
+  const sportsFields=[]; let footballLeft=2;
+  const byArea=[...parks].sort((a,b)=>area(b)-area(a)); // biggest greens first -> they get the football pitches
+  for(const p of byArea){
+    if(rnd()<0.5){ const f=fitField(p,footballLeft); if(f){ sportsFields.push(f); p.field=true; if(f.type==='football')footballLeft--; } }
+  }
+  return {city,arteries,districts,blocks,lots,plazas,parks,squares,buildings,sportsFields};
+}
+function footprintToBuilding(foot,P){
+  const inner=contract(foot,2)||foot; // small setback from the lot edge
+  const c=centroid(inner);
+  // Write_Attribute_fromTexture: height from noise -> Create_Mesh_Extrude
+  const h=6+vnoise(c.x/150,c.y/150)*(P.maxH-6);
+  return {poly:inner,h};
+}
+
+/* ==================== NAVIGATION HEX GRID (#20) ====================
+   A pointy-top axial hex grid over the city, in METRES. A cell is BLOCKED when
+   its centre falls inside a building footprint; every other cell is free &
+   walkable (the "lot" model — cats use streets, plazas, parks). The cats step
+   across the free cells. poly (x,y) maps to world (x, lift, -y) — same as flatMesh. */
+let HEX_INR = 9;             // hex inradius (centre->edge) in metres — tuned via the UI slider
+let navGrid = null;          // the live grid for the current city
+function buildNavGrid(data, inr){
+  const size = inr*2/Math.sqrt(3);                 // circumradius (pointy-top)
+  const R = 520;                                   // cover the whole ~500m city disk + margin
+  const key=(q,r)=>q+','+r;
+  const axialToXY=(q,r)=>({x:size*Math.sqrt(3)*(q+r/2), y:size*1.5*r});
+  const qs=Math.ceil(R/(size*Math.sqrt(3)))+2, rs=Math.ceil(R/(size*1.5))+2;
+  const bld=data.buildings.map(b=>({poly:b.poly, bb:bbox(b.poly)}));   // bbox prefilter
+  const cells=new Map(); let nFree=0,nBlocked=0;
+  for(let r=-rs;r<=rs;r++)for(let q=-qs;q<=qs;q++){
+    const {x,y}=axialToXY(q,r);
+    if(Math.hypot(x,y)>R) continue;
+    let blocked=false;
+    for(const b of bld){ if(x>=b.bb.minx&&x<=b.bb.maxx&&y>=b.bb.miny&&y<=b.bb.maxy&&pointInPoly({x,y},b.poly)){blocked=true;break;} }
+    cells.set(key(q,r),{q,r,x,y,blocked});
+    blocked?nBlocked++:nFree++;
+  }
+  return {cells,size,inr,nFree,nBlocked,key,axialToXY};
+}
+// free cells -> one merged LineSegments hex outline laid on the ground
+function buildGridMesh(grid){
+  const s=grid.size, y=0.7, pos=[], corner=[];
+  for(let k=0;k<6;k++){const a=Math.PI/180*(60*k-30);corner.push([s*Math.cos(a),s*Math.sin(a)]);}
+  grid.cells.forEach(c=>{ if(c.blocked)return;
+    for(let k=0;k<6;k++){const a=corner[k],b=corner[(k+1)%6];
+      pos.push(c.x+a[0],y,-(c.y+a[1]),  c.x+b[0],y,-(c.y+b[1]));}   // world z = -poly.y
+  });
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  return new THREE.LineSegments(g,new THREE.LineBasicMaterial({color:0x2fd6a0,transparent:true,opacity:0.55}));
+}
+
+/* ============================ RENDER (Three.js) ============================ */
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x262a31);
+scene.fog=new THREE.Fog(0x262a31,1200,3200);
+const camera=new THREE.PerspectiveCamera(50,1,1,8000);
+scene.add(new THREE.HemisphereLight(0xcdd8ee,0x34383f,0.85));
+const sun=new THREE.DirectionalLight(0xfff1d6,1.25);sun.position.set(520,900,360);
+sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);sun.shadow.bias=-0.0004;
+(s=>{s.left=-780;s.right=780;s.top=780;s.bottom=-780;s.near=100;s.far=2600;})(sun.shadow.camera);
+scene.add(sun);
+let world=new THREE.Group();scene.add(world);
+
+function shapeFromPoly(poly){const s=new THREE.Shape();poly.forEach((p,i)=>i?s.lineTo(p.x,p.y):s.moveTo(p.x,p.y));s.closePath();return s;}
+function flatMesh(poly,color,y){const g=new THREE.ShapeGeometry(shapeFromPoly(poly));g.rotateX(-Math.PI/2);const m=new THREE.Mesh(g,new THREE.MeshLambertMaterial({color}));m.position.y=y;m.receiveShadow=true;return m;}
+function ribbon(line,width,color,y){
+  const g=new THREE.Group();
+  for(let i=0;i<line.length-1;i++){const a=line[i],b=line[i+1];
+    let dx=b.x-a.x,dy=b.y-a.y;const L=Math.hypot(dx,dy)||1;dx/=L;dy/=L;const nx=-dy*width/2,ny=dx*width/2;
+    const quad=[{x:a.x+nx,y:a.y+ny},{x:b.x+nx,y:b.y+ny},{x:b.x-nx,y:b.y-ny},{x:a.x-nx,y:a.y-ny}];
+    g.add(flatMesh(quad,color,y));}
+  return g;
+}
+const bldMat=[0xcac6bf,0xd2cec7,0xdad6cf,0xe1ddd6,0xe8e4dd].map(c=>new THREE.MeshLambertMaterial({color:c}));
+// sports field: local(length,width)->world transform, so markings rotate with the pitch
+const L2W=f=>{const c=Math.cos(f.angle),s=Math.sin(f.angle);return (lx,ly)=>({x:f.cx+lx*c-ly*s,y:f.cy+lx*s+ly*c});};
+function circlePolyline(cx,cy,r){const p=[];for(let i=0;i<=24;i++){const a=i/24*Math.PI*2;p.push({x:cx+Math.cos(a)*r,y:cy+Math.sin(a)*r});}return p;}
+function buildField(f){
+  const g=new THREE.Group(),t=L2W(f),isT=f.type==='tennis';
+  const surf=isT?0x2f6db0:0x4f8a55,white=0xe9edee,y=0.62,lw=isT?0.9:1.5,hw=f.w/2,hl=f.l/2;
+  const corners=[t(-hw,-hl),t(hw,-hl),t(hw,hl),t(-hw,hl)];
+  g.add(flatMesh(corners,surf,0.5));                       // pitch surface
+  g.add(ribbon([...corners,corners[0]],lw,white,y));       // outline
+  g.add(ribbon([t(0,-hl),t(0,hl)],lw,white,y));            // halfway / net line
+  if(!isT){
+    g.add(ribbon(circlePolyline(f.cx,f.cy,Math.min(9,hl*0.6)),lw,white,y)); // centre circle
+    if(f.type==='football'){const bx=16,by=hl*0.7;         // penalty boxes
+      g.add(ribbon([t(hw,-by),t(hw-bx,-by),t(hw-bx,by),t(hw,by)],lw,white,y));
+      g.add(ribbon([t(-hw,-by),t(-hw+bx,-by),t(-hw+bx,by),t(-hw,by)],lw,white,y));}
+  } else {                                                  // tennis service/singles lines
+    g.add(ribbon([t(-hw*0.5,-hl),t(-hw*0.5,hl)],lw,white,y));
+    g.add(ribbon([t(hw*0.5,-hl),t(hw*0.5,hl)],lw,white,y));
+    g.add(ribbon([t(-hw*0.5,0),t(hw*0.5,0)],lw,white,y));
+  }
+  return g;
+}
+
+function buildScene(data){
+  scene.remove(world);world=new THREE.Group();scene.add(world);
+  // road network base (whole city) — the street grid shows through gaps between blocks
+  world.add(flatMesh(data.city,0x45484f,0));
+  // arteries: widest paved ribbons
+  for(const a of data.arteries)world.add(ribbon(a,P.roadArtery,0x3a3d44,0.12));
+  // block = sidewalk footprint ; contracted lot = ground tile (visible ring between = sidewalk)
+  for(const b of data.blocks) world.add(flatMesh(b,0x8d9096,0.25));
+  for(const p of data.lots)   world.add(flatMesh(p,0xb9b4ab,0.40));
+  // open plazas (ochre), сквери at sharp corners (green), parks (green)
+  for(const p of data.plazas) world.add(flatMesh(p,0xc3b189,0.45));
+  for(const p of data.squares)world.add(flatMesh(p,0x557f52,0.44));
+  for(const p of data.parks)  world.add(flatMesh(p,0x4f7a4f,0.35));
+  // buildings (extruded footprints, shadow-casting)
+  for(const b of data.buildings){
+    const g=new THREE.ExtrudeGeometry(shapeFromPoly(b.poly),{depth:b.h,bevelEnabled:false});
+    g.rotateX(-Math.PI/2);
+    const m=new THREE.Mesh(g,bldMat[Math.min(bldMat.length-1,Math.floor(b.h/(P.maxH+1)*bldMat.length))]);
+    m.position.y=0.5;m.castShadow=true;m.receiveShadow=true;world.add(m);
+  }
+  // trees in parks
+  const treeGeo=new THREE.ConeGeometry(4,12,6),treeMat=new THREE.MeshLambertMaterial({color:0x4f8a55});
+  let treePts=[];for(const p of data.parks){if(!p.field)treePts.push(...scatter(p,0.0022));}for(const p of data.squares)treePts.push(...scatter(p,0.004));
+  if(treePts.length){const inst=new THREE.InstancedMesh(treeGeo,treeMat,treePts.length);const mtx=new THREE.Matrix4();
+    treePts.forEach((pt,i)=>{mtx.makeTranslation(pt.x,6,pt.y);inst.setMatrixAt(i,mtx);});world.add(inst);}
+  for(const f of data.sportsFields) world.add(buildField(f)); // football / small pitch / tennis in the parks
+  // navigation hex grid (#20): compute walkable cells + draw the overlay
+  navGrid=buildNavGrid(data, HEX_INR);
+  world.add(buildGridMesh(navGrid));
+  document.getElementById('stat').textContent=
+    `${data.buildings.length} buildings · ${navGrid.nFree} free / ${navGrid.nBlocked} blocked cells · hex ${HEX_INR}m · seed ${curSeed}`;
+}
+
+/* ---- minimal orbit camera ---- */
+let camTheta=0.6,camPhi=0.9,camR=1500;const target=new THREE.Vector3(0,0,0);
+function updateCam(){camera.position.set(
+  target.x+camR*Math.sin(camPhi)*Math.cos(camTheta),
+  target.y+camR*Math.cos(camPhi),
+  target.z+camR*Math.sin(camPhi)*Math.sin(camTheta));camera.lookAt(target);}
+let drag=false,px=0,py=0;
+canvas.addEventListener('pointerdown',e=>{
+  if(e.button===1){e.preventDefault();drag=true;px=e.clientX;py=e.clientY;}   // MMB = orbit (LMB reserved for RTS box-select, next step)
+});
+addEventListener('pointerup',()=>drag=false);
+addEventListener('pointermove',e=>{if(!drag)return;camTheta-=(e.clientX-px)*0.005;camPhi=Math.max(0.15,Math.min(1.45,camPhi-(e.clientY-py)*0.005));px=e.clientX;py=e.clientY;updateCam();});
+canvas.addEventListener('wheel',e=>{e.preventDefault();camR=Math.max(300,Math.min(4000,camR*(1+Math.sign(e.deltaY)*0.1)));updateCam();},{passive:false});
+function resize(){camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);}
+addEventListener('resize',resize);resize();updateCam();
+let lastW=0,lastH=0;
+(function loop(){requestAnimationFrame(loop);
+  if(innerWidth!==lastW||innerHeight!==lastH){lastW=innerWidth;lastH=innerHeight;resize();} // sync late/odd sizing (in-app preview)
+  renderer.render(scene,camera);})();
+
+/* ---- UI ---- */
+let P={blockW:120,blockL:60,roadLocal:19,roadCollector:26,roadArtery:40,buildingGap:6,maxH:60,buildable:90,parkPct:16},curSeed=7;
+function readUI(){P={blockW:+blockW.value,blockL:+blockL.value,roadLocal:+roadLocal.value,roadCollector:+roadCollector.value,roadArtery:+roadArtery.value,buildingGap:+buildingGap.value,maxH:+maxH.value,buildable:+buildable.value,parkPct:+parkPct.value};curSeed=+seed.value|0;HEX_INR=+hexInr.value;
+  document.querySelectorAll('.v').forEach(v=>{v.textContent=document.getElementById(v.dataset.for).value;});}
+function regen(){readUI();buildScene(generateCity(curSeed,P));}
+document.getElementById('gen').addEventListener('click',regen);
+document.querySelectorAll('.sl').forEach(s=>s.addEventListener('input',regen));
+regen();
+</script>
+</body>
+</html>
