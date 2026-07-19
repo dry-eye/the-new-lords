@@ -999,6 +999,95 @@ function calibrateSea(targetLand){
   SEA=(lo+hi)/2;
 }
 
+/* --- single-landmass constraint (issue #62) ---------------------------------
+   DESIGN.md "Single-landmass constraint, refined" — two rules, both enforced here.
+
+   RULE 1 — one genuinely land-connected continent. The calibrated elevation field
+   routinely yields several disjoint continents/islands. We sample the sphere on a
+   Fibonacci lattice, flag land, and flood-fill land samples into components by
+   *strict touching-land adjacency*: two nearby land samples are joined only when the
+   short geodesic between them stays on land at EVERY interior sample. That never
+   bridges a narrow ocean strait between two separate continents — the strait's water
+   surfaces at an interior sample and the two samples are left unjoined. This fixes
+   PR #63's loose distance cutoff, which hopped straits so its "largest component"
+   spanned separate continents (broke seeds 2, 3, 1874). Settlement sites are drawn
+   only from the largest true component: one genuinely reachable landmass.
+
+   RULE 2 — roads stay on land. Roads/adjacency are straight great-circle arcs, so
+   even within one non-convex (C-shaped) continent a nearest-neighbour link can arc
+   out across open ocean with land only at its two ends (broke seeds 42, 777, 1).
+   arcStaysOnLand() samples a candidate arc's interior and rejects it when its longest
+   *contiguous* over-ocean run exceeds a narrow-inlet tolerance; the settlement then
+   connects through land-staying neighbours instead, so the graph hugs the coast.
+   Crossing a narrow inlet within the continent is fine; arcing across open ocean is
+   not.
+
+   Neither rule touches SEA / WARP / NSEED / elevation / zoneAt — sea level, land
+   fraction and biomes stay byte-identical; only which land can host a settlement and
+   which links may form change. Other continents still render, just unpopulated. */
+const LAND_N=7000;      // connectivity lattice density — fine enough to resolve real straits (PR #63's coarse
+                        // 4200 lattice bridged thin straits, merging separate continents into one "largest" blob)
+const LAND_RING=1.45;   // adjacency reach as a multiple of lattice spacing (immediate ~6-pt ring)
+const SEG_STEP=0.008;   // interior sample step (rad) for the strict touching-land segment test
+const ARC_STEP=0.010;   // interior sample step (rad) for the road-arc land test
+const INLET_TOL=0.12;   // max CONTIGUOUS over-ocean arc run a road may cross (rad ≈ 6.9°, a narrow inlet)
+
+/* Strict touching land: every interior sample of the short geodesic a→b is land
+   (zero tolerance — genuine adjacency). a,b are neighbouring lattice points, so the
+   segment is short and a handful of samples resolves any strait between them. */
+function segLandStrict(a,b){
+  const ang=Math.acos(Math.max(-1,Math.min(1,a.dot(b))));
+  const k=Math.max(2,Math.ceil(ang/SEG_STEP));
+  for(let s=1;s<k;s++){ if(elevation(slerp(a,b,s/k))<=0) return false; }
+  return true;
+}
+
+/* Largest genuinely land-connected component of an n-point Fibonacci lattice,
+   returned as an array of unit dirs. Adjacency = immediate-ring proximity AND
+   strict touching land, so continents split by any real strait stay separate. */
+function landComponent(n){
+  const dirs=new Array(n), lidx=[];                       // lidx: indices of land samples only
+  const xs=new Float64Array(n), ys=new Float64Array(n), zs=new Float64Array(n);
+  for(let i=0;i<n;i++){ const d=fibDir(i,n); dirs[i]=d; xs[i]=d.x;ys[i]=d.y;zs[i]=d.z; if(elevation(d)>0) lidx.push(i); }
+  const cosR=Math.cos((3.8/Math.sqrt(n))*LAND_RING);     // immediate-ring cutoff
+  const comp=new Int32Array(n).fill(-1);
+  let best=-1,bestSize=0,label=0;
+  for(const s of lidx){
+    if(comp[s]!==-1) continue;
+    const stack=[s]; comp[s]=label; let size=0;           // flood-fill one component (land samples only)
+    while(stack.length){
+      const c=stack.pop(); size++;
+      const cx=xs[c],cy=ys[c],cz=zs[c],cd=dirs[c];
+      for(const j of lidx){
+        if(comp[j]!==-1) continue;
+        if(cx*xs[j]+cy*ys[j]+cz*zs[j]>cosR && segLandStrict(cd,dirs[j])){ comp[j]=label; stack.push(j); }
+      }
+    }
+    if(size>bestSize){bestSize=size;best=label;}
+    label++;
+  }
+  const out=[];
+  for(const i of lidx) if(comp[i]===best) out.push(dirs[i]);
+  return out;
+}
+
+/* A road/adjacency link may form only if its great-circle arc stays on land apart
+   from narrow inlets: reject when the longest CONTIGUOUS over-ocean run of interior
+   samples exceeds INLET_TOL. Endpoints are settlements (land), so only the interior
+   is tested. */
+function arcStaysOnLand(a,b){
+  const ang=Math.acos(Math.max(-1,Math.min(1,a.dot(b))));
+  if(ang<1e-6) return true;
+  const k=Math.max(4,Math.ceil(ang/ARC_STEP));
+  const step=ang/k;
+  let run=0,maxRun=0;
+  for(let s=1;s<k;s++){
+    if(elevation(slerp(a,b,s/k))<=0){ run+=step; if(run>maxRun) maxRun=run; }
+    else run=0;
+  }
+  return maxRun<=INLET_TOL;
+}
+
 function genNames(n, a, b){
   const out=new Set();
   while(out.size<n) out.add(pick(a)+pick(b).toLowerCase());
@@ -1070,9 +1159,11 @@ function generate(seed){
   WARP = {x:rnd()*40-20, y:rnd()*40-20, z:rnd()*40-20};
   calibrateSea(0.32);
 
-  /* --- settlement sites: rejection-sampled on land --- */
-  const cand=[];
-  for(let i=0;i<1400;i++){const d=fibDir(i,1400); if(isLand(d)) cand.push(d);}
+  /* --- settlement sites: rejection-sampled on the single reachable landmass ---
+     #62 rule 1: candidates come ONLY from the largest genuinely land-connected
+     component (strict touching-land adjacency, no strait-bridging), so every
+     settlement — and thus every road/adjacency edge below — sits on one continent. */
+  const cand=landComponent(LAND_N);
   for(let i=cand.length-1;i>0;i--){const j=Math.floor(rnd()*(i+1));[cand[i],cand[j]]=[cand[j],cand[i]];}
   const sites=[];
   const MIN_D=0.985; // cos of min separation — bigger = closer allowed
@@ -1106,12 +1197,20 @@ function generate(seed){
   const trunk=S.settlements.map((_,i)=>i).filter(i=>S.settlements[i].tier!=='camp');
   const trunkSet=new Set(trunk);
 
-  /* trunk magistrals: each non-camp links to its 3 nearest non-camps */
+  /* trunk magistrals: each non-camp links to its 3 nearest LAND-STAYING non-camps.
+     #62 rule 2: a nearer neighbour whose straight arc would run out across open
+     ocean is skipped in favour of the next-nearest one the road can reach over land,
+     so the trunk hugs the coast instead of arcing across the sea. */
   for(const i of trunk){
+    const di=S.settlements[i].dir;
     const order=trunk.filter(j=>j!==i)
-      .map(j=>({j,d:S.settlements[i].dir.dot(S.settlements[j].dir)}))
-      .sort((x,y)=>y.d-x.d).slice(0,3);
-    for(const o of order) link(i,o.j);
+      .map(j=>({j,d:di.dot(S.settlements[j].dir)}))
+      .sort((x,y)=>y.d-x.d);
+    let made=0;
+    for(const o of order){
+      if(made>=3) break;
+      if(arcStaysOnLand(di, S.settlements[o.j].dir)){ link(i,o.j); made++; }
+    }
   }
 
   /* connectivity guard: merge trunk components (runs before camp spokes) */
@@ -1126,24 +1225,35 @@ function generate(seed){
     }
     return groups;
   };
+  /* Merge components with the CLOSEST cross-component link whose arc still stays on
+     land (#62 rule 2 — never stitch two clusters together across open ocean). All
+     sites share one land-connected continent (rule 1), so a land-staying link almost
+     always exists; if straight links alone cannot bridge a thin isthmus, the graph is
+     left as-is (curved coast-following roads are the DESIGN.md-deferred v1 follow-up)
+     rather than forcing a road out over the sea. */
   for(let groups=trunkComponents(); groups.length>1; groups=trunkComponents()){
-    let best=null;
-    for(const a of groups[0]) for(let gi=1;gi<groups.length;gi++) for(const b of groups[gi]){
-      const d=S.settlements[a].dir.dot(S.settlements[b].dir);
-      if(!best||d>best.d) best={a,b,d};
+    const gidx=new Map(); groups.forEach((g,k)=>g.forEach(s=>gidx.set(s,k)));
+    const pairs=[];
+    for(let x=0;x<trunk.length;x++) for(let y=x+1;y<trunk.length;y++){
+      const a=trunk[x], b=trunk[y];
+      if(gidx.get(a)===gidx.get(b)) continue;
+      pairs.push({a,b,d:S.settlements[a].dir.dot(S.settlements[b].dir)});
     }
-    link(best.a,best.b);
+    pairs.sort((p,q)=>q.d-p.d);
+    let linked=false;
+    for(const p of pairs){
+      if(arcStaysOnLand(S.settlements[p.a].dir, S.settlements[p.b].dir)){ link(p.a,p.b); linked=true; break; }
+    }
+    if(!linked) break;   // no land-staying link can merge the rest — accept partial graph (v1)
   }
 
-  /* camp spokes: each camp attaches by exactly one link to its nearest non-camp */
+  /* camp spokes: each camp attaches by one link to its nearest LAND-STAYING non-camp */
   S.settlements.forEach((s,i)=>{
     if(s.tier!=='camp') return;
-    let best=null;
-    for(const j of trunk){
-      const d=s.dir.dot(S.settlements[j].dir);
-      if(!best||d>best.d) best={j,d};
+    const order=trunk.map(j=>({j,d:s.dir.dot(S.settlements[j].dir)})).sort((x,y)=>y.d-x.d);
+    for(const o of order){
+      if(arcStaysOnLand(s.dir, S.settlements[o.j].dir)){ link(i,o.j); break; }
     }
-    if(best) link(i,best.j);
   });
 
   /* --- factions: each is an independent political org (a realm) --- */
