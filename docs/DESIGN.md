@@ -44,6 +44,13 @@ There's also a separate, not-yet-specified **Editor/world-builder mode**, out of
 
 Player Mode's session-start picker (choose an existing NPC leader) and the Experience system's `playerRole` (found a **new** character/org from a starting kit) are two different answers to "how does a session begin," and it isn't yet decided whether the eventual start screen unifies them into one flow or keeps them as separate entry points — see the open question in "Experience-driven architecture," below.
 
+**Spectator, God Mode, and Player — three stances.** The observe/intervene material above resolves into three named stances the player can be in:
+- **Spectator** — pure observation. The world runs; the player watches and inspects, but issues no orders and takes no interventions. The hands-off watcher.
+- **God Mode** — observe *and* command **any** unit or organization, with no ownership restriction: select any squad and order it, reach into any org's decisions, anywhere on the map. This is the click-to-intervene loop (above) taken to full control of anything, and it is a **normal shipped mode** — the "watch the simulation and reach in wherever you want, to see how it works" stance — **not** a developer-only or debug affordance (this supersedes the earlier framing of unrestricted control as a debug-only convenience).
+- **Player (play-as-character)** — command only the units and organization of the character you play (see Player Mode, above): the roleplay stance, bounded by what your character actually owns.
+
+The three differ only in *what the player may act on* — nothing about the underlying simulation changes between them. Choosing among them is a light toggle over the observer stance (intervene off → Spectator, unrestricted → God Mode) or picking a character (→ Player), not the heavy match-setup screen that was rejected (see "Player entry: implicit play-as-character," below).
+
 **Org slot kinds — control / influence.** Slots carry a `kind: 'control' | 'influence'`, layered onto the existing slot shape.
 - **`control`** — the default kind: the occupant literally runs/commands that function (e.g. a garrison squad-org). Creating one uses a simple default-then-edit flow — it's filled immediately with a reasonable default occupant/salary/type, then edited or broken as needed; there's no separate occupant-picker dialog.
 - **`influence`** — a softer effect: an occupant can sway decisions/policy without literal command authority.
