@@ -76,7 +76,7 @@ Spawn one background Agent with `isolation: "worktree"`, once the PR exists, fil
 > 5. **Fixable defects** → fix them on the PR branch (if you touch `src/`, re-run `node build-bundle.mjs` and commit the regenerated `new-lords-prototype.html` too), commit, push, re-verify, then squash-merge. Return `FIXED+MERGED #M (#N): <what you fixed>`.
 > 6. **Fundamentally unclear / underspecified** → relabel #N to `status:to-design` with an English comment on what's unclear, close PR #M, and return `BOUNCED #N: <reason>`. Never merge in this case.
 
-If `main` has advanced and the squash-merge conflicts, rebase the branch onto latest `origin/main`, resolve, re-verify, then merge.
+If `main` has advanced, rebase the branch onto latest `origin/main` and resolve any conflict. **Then always re-run `node build-bundle.mjs` and commit the regenerated `new-lords-prototype.html` before merging** — even with no git conflict, a parallel PR's `src/` changes merge alongside yours while the *derived* HTML does not, leaving the committed bundle stale (this is exactly what the `bundle-check` CI guards, and what forced the manual rebundle in #85). A clean `git diff -- new-lords-prototype.html` after the rebuild confirms sync. Re-verify, then squash-merge.
 
 ## Environment notes (browser verify)
 
