@@ -3476,8 +3476,14 @@ function buildCity(st, maxResidents=48){
     else spawnWalker((st.id*131+k*9277+7)>>>0, null);   // stable per-slot cosmetic seed — no sim entity created
   }
 
+  // pathfinding hex grid (#20): the cats' walkable cells for this city, built
+  // from the building footprints; overlay rides this city group (materialise/collapse).
+  const grid = buildHexGrid(lots, HEX_CELL_MULT*CAT_HEAD_R/S1);
+  const hexMesh = buildHexOverlay(grid, {dirOf, R});
+  group.add(hexMesh);
+
   root.add(group);
-  return {group, walkers, st, orient, dirOf, nextWaypoint, R};   // #50: R = city surface radius, for head-aligned picks
+  return {group, walkers, st, orient, dirOf, nextWaypoint, R, grid, hexMesh};   // #50: R = city surface radius; #20: grid = walkable cells
 }
 /* advance one town's walking cat heads along the streets by one frame's worth of time */
 function stepWalkers(c, dtMs){
@@ -3500,6 +3506,68 @@ function stepWalkers(c, dtMs){
     w.dir=c.dirOf(w.x, w.y);
     w.r=(c.R!=null?c.R:1)+lift;   // #50: the head's exact shell radius (surface R + lift) for a head-aligned pick
   }
+}
+
+/* =====================================================================
+   PATHFINDING HEX GRID (#20) — a LOCAL hex grid over one hot city that the
+   resident cats actually walk. A cell is BLOCKED when its centre falls inside
+   a building; every other cell in the city disk is free & walkable (the "lot"
+   model — cats use streets AND the courtyards between buildings, owner's call).
+   Pointy-top axial (q,r). Source of truth: docs/PATHFINDING_SPEC.md.
+   ===================================================================== */
+
+const CAT_HEAD_R    = 0.00024;   // cat-head radius in surface units (makeCatHead: H*0.24, H=0.00100)
+const HEX_CELL_MULT = 1.5;       // spec: hex inradius = 1.5 × cat-head radius (owner's calibration)
+let   SHOW_HEX      = true;      // grid overlay visible? toggled with the H key (test aid)
+
+// Is local point (px,py) inside building lot L (centre x,y, FULL size w×d in
+// local units, rotation ang)? margin widens (or, if negative, shrinks) the box.
+function pointInLot(px, py, L, margin){
+  const dx=px-L.x, dy=py-L.y, ca=Math.cos(-L.ang), sa=Math.sin(-L.ang);
+  const u=dx*ca - dy*sa, v=dx*sa + dy*ca;            // rotate into the lot's own axes
+  return Math.abs(u) <= L.w*0.5+margin && Math.abs(v) <= L.d*0.5+margin;
+}
+
+// Build the axial hex grid filling the city disk (radius ~1 in local units).
+// inr = hex inradius (centre→edge) in local units. Blocked = centre inside any
+// building lot; free cells form the walkable network the cats step across.
+function buildHexGrid(lots, inr){
+  const size = inr * 2/Math.sqrt(3);                 // circumradius (pointy-top)
+  const DISK = 0.985;                                // grid fills the disk out to here
+  const key  = (q,r)=>q+','+r;
+  const axialToXY = (q,r)=>({ x: size*Math.sqrt(3)*(q + r/2), y: size*1.5*r });
+  const qspan = Math.ceil(DISK/(size*Math.sqrt(3)))+2;
+  const rspan = Math.ceil(DISK/(size*1.5))+2;
+  const cells = new Map();
+  let nFree=0, nBlocked=0;
+  for(let r=-rspan; r<=rspan; r++) for(let q=-qspan; q<=qspan; q++){
+    const {x,y} = axialToXY(q,r);
+    if(Math.hypot(x,y) > DISK) continue;             // outside the city disk
+    let blocked=false;
+    for(const L of lots){ if(pointInLot(x,y,L,0)){ blocked=true; break; } }
+    cells.set(key(q,r), {q,r,x,y,blocked});
+    if(blocked) nBlocked++; else nFree++;
+  }
+  return {cells, size, inr, nFree, nBlocked, key, axialToXY};
+}
+
+// Render a grid's FREE cells as a thin hex outline on the sphere — one merged
+// LineSegments, materialised & collapsed with its city group. ctx: {dirOf, R}.
+function buildHexOverlay(grid, ctx){
+  const {dirOf, R}=ctx, lift=0.00004, s=grid.size, pos=[];
+  const corner=[];                                   // 6 pointy-top corner offsets (local units)
+  for(let k=0;k<6;k++){ const a=Math.PI/180*(60*k-30); corner.push([s*Math.cos(a), s*Math.sin(a)]); }
+  const at=(lx,ly)=>{ const d=dirOf(lx,ly); pos.push(d.x*(R+lift), d.y*(R+lift), d.z*(R+lift)); };
+  grid.cells.forEach(c=>{
+    if(c.blocked) return;
+    for(let k=0;k<6;k++){ const a=corner[k], b=corner[(k+1)%6];
+      at(c.x+a[0], c.y+a[1]); at(c.x+b[0], c.y+b[1]); }   // one segment per edge (LineSegments = vertex pairs)
+  });
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  const mesh=new THREE.LineSegments(g, new THREE.LineBasicMaterial({color:0x2FB68A, transparent:true, opacity:0.5}));
+  mesh.visible=SHOW_HEX;
+  return mesh;
 }
 
 /* =====================================================================
@@ -4386,6 +4454,7 @@ addEventListener('keydown',e=>{
   if(e.key==='+'||e.key==='=') camAltTarget=Math.max(ALT_MIN,camAltTarget/1.18);
   if(e.key==='-'||e.key==='_') camAltTarget=Math.min(ALT_MAX,camAltTarget*1.18);
   if(e.key===' '){ e.preventDefault(); document.getElementById('btnPause').click(); }
+  if(e.key==='h'||e.key==='H'){ SHOW_HEX=!SHOW_HEX; for(const c of cityCache.values()) if(c.hexMesh) c.hexMesh.visible=SHOW_HEX; }   // #20: toggle the pathfinding grid overlay
 });
 
 /* ---- screen-space picking & hover ---- */
