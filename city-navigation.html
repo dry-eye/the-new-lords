@@ -424,7 +424,7 @@ function spawnUnits(grid,n){
   for(let i=0;i<n && free.length;i++){
     const c=free.splice(Math.floor(rnd()*free.length),1)[0];
     const m=catMesh(); m.position.set(c.x,6,-c.y); world.add(m);   // world: poly (x,y) -> (x, lift, -y)
-    units.push({q:c.q,r:c.r,x:c.x,y:c.y,mesh:m,selected:false});
+    units.push({q:c.q,r:c.r,x:c.x,y:c.y,mesh:m,selected:false,parked:false});
   }
 }
 function applySel(){
@@ -497,23 +497,44 @@ function showTarget(cell){
 function issueMove(px,py){
   const target=cellAtPoly(navGrid,px,py); if(!target) return 0;
   const flow=buildFlow(navGrid,target); let n=0;
-  for(const u of units){ if(u.selected){ u.flow=flow; n++; } }
+  for(const u of units){ if(u.selected){ u.flow=flow; u.parked=false; n++; } }   // un-park on a fresh order
   if(n) showTarget(target);
   return n;
 }
-// advance every ordered cat one frame along its flow field toward the goal
+// advance every ordered cat toward the goal, one cat per cell (occupancy).
+// A cat reserves its LOGICAL cell (q,r) the instant it picks it and glides to
+// that cell's centre before choosing the next — so no two cats ever claim the
+// same cell, and the group spreads around the goal (first takes it, the rest
+// fill the nearest free cells).
 function stepUnits(dt){
+  const occ=new Map();
+  for(const u of units) occ.set(u.q+','+u.r,{u:u,p:!!u.parked});      // every cat holds its logical cell (p = parked)
   for(const u of units){
     if(!u.flow) continue;
+    const cc=navGrid.cells.get(u.q+','+u.r);
+    if(Math.hypot(cc.x-u.x,cc.y-u.y) > 0.5){                          // not yet at the cell centre → glide in
+      const dx=cc.x-u.x, dy=cc.y-u.y, dd=Math.hypot(dx,dy)||1, mv=SPEED*dt;
+      if(dd<=mv){ u.x=cc.x; u.y=cc.y; } else { u.x+=dx/dd*mv; u.y+=dy/dd*mv; }
+      u.mesh.position.set(u.x,6,-u.y); continue;
+    }
     const curD=u.flow.get(u.q+','+u.r);
-    if(curD===undefined||curD===0){ u.flow=null; continue; }          // arrived or stranded
-    let bestK=null, bd=curD;
-    for(const dir of HEX_DIRS){ const nk=(u.q+dir[0])+','+(u.r+dir[1]); const d=u.flow.get(nk); if(d!==undefined&&d<bd){bd=d;bestK=nk;} }
-    if(bestK===null){ u.flow=null; continue; }
-    const tc=navGrid.cells.get(bestK), dx=tc.x-u.x, dy=tc.y-u.y, dd=Math.hypot(dx,dy)||1, mv=SPEED*dt;
-    if(dd<=mv){ u.x=tc.x; u.y=tc.y; u.q=tc.q; u.r=tc.r; }              // reached the next cell centre
-    else { u.x+=dx/dd*mv; u.y+=dy/dd*mv; }
-    u.mesh.position.set(u.x,6,-u.y);
+    if(curD===undefined||curD===0){ u.flow=null; u.parked=true; continue; }   // reached the goal cell / stranded
+    let bestK=null, bd=curD, bestC=null, blockedByParked=false;
+    for(const dir of HEX_DIRS){
+      const nk=(u.q+dir[0])+','+(u.r+dir[1]), d=u.flow.get(nk);
+      if(d===undefined || d>=bd) continue;                           // not closer to the goal
+      const o=occ.get(nk); if(o&&o.u!==u){ if(o.p) blockedByParked=true; continue; }   // cell taken
+      bd=d; bestK=nk; bestC=navGrid.cells.get(nk);
+    }
+    if(bestK!==null){
+      occ.delete(u.q+','+u.r); occ.set(bestK,{u:u,p:false});         // hand the reservation to the next cell
+      u.q=bestC.q; u.r=bestC.r; u.wait=0;                            // logical step now; physical glide follows
+    } else if(blockedByParked){
+      u.flow=null; u.parked=true;                                    // settle behind the cats already parked (spread)
+    } else {
+      u.wait=(u.wait||0)+1;                                          // path blocked only by movers → wait for them
+      if(u.wait>150){ u.flow=null; u.parked=true; }                 // long stall (deadlock guard) → give up, park
+    }
   }
 }
 // screen -> ground plane -> poly (x,y)
