@@ -437,11 +437,12 @@ function buildCity(st, maxResidents=48){
   const tan=new THREE.Vector3(0,1,0).cross(up).normalize();
   const bit=up.clone().cross(tan).normalize();
   // Sit the town ON the globe surface. The globe is an analytic ray-cast of a SMOOTH
-  // r=1 sphere (render.js) — elevation is colour-only, never geometric height — so any
-  // R>1 leaves the whole town floating above the surface on land (elevation>0). Markers
-  // were sat down in #61 (MARK_R); the PCG city geometry (#64/#73) still rode elevation
-  // and floated. Pin it to the surface shell like the markers.
-  const R=1.005;
+  // r=1 sphere (render.js) and the camera focuses on that surface at radius 1.0 — elevation
+  // is colour-only, never geometric height. The town base must sit at R=1.0 exactly: at
+  // street-level zoom the whole view spans ~0.01–0.05 radii, so even the 0.005 markers ride
+  // (MARK_R) reads as a visible float for the big city geometry. R>1 floated it (#88 tried
+  // 1.005 — still visibly off the ground); 1.0 pins it flush to the surface.
+  const R=1.0;
   const S1=prof.radius;                       // per-tier surface radius (footprint size on the sphere)
 
   const dirOf=(x,y)=>up.clone().add(tan.clone().multiplyScalar(x*S1))
