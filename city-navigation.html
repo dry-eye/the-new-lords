@@ -494,12 +494,30 @@ function showTarget(cell){
     targetMarker.rotation.x=-Math.PI/2; scene.add(targetMarker); }
   targetMarker.position.set(cell.x,1.2,-cell.y); targetMarker.visible=true;
 }
+// N free cells forming a compact blob around the order point (BFS outward) — the formation slots
+function allocateSlots(grid,target,n){
+  const slots=[], seen=new Set([target.q+','+target.r]), q=[target];
+  while(q.length && slots.length<n){
+    const c=q.shift(); slots.push(c);
+    for(const dir of HEX_DIRS){ const nk=(c.q+dir[0])+','+(c.r+dir[1]), nc=grid.cells.get(nk);
+      if(nc && !nc.blocked && !seen.has(nk)){ seen.add(nk); q.push(nc); } }
+  }
+  return slots;
+}
 function issueMove(px,py){
   const target=cellAtPoly(navGrid,px,py); if(!target) return 0;
-  const flow=buildFlow(navGrid,target); let n=0;
-  for(const u of units){ if(u.selected){ u.flow=flow; u.parked=false; n++; } }   // un-park on a fresh order
-  if(n) showTarget(target);
-  return n;
+  const sel=units.filter(u=>u.selected); if(!sel.length) return 0;
+  // 1) find a slot per unit — a compact blob of free cells around the order point
+  const slots=allocateSlots(navGrid, target, sel.length);
+  // 2) cats nearest the point take the central slots (slots are BFS order, centre first)
+  sel.sort((a,b)=> Math.hypot(a.x-target.x,a.y-target.y) - Math.hypot(b.x-target.x,b.y-target.y));
+  // 3) each cat gets its OWN flow field to its OWN slot, so the group forms up AROUND the point
+  for(let i=0;i<sel.length;i++){
+    const slot=slots[Math.min(i,slots.length-1)];
+    sel[i].slot=slot; sel[i].flow=buildFlow(navGrid, slot); sel[i].parked=false; sel[i].wait=0;
+  }
+  showTarget(target);
+  return sel.length;
 }
 // advance every ordered cat toward the goal, one cat per cell (occupancy).
 // A cat reserves its LOGICAL cell (q,r) the instant it picks it and glides to
@@ -519,21 +537,19 @@ function stepUnits(dt){
     }
     const curD=u.flow.get(u.q+','+u.r);
     if(curD===undefined||curD===0){ u.flow=null; u.parked=true; continue; }   // reached the goal cell / stranded
-    let bestK=null, bd=curD, bestC=null, blockedByParked=false;
+    let bestK=null, bd=curD, bestC=null;
     for(const dir of HEX_DIRS){
       const nk=(u.q+dir[0])+','+(u.r+dir[1]), d=u.flow.get(nk);
-      if(d===undefined || d>=bd) continue;                           // not closer to the goal
-      const o=occ.get(nk); if(o&&o.u!==u){ if(o.p) blockedByParked=true; continue; }   // cell taken
+      if(d===undefined || d>=bd) continue;                           // not closer to this cat's slot
+      const o=occ.get(nk); if(o&&o.u!==u) continue;                  // cell taken by another cat
       bd=d; bestK=nk; bestC=navGrid.cells.get(nk);
     }
     if(bestK!==null){
       occ.delete(u.q+','+u.r); occ.set(bestK,{u:u,p:false});         // hand the reservation to the next cell
       u.q=bestC.q; u.r=bestC.r; u.wait=0;                            // logical step now; physical glide follows
-    } else if(blockedByParked){
-      u.flow=null; u.parked=true;                                    // settle behind the cats already parked (spread)
     } else {
-      u.wait=(u.wait||0)+1;                                          // path blocked only by movers → wait for them
-      if(u.wait>150){ u.flow=null; u.parked=true; }                 // long stall (deadlock guard) → give up, park
+      u.wait=(u.wait||0)+1;                                          // slot/path blocked → wait for it to clear
+      if(u.wait>250){ u.flow=null; u.parked=true; }                 // deadlock guard → settle where it is
     }
   }
 }
