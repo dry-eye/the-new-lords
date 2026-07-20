@@ -2,7 +2,6 @@
 // Auto-split from new-lords-prototype.html (#65). THREE is the global from the classic r128 script.
 
 import { ENT, S, mulberry32 } from './state.js';
-import { elevation } from './worldgen.js';
 import { root } from './render.js';
 
 /* =====================================================================
@@ -437,7 +436,12 @@ function buildCity(st, maxResidents=48){
   const up=st.dir.clone();
   const tan=new THREE.Vector3(0,1,0).cross(up).normalize();
   const bit=up.clone().cross(tan).normalize();
-  const R=1 + Math.max(0, elevation(st.dir))*0.028;
+  // Sit the town ON the globe surface. The globe is an analytic ray-cast of a SMOOTH
+  // r=1 sphere (render.js) — elevation is colour-only, never geometric height — so any
+  // R>1 leaves the whole town floating above the surface on land (elevation>0). Markers
+  // were sat down in #61 (MARK_R); the PCG city geometry (#64/#73) still rode elevation
+  // and floated. Pin it to the surface shell like the markers.
+  const R=1.005;
   const S1=prof.radius;                       // per-tier surface radius (footprint size on the sphere)
 
   const dirOf=(x,y)=>up.clone().add(tan.clone().multiplyScalar(x*S1))
