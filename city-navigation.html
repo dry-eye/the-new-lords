@@ -27,8 +27,8 @@
   <h1>PCG City Navigation</h1>
   <div class="sub">pathfinding testbed · #20</div>
   <div class="row"><label>seed</label><input id="seed" type="number" value="7"></div>
-  <div class="row"><label>block width (m)</label><input class="sl" id="blockW" type="range" min="40" max="200" value="120"><span class="v" data-for="blockW"></span></div>
-  <div class="row"><label>block length (m)</label><input class="sl" id="blockL" type="range" min="30" max="140" value="60"><span class="v" data-for="blockL"></span></div>
+  <div class="row"><label>block width (m)</label><input class="sl" id="blockW" type="range" min="40" max="340" value="180"><span class="v" data-for="blockW"></span></div>
+  <div class="row"><label>block length (m)</label><input class="sl" id="blockL" type="range" min="30" max="240" value="110"><span class="v" data-for="blockL"></span></div>
   <div class="row"><label>local road (m)</label><input class="sl" id="roadLocal" type="range" min="4" max="40" value="19"><span class="v" data-for="roadLocal"></span></div>
   <div class="row"><label>district road (m)</label><input class="sl" id="roadCollector" type="range" min="6" max="60" value="26"><span class="v" data-for="roadCollector"></span></div>
   <div class="row"><label>artery road (m)</label><input class="sl" id="roadArtery" type="range" min="10" max="120" value="40"><span class="v" data-for="roadArtery"></span></div>
@@ -223,11 +223,11 @@ function generateCity(seed,P){
   const place=f=>{ if(area(f)<300)return; if(isSliver(f)){squares.push(f);return;} buildings.push(footprintToBuilding(f,P)); };
   for(const lot of buildableLots){
     const A=area(lot);
-    if(A>8000){parks.push(lot);continue;}
+    if(A>24000){parks.push(lot);continue;}          // only very large lots become parks (bigger blocks now)
     if(isSliver(lot)){squares.push(lot);continue;} // acute wedge lot at a diagonal road -> сквер, not sharp buildings
     if(rnd()*100<P.parkPct){parks.push(lot);continue;} // scatter neighbourhood parks through the whole city
-    if(A<2000){ place(lot); continue; }
-    recursiveSplit(lot,3,0.18,P.buildingGap).forEach(place); // buildingGap = adjustable spacing between buildings
+    if(A<3500){ place(lot); continue; }             // bigger single footprints
+    recursiveSplit(lot,2,0.18,P.buildingGap).forEach(place); // fewer splits -> larger buildings; buildingGap = spacing
   }
   // sports grounds inside green areas: up to 2 football pitches, plus smaller pitches / tennis courts
   const sportsFields=[]; let footballLeft=2;
