@@ -524,33 +524,25 @@ function issueMove(px,py){
 // that cell's centre before choosing the next — so no two cats ever claim the
 // same cell, and the group spreads around the goal (first takes it, the rest
 // fill the nearest free cells).
+// Advance every ordered cat along its OWN flow field toward its OWN slot. Cats
+// pass through each other WHILE MOVING (no traffic jams, so none stalls far from
+// the point); the slots are unique, so the formation still ends one cat per cell
+// around the order point.
 function stepUnits(dt){
-  const occ=new Map();
-  for(const u of units) occ.set(u.q+','+u.r,{u:u,p:!!u.parked});      // every cat holds its logical cell (p = parked)
   for(const u of units){
     if(!u.flow) continue;
-    const cc=navGrid.cells.get(u.q+','+u.r);
-    if(Math.hypot(cc.x-u.x,cc.y-u.y) > 0.5){                          // not yet at the cell centre → glide in
-      const dx=cc.x-u.x, dy=cc.y-u.y, dd=Math.hypot(dx,dy)||1, mv=SPEED*dt;
-      if(dd<=mv){ u.x=cc.x; u.y=cc.y; } else { u.x+=dx/dd*mv; u.y+=dy/dd*mv; }
-      u.mesh.position.set(u.x,6,-u.y); continue;
-    }
     const curD=u.flow.get(u.q+','+u.r);
-    if(curD===undefined||curD===0){ u.flow=null; u.parked=true; continue; }   // reached the goal cell / stranded
+    if(curD===undefined||curD===0){ u.flow=null; u.parked=true; continue; }   // reached its own slot
     let bestK=null, bd=curD, bestC=null;
     for(const dir of HEX_DIRS){
       const nk=(u.q+dir[0])+','+(u.r+dir[1]), d=u.flow.get(nk);
-      if(d===undefined || d>=bd) continue;                           // not closer to this cat's slot
-      const o=occ.get(nk); if(o&&o.u!==u) continue;                  // cell taken by another cat
-      bd=d; bestK=nk; bestC=navGrid.cells.get(nk);
+      if(d!==undefined && d<bd){ bd=d; bestK=nk; bestC=navGrid.cells.get(nk); }   // just follow the flow downhill
     }
-    if(bestK!==null){
-      occ.delete(u.q+','+u.r); occ.set(bestK,{u:u,p:false});         // hand the reservation to the next cell
-      u.q=bestC.q; u.r=bestC.r; u.wait=0;                            // logical step now; physical glide follows
-    } else {
-      u.wait=(u.wait||0)+1;                                          // slot/path blocked → wait for it to clear
-      if(u.wait>250){ u.flow=null; u.parked=true; }                 // deadlock guard → settle where it is
-    }
+    if(bestK===null){ u.flow=null; u.parked=true; continue; }
+    const dx=bestC.x-u.x, dy=bestC.y-u.y, dd=Math.hypot(dx,dy)||1, mv=SPEED*dt;
+    if(dd<=mv){ u.x=bestC.x; u.y=bestC.y; u.q=bestC.q; u.r=bestC.r; }  // reached the next cell centre
+    else { u.x+=dx/dd*mv; u.y+=dy/dd*mv; }
+    u.mesh.position.set(u.x,6,-u.y);
   }
 }
 // screen -> ground plane -> poly (x,y)
